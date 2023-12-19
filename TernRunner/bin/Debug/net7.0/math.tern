@@ -1,3 +1,0 @@
-Add {
-	return [Math]::Add(arg0, arg1);
-}

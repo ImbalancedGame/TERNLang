@@ -1,2 +1,0 @@
-TernRunner "example.tern"
-pause
