@@ -1,0 +1,12 @@
+C:\Users\Thomasw\source\repos\TERN\TERN\bin\Release\net7.0\TERN.deps.json
+C:\Users\Thomasw\source\repos\TERN\TERN\bin\Release\net7.0\TERN.dll
+C:\Users\Thomasw\source\repos\TERN\TERN\bin\Release\net7.0\TERN.pdb
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\TERN.csproj.AssemblyReference.cache
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\TERN.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\TERN.AssemblyInfoInputs.cache
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\TERN.AssemblyInfo.cs
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\TERN.csproj.CoreCompileInputs.cache
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\TERN.dll
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\refint\TERN.dll
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\TERN.pdb
+C:\Users\Thomasw\source\repos\TERN\TERN\obj\Release\net7.0\ref\TERN.dll

@@ -1,0 +1,2 @@
+TernRunner "example.tern"
+pause

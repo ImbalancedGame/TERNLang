@@ -1,0 +1,59 @@
+scope MyConsoleApp 
+{
+	OnStart {
+		debugPrefix = "[Debug] > ";
+		errorPrefix = "[Error] > ";
+
+		EnableErrors(true);
+		EnableDebug(true);
+		RemoveMethodFromScope(Name, "OnStart");
+	}
+
+	EnableErrors {
+		enableErrors = arg0;
+	}
+
+	EnableDebug {
+		enableDebug = arg0;
+	}
+
+	OnLoad {
+		// Do something spectacular.
+
+		DebugLog(String.Concat("Debug Test ", enableDebug, " example"));
+		DebugLog("Debug Test" + enableDebug + "example");
+		DebugLog(String.Concat("1 + 1 = ", Math.Add(1, 1)));
+		ErrorLog("Error Test");
+	}
+
+	DebugLog wants msg {
+		@If(enableDebug, {
+			Console.SetColor("Blue");
+			Console.WriteLine(String.Concat(debugPrefix, msg));
+			Console.SetColor("Gray");
+		});
+	}
+
+	ErrorLog wants msg {
+		@If(enableErrors, {
+			Console.SetColor("Red");
+			Console.WriteLine(String.Concat(errorPrefix, msg));
+			Console.SetColor("Gray");
+		});
+	}
+}
+
+
+MyConsoleApp.OnStart();
+
+MyConsoleApp.OnLoad();
+
+maths = Math.Add(1, 1);
+maths = Math.Add(1, maths);
+maths = Math.Add(1, maths);
+maths = Math.Add(1, maths);
+maths = Math.Add(1, maths);
+maths = Math.Add(1, maths);
+maths = Math.Add(1, maths);
+
+Console.WriteLine(String.Concat("Maths = ", maths));

@@ -1,0 +1,36 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v7.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v7.0": {
+      "TernRunner/1.0.0": {
+        "dependencies": {
+          "TERN": "1.0.0"
+        },
+        "runtime": {
+          "TernRunner.dll": {}
+        }
+      },
+      "TERN/1.0.0": {
+        "runtime": {
+          "TERN.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "TernRunner/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "TERN/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

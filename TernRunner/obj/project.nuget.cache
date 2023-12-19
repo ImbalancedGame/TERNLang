@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "dgSpecHash": "KvrR75KVu39MG/eH5Y31RJ7Sd9JYnFdaEhcetm1iTha7oT71ieg2l70kngZOI07qy5ZhjuvIFZfwJWwTxXY/eA==",
+  "success": true,
+  "projectFilePath": "C:\\Users\\tom\\Documents\\TERN\\TERN\\TernRunner\\TernRunner.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\tom\\.nuget\\packages\\microsoft.dotnet.ilcompiler\\7.0.12\\microsoft.dotnet.ilcompiler.7.0.12.nupkg.sha512",
+    "C:\\Users\\tom\\.nuget\\packages\\microsoft.net.illink.analyzers\\7.0.100-1.23211.1\\microsoft.net.illink.analyzers.7.0.100-1.23211.1.nupkg.sha512",
+    "C:\\Users\\tom\\.nuget\\packages\\microsoft.net.illink.tasks\\7.0.100-1.23211.1\\microsoft.net.illink.tasks.7.0.100-1.23211.1.nupkg.sha512",
+    "C:\\Users\\tom\\.nuget\\packages\\microsoft.netcore.app.ref\\7.0.12\\microsoft.netcore.app.ref.7.0.12.nupkg.sha512",
+    "C:\\Users\\tom\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\7.0.12\\microsoft.windowsdesktop.app.ref.7.0.12.nupkg.sha512",
+    "C:\\Users\\tom\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\7.0.12\\microsoft.aspnetcore.app.ref.7.0.12.nupkg.sha512",
+    "C:\\Users\\tom\\.nuget\\packages\\runtime.win-x64.microsoft.dotnet.ilcompiler\\7.0.12\\runtime.win-x64.microsoft.dotnet.ilcompiler.7.0.12.nupkg.sha512",
+    "C:\\Users\\tom\\.nuget\\packages\\microsoft.netcore.app.host.win-x64\\7.0.12\\microsoft.netcore.app.host.win-x64.7.0.12.nupkg.sha512"
+  ],
+  "logs": []
+}

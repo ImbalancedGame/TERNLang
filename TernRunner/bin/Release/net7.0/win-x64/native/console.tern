@@ -1,0 +1,6 @@
+scope Console {
+    SetColor {
+        Console.WriteLine(currentScope);
+        WriteLine("No Hope Sailor.");
+    }
+}

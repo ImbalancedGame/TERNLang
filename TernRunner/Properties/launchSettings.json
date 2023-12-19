@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "TernRunner": {
+      "commandName": "Project",
+      "commandLineArgs": "\"example.tern\""
+    }
+  }
+}

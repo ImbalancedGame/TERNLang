@@ -1,0 +1,53 @@
+#import "console";
+
+ScopeInfo();
+
+Import("File");
+
+// Add to MyScope so we can use them easily.
+
+scope MyScope 
+{
+	DoAThing 
+	{
+		Console.SetColor();
+
+		WriteLine(Concat(count, " Creating File > ", fileName));
+
+		WriteLineTo(writer, Concat("myName = ", myName, ";"));
+		WriteLineTo(writer, Concat("Console.WriteLine(", myName, ")", ";"));
+
+		Dispose(writer); 
+
+		count = Add(count, 1);
+	}
+
+	OnStart
+	{
+		ImportTo("MyScope", "Console");
+		ImportTo("MyScope", "String");
+		ImportTo("MyScope", "File");
+		ImportTo("MyScope", "Math");
+
+		count = 1;
+
+		// Remove this method so it cannot be called again.
+		RemoveMethodFromScope("MyScope", "OnStart");
+	}
+}
+
+MyScope.OnStart();
+
+Console.Write("What is your name? ");
+
+myName = Console.ReadLine();
+
+Console.WriteLine(myName);
+
+fileName = String.Concat(myName, "-example.tern");
+
+Console.WriteLine(fileName);
+
+writer = File.CreateStreamWriter(fileName, "FileMode.CreateNew");
+
+MyScope.DoAThing();
