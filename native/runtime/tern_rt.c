@@ -1,7 +1,11 @@
 // TERN native runtime - implementation.
 #include "tern_rt.h"
+#include <dirent.h>
+#include <errno.h>
 #include <locale.h>
 #include <math.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <wctype.h>
 #include <time.h>
 #include <unistd.h>
@@ -4020,33 +4024,70 @@ static Value os_cwd(int argc, Value *argv) {
     return getcwd(buffer, sizeof buffer) ? str_from_cstr(buffer) : str_from_cstr("");
 }
 
-static Value os_exists(int argc, Value *argv) {
-    Value path = arg(argc, argv, 0);
-    if (!v_is_str(path)) return v_bool(false);
-    Str *str = (Str *)path.as.o;
-    FILE *handle = fopen(str->chars, "rb");
-    if (handle) { fclose(handle); return v_bool(true); }
-    return v_bool(false);
+// ------------------------------------------------------------------ file system
+//
+// `fs` is its own namespace, matching the interpreter: `os` carries no file
+// operations, so a script that works under `tern run` works here too. Every
+// failure raises a catchable IOError instead of returning a sentinel.
+
+static const char *path_arg(int argc, Value *argv, int index) {
+    Value value = arg(argc, argv, index);
+    if (!v_is_str(value)) {
+        tern_panic("TypeError", "path must be a string, got %s", tern_type_name(value));
+    }
+    return ((Str *)value.as.o)->chars;
 }
 
-static Value os_isdir(int argc, Value *argv) {
-    Value path = arg(argc, argv, 0);
-    if (!v_is_str(path)) return v_bool(false);
-    Str *str = (Str *)path.as.o;
+// Creates every missing directory above `path`, so `fs.write("a/b/c.txt")`
+// works without an explicit `fs.mkdir`, as it does in the interpreter.
+static void make_parent_dirs(const char *path) {
     char buffer[4096];
-    snprintf(buffer, sizeof buffer, "%s/.", str->chars);
-    FILE *handle = fopen(buffer, "rb");
-    if (handle) { fclose(handle); return v_bool(true); }
-    return v_bool(false);
+    size_t length = strlen(path);
+    if (length >= sizeof buffer) {
+        tern_panic("IOError", "path too long");
+    }
+    memcpy(buffer, path, length + 1);
+    // Skip a leading '/' so the root is never passed to mkdir as "".
+    for (size_t i = 1; i < length; i++) {
+        if (buffer[i] == '/') {
+            buffer[i] = '\0';
+            mkdir(buffer, 0777);
+            buffer[i] = '/';
+        }
+    }
 }
 
-static Value os_read(int argc, Value *argv) {
-    Value path = arg(argc, argv, 0);
-    if (!v_is_str(path)) return v_nil();
-    Str *str = (Str *)path.as.o;
-    FILE *handle = fopen(str->chars, "rb");
+static void remove_tree(const char *path) {
+    struct stat info;
+    if (lstat(path, &info) != 0) {
+        return;   // already gone: removing is idempotent
+    }
+    if (!S_ISDIR(info.st_mode)) {
+        unlink(path);
+        return;
+    }
+    DIR *dir = opendir(path);
+    if (!dir) {
+        tern_panic("IOError", "cannot remove '%s'", path);
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char child[4096];
+        snprintf(child, sizeof child, "%s/%s", path, entry->d_name);
+        remove_tree(child);
+    }
+    closedir(dir);
+    rmdir(path);
+}
+
+static Value fs_read(int argc, Value *argv) {
+    const char *path = path_arg(argc, argv, 0);
+    FILE *handle = fopen(path, "rb");
     if (!handle) {
-        tern_panic("IOError", "cannot read '%s'", str->chars);
+        tern_panic("IOError", "cannot read '%s'", path);
     }
     Buf buf;
     buf_init(&buf);
@@ -4057,20 +4098,109 @@ static Value os_read(int argc, Value *argv) {
     return buf_finish(&buf);
 }
 
-static Value os_write(int argc, Value *argv) {
-    Value path = arg(argc, argv, 0);
-    Value text = arg(argc, argv, 1);
-    if (!v_is_str(path)) return v_bool(false);
-    Str *name = (Str *)path.as.o;
-    Value rendered = tern_to_string(text);
+static Value fs_readbytes(int argc, Value *argv) {
+    Value text = fs_read(argc, argv);
+    Str *str = (Str *)text.as.o;
+    List *list = list_new((int)str->len);
+    for (uint32_t i = 0; i < str->len; i++) {
+        list_push(list, v_int((unsigned char)str->chars[i]));
+    }
+    return v_obj((Obj *)list);
+}
+
+static Value fs_write_file(int argc, Value *argv, const char *mode) {
+    const char *path = path_arg(argc, argv, 0);
+    Value rendered = tern_to_string(arg(argc, argv, 1));
     Str *body = (Str *)rendered.as.o;
-    FILE *handle = fopen(name->chars, "wb");
+    if (mode[0] == 'w') {
+        make_parent_dirs(path);
+    }
+    FILE *handle = fopen(path, mode);
     if (!handle) {
-        tern_panic("IOError", "cannot write '%s'", name->chars);
+        tern_panic("IOError", "cannot %s '%s'", mode[0] == 'a' ? "append to" : "write", path);
     }
     fwrite(body->chars, 1, body->len, handle);
     fclose(handle);
-    return v_bool(true);
+    return v_nil();
+}
+
+static Value fs_write(int argc, Value *argv) { return fs_write_file(argc, argv, "wb"); }
+static Value fs_append(int argc, Value *argv) { return fs_write_file(argc, argv, "ab"); }
+
+static Value fs_exists(int argc, Value *argv) {
+    struct stat info;
+    return v_bool(stat(path_arg(argc, argv, 0), &info) == 0);
+}
+
+static Value fs_isfile(int argc, Value *argv) {
+    struct stat info;
+    return v_bool(stat(path_arg(argc, argv, 0), &info) == 0 && S_ISREG(info.st_mode));
+}
+
+static Value fs_isdir(int argc, Value *argv) {
+    struct stat info;
+    return v_bool(stat(path_arg(argc, argv, 0), &info) == 0 && S_ISDIR(info.st_mode));
+}
+
+static Value fs_size(int argc, Value *argv) {
+    const char *path = path_arg(argc, argv, 0);
+    struct stat info;
+    if (stat(path, &info) != 0) {
+        tern_panic("IOError", "cannot stat '%s'", path);
+    }
+    return v_int((int64_t)info.st_size);
+}
+
+static Value fs_remove(int argc, Value *argv) {
+    remove_tree(path_arg(argc, argv, 0));
+    return v_nil();
+}
+
+static Value fs_mkdir(int argc, Value *argv) {
+    const char *path = path_arg(argc, argv, 0);
+    make_parent_dirs(path);
+    if (mkdir(path, 0777) != 0 && errno != EEXIST) {
+        tern_panic("IOError", "cannot create '%s'", path);
+    }
+    return v_nil();
+}
+
+static int compare_names(const void *left, const void *right) {
+    return strcmp(*(const char *const *)left, *(const char *const *)right);
+}
+
+static Value fs_list(int argc, Value *argv) {
+    const char *path = path_arg(argc, argv, 0);
+    DIR *dir = opendir(path);
+    if (!dir) {
+        tern_panic("IOError", "cannot list '%s'", path);
+    }
+
+    char **names = NULL;
+    int count = 0, capacity = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        if (count == capacity) {
+            capacity = capacity ? capacity * 2 : 16;
+            names = (char **)realloc(names, sizeof(char *) * (size_t)capacity);
+        }
+        names[count++] = strdup(entry->d_name);
+    }
+    closedir(dir);
+
+    if (count > 0) {
+        qsort(names, (size_t)count, sizeof(char *), compare_names);
+    }
+    List *list = list_new(count);
+    for (int i = 0; i < count; i++) {
+        list_push(list, str_from_cstr(names[i]));
+        free(names[i]);
+    }
+    free(names);
+    return v_obj((Obj *)list);
 }
 
 static Value os_env(int argc, Value *argv) {
@@ -4323,7 +4453,6 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("atan2"), make_native("atan2", m_atan2));
         map_set(map, str_from_cstr("toDegrees"), make_native("toDegrees", m_todegrees));
         map_set(map, str_from_cstr("toRadians"), make_native("toRadians", m_toradians));
-        map_set(map, str_from_cstr("toString"), make_native("toString", n_tostring_self));
         return v_obj((Obj *)map);
     }
 
@@ -4332,61 +4461,23 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("zip"), make_native("zip", ln_zip));
         map_set(map, str_from_cstr("enumerate"), make_native("enumerate", ln_enumerate));
         map_set(map, str_from_cstr("chunk"), make_native("chunk", ln_chunk));
-        map_set(map, str_from_cstr("join"), make_native("join", ln_join));
-        map_set(map, str_from_cstr("repeat"), make_native("repeat", ln_repeat));
         map_set(map, str_from_cstr("sort"), make_native("sort", ln_sort));
-        map_set(map, str_from_cstr("unique"), make_native("unique", l_unique));
-        map_set(map, str_from_cstr("flatten"), make_native("flatten", l_flatten));
-        map_set(map, str_from_cstr("take"), make_native("take", l_take));
-        map_set(map, str_from_cstr("drop"), make_native("drop", l_drop));
-        map_set(map, str_from_cstr("all"), make_native("all", l_all));
-        map_set(map, str_from_cstr("any"), make_native("any", l_any));
-        map_set(map, str_from_cstr("find"), make_native("find", l_find));
-        map_set(map, str_from_cstr("findIndex"), make_native("findIndex", l_findindex));
-        map_set(map, str_from_cstr("remove"), make_native("remove", l_remove));
-        map_set(map, str_from_cstr("removeValue"), make_native("removeValue", l_removevalue));
-        map_set(map, str_from_cstr("insert"), make_native("insert", l_insert));
-        map_set(map, str_from_cstr("concat"), make_native("concat", l_concat));
-        map_set(map, str_from_cstr("reverse"), make_native("reverse", l_reverse));
-        map_set(map, str_from_cstr("map"), make_native("map", l_map));
-        map_set(map, str_from_cstr("filter"), make_native("filter", l_filter));
-        map_set(map, str_from_cstr("each"), make_native("each", l_each));
-        map_set(map, str_from_cstr("reduce"), make_native("reduce", l_reduce));
-        map_set(map, str_from_cstr("sum"), make_native("sum", l_sum));
-        map_set(map, str_from_cstr("min"), make_native("min", l_min));
-        map_set(map, str_from_cstr("max"), make_native("max", l_max));
-        map_set(map, str_from_cstr("first"), make_native("first", l_first));
-        map_set(map, str_from_cstr("last"), make_native("last", l_last));
-        map_set(map, str_from_cstr("contains"), make_native("contains", l_contains));
-        map_set(map, str_from_cstr("indexOf"), make_native("indexOf", l_indexof));
+        map_set(map, str_from_cstr("repeat"), make_native("repeat", ln_repeat));
         return v_obj((Obj *)map);
     }
 
     if (strcmp(ns, "text") == 0) {
+        // Exactly the interpreter's `std:text` members: methods such as
+        // `trimStart` are reached through a string receiver, not through the
+        // namespace, and keeping the namespaces identical keeps a name from
+        // resolving to the wrong function in `tern_lookup_std_member`.
         map_set(map, str_from_cstr("format"), make_native("format", s_format));
         map_set(map, str_from_cstr("pad"), make_native("pad", tx_pad));
         map_set(map, str_from_cstr("trim"), make_native("trim", s_trim));
-        map_set(map, str_from_cstr("trimStart"), make_native("trimStart", s_trimstart));
-        map_set(map, str_from_cstr("trimEnd"), make_native("trimEnd", s_trimend));
         map_set(map, str_from_cstr("join"), make_native("join", ln_join));
-        map_set(map, str_from_cstr("repeat"), make_native("repeat", ln_repeat));
         map_set(map, str_from_cstr("upper"), make_native("upper", s_upper));
         map_set(map, str_from_cstr("lower"), make_native("lower", s_lower));
         map_set(map, str_from_cstr("split"), make_native("split", s_split));
-        map_set(map, str_from_cstr("words"), make_native("words", s_split));
-        map_set(map, str_from_cstr("lines"), make_native("lines", s_lines));
-        map_set(map, str_from_cstr("repeat"), make_native("repeat", s_repeat));
-        map_set(map, str_from_cstr("contains"), make_native("contains", s_contains));
-        map_set(map, str_from_cstr("startsWith"), make_native("startsWith", s_starts));
-        map_set(map, str_from_cstr("endsWith"), make_native("endsWith", s_ends));
-        map_set(map, str_from_cstr("indexOf"), make_native("indexOf", s_indexof));
-        map_set(map, str_from_cstr("slice"), make_native("slice", s_slice));
-        map_set(map, str_from_cstr("replace"), make_native("replace", s_replace));
-        map_set(map, str_from_cstr("reversed"), make_native("reversed", s_reversed));
-        map_set(map, str_from_cstr("toInt"), make_native("toInt", s_toint));
-        map_set(map, str_from_cstr("toFloat"), make_native("toFloat", s_tofloat));
-        map_set(map, str_from_cstr("isEmpty"), make_native("isEmpty", s_isempty));
-        map_set(map, str_from_cstr("chars"), make_native("chars", s_chars));
         return v_obj((Obj *)map);
     }
 
@@ -4405,11 +4496,21 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("env"), make_native("env", os_env));
         map_set(map, str_from_cstr("setEnv"), make_native("setEnv", os_setenv));
         map_set(map, str_from_cstr("joinPath"), make_native("joinPath", os_joinpath));
-        map_set(map, str_from_cstr("exists"), make_native("exists", os_exists));
-        map_set(map, str_from_cstr("isFile"), make_native("isFile", os_exists));
-        map_set(map, str_from_cstr("isDir"), make_native("isDir", os_isdir));
-        map_set(map, str_from_cstr("read"), make_native("read", os_read));
-        map_set(map, str_from_cstr("write"), make_native("write", os_write));
+        return v_obj((Obj *)map);
+    }
+
+    if (strcmp(ns, "fs") == 0) {
+        map_set(map, str_from_cstr("read"), make_native("read", fs_read));
+        map_set(map, str_from_cstr("readBytes"), make_native("readBytes", fs_readbytes));
+        map_set(map, str_from_cstr("write"), make_native("write", fs_write));
+        map_set(map, str_from_cstr("append"), make_native("append", fs_append));
+        map_set(map, str_from_cstr("exists"), make_native("exists", fs_exists));
+        map_set(map, str_from_cstr("size"), make_native("size", fs_size));
+        map_set(map, str_from_cstr("remove"), make_native("remove", fs_remove));
+        map_set(map, str_from_cstr("list"), make_native("list", fs_list));
+        map_set(map, str_from_cstr("mkdir"), make_native("mkdir", fs_mkdir));
+        map_set(map, str_from_cstr("isFile"), make_native("isFile", fs_isfile));
+        map_set(map, str_from_cstr("isDir"), make_native("isDir", fs_isdir));
         return v_obj((Obj *)map);
     }
 
@@ -4437,7 +4538,7 @@ static Value namespace_map(const char *ns) {
 /// Looks a function up in the well known namespaces (math, text, json, ...).
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
-    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists", NULL};
+    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists", "fs", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -4463,7 +4564,7 @@ Value tern_lookup_global(const char *name) {
     }
 
     if (strcmp(name, "fs") == 0) {
-        return namespace_map("os");
+        return namespace_map("fs");
     }
 
     return v_nil();

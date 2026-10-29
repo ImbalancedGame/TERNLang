@@ -1,0 +1,70 @@
+// The `fs` namespace: text and byte reads, writes that create their parents,
+// directory listing, removal, and catchable IOError for everything missing.
+import "std:fs";
+
+let dir = ".fs_probe";
+
+fn readError(path) {
+    try {
+        fs.read(path);
+        return "read: no error";
+    } catch (e) {
+        return "read: error";
+    }
+}
+
+fn sizeError(path) {
+    try {
+        fs.size(path);
+        return "size: no error";
+    } catch (e) {
+        return "size: error";
+    }
+}
+
+fn listError(path) {
+    try {
+        fs.list(path);
+        return "list: no error";
+    } catch (e) {
+        return "list: error";
+    }
+}
+
+// Left over from an interrupted run?
+if (fs.exists(dir)) {
+    fs.remove(dir);
+}
+
+println(fs.exists(dir), fs.isFile(dir), fs.isDir(dir));
+
+fs.write(dir + "/a.txt", "hello");
+fs.append(dir + "/a.txt", " world");
+println(fs.read(dir + "/a.txt"));
+println(fs.size(dir + "/a.txt"));
+println(fs.readBytes(dir + "/a.txt")[0..4]);
+
+fs.mkdir(dir + "/deep/er");
+fs.write(dir + "/deep/er/b.txt", "x");
+println(fs.list(dir));
+println(fs.list(dir + "/deep/er"));
+println(fs.isFile(dir + "/a.txt"), fs.isDir(dir), fs.isDir(dir + "/deep/er"));
+println(fs.exists(dir + "/deep/er/b.txt"));
+
+println(readError(dir + "/missing.txt"));
+println(sizeError(dir + "/missing.txt"));
+println(listError(dir + "/missing"));
+
+// `import "std:fs"` also flattens the common names into scope.
+println(exists(dir + "/a.txt"), read(dir + "/a.txt"));
+println(list(dir + "/deep/er"));
+mkdir(dir + "/flat");
+append(dir + "/flat/c.txt", "flat");
+println(read(dir + "/flat/c.txt"));
+remove(dir + "/flat/c.txt");
+println(exists(dir + "/flat/c.txt"));
+
+fs.remove(dir + "/a.txt");
+println(fs.exists(dir + "/a.txt"));
+fs.remove(dir);
+println("clean:", fs.exists(dir));

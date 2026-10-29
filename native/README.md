@@ -78,8 +78,11 @@ Other notable points:
   threshold; a tiny value (e.g. `512`) collects constantly and is how the
   collector is stress-tested.
 * **Standard library** — the whole standard library lives in the runtime: the
-  globals, `math`/`time`/`json`/`os`/`random`/`text`/`lists`, the string, list,
-  map, range and number methods, and map insertion order. `tests/17_stdlib`
+  globals, `math`/`time`/`json`/`os`/`random`/`text`/`lists`/`fs`, the string,
+  list, map, range and number methods, and map insertion order. `fs` is backed
+  by `stat`/`opendir` and raises the interpreter's catchable `IOError` for
+  anything missing; its namespaces hold exactly the members `std:*` modules
+  expose, so a name cannot resolve to the wrong function. `tests/17_stdlib`
   exercises every namespace, method and conversion and its output must match
   the interpreter byte for byte, so a builtin that exists on one side and not
   the other shows up as a failing test rather than a surprise at run time.
@@ -166,6 +169,11 @@ the whole single-translation-unit program.
   Greek, Cyrillic, CJK — behaves identically.
 * Compiler diagnostics (the `12_lint` warnings) are not emitted by binaries;
   use `./tools/tern check` for that.
+* There is no sandbox: `--no-fs` and `engine.AllowFileSystem` belong to the
+  interpreter, because a compiled binary has no engine to configure. Restrict a
+  binary with the operating system (user, container, `chroot`) instead.
+* `fs` errors name the path as the script wrote it, while the interpreter
+  reports the resolved absolute path.
 * Stack traces cost about two cycles per call: `fib(30)`, which makes 2.7 M
   calls, runs ~8% slower than it would without them (19.5 ms instead of 18 ms).
   Build with `--no-traces` to skip the bookkeeping; errors then print a single

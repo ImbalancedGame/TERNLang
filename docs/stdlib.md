@@ -45,10 +45,10 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `isDir` | `isDir(arg)` | True for a directory. |
 | `isFile` | `isFile(arg)` | True for a regular file. |
 | `list` | `list(arg)` | Directory entries as a list. |
-| `mkdir` | `mkdir(arg)` | Creates a directory. |
+| `mkdir` | `mkdir(arg)` | Creates a directory and its parents. |
 | `read` | `read(arg)` | Reads a whole file as text. |
 | `readBytes` | `readBytes(arg)` | Reads a file as a list of byte values. |
-| `remove` | `remove(arg)` | Deletes a file. |
+| `remove` | `remove(arg)` | Deletes a file or a directory tree. |
 | `size` | `size(arg)` | Size of a file in bytes. |
 | `write` | `write(arg, arg)` | Writes text, replacing the file. |
 

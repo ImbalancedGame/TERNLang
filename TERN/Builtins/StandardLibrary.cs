@@ -444,12 +444,12 @@ namespace TERN.Builtins
             Add(map, "read", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
-                return Value.Str(File.ReadAllText(path));
+                return Value.Str(Io(vm, "read", path, () => File.ReadAllText(path)));
             }, "Reads a whole file as text.");
             Add(map, "readBytes", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
-                var bytes = File.ReadAllBytes(path);
+                var bytes = Io(vm, "read", path, () => File.ReadAllBytes(path));
                 var list = new TernList(bytes.Length);
                 foreach (var b in bytes)
                 {
@@ -461,37 +461,59 @@ namespace TERN.Builtins
             Add(map, "write", 2, 2, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
-                EnsureDirectory(path);
-                File.WriteAllText(path, a[1].ToDisplayString());
+                var text = a[1].ToDisplayString();
+                Io(vm, "write", path, () =>
+                {
+                    EnsureDirectory(path);
+                    File.WriteAllText(path, text);
+                    return true;
+                });
                 return Value.Nil;
             }, "Writes text, replacing the file.");
             Add(map, "append", 2, 2, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
-                EnsureDirectory(path);
-                File.AppendAllText(path, a[1].ToDisplayString());
+                var text = a[1].ToDisplayString();
+                Io(vm, "write", path, () =>
+                {
+                    EnsureDirectory(path);
+                    File.AppendAllText(path, text);
+                    return true;
+                });
                 return Value.Nil;
             }, "Appends text to a file.");
-            Add(map, "exists", 1, 1, (vm, a) => Value.Bool(File.Exists(RequirePath(vm, a[0])) || Directory.Exists(RequirePath(vm, a[0]))), "True when the path exists.");
-            Add(map, "size", 1, 1, (vm, a) => new Value(new FileInfo(RequirePath(vm, a[0])).Length), "Size of a file in bytes.");
+            Add(map, "exists", 1, 1, (vm, a) =>
+            {
+                var path = RequirePath(vm, a[0]);
+                return Value.Bool(File.Exists(path) || Directory.Exists(path));
+            }, "True when the path exists.");
+            Add(map, "size", 1, 1, (vm, a) =>
+            {
+                var path = RequirePath(vm, a[0]);
+                return new Value(Io(vm, "stat", path, () => new FileInfo(path).Length));
+            }, "Size of a file in bytes.");
             Add(map, "remove", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
-                if (File.Exists(path))
+                Io(vm, "remove", path, () =>
                 {
-                    File.Delete(path);
-                }
-                else if (Directory.Exists(path))
-                {
-                    Directory.Delete(path, true);
-                }
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                    else if (Directory.Exists(path))
+                    {
+                        Directory.Delete(path, true);
+                    }
 
+                    return true;
+                });
                 return Value.Nil;
-            }, "Deletes a file.");
+            }, "Deletes a file or a directory tree.");
             Add(map, "list", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
-                var entries = Directory.GetFileSystemEntries(path);
+                var entries = Io(vm, "list", path, () => Directory.GetFileSystemEntries(path));
                 Array.Sort(entries, StringComparer.Ordinal);
                 var list = new TernList(entries.Length);
                 foreach (var entry in entries)
@@ -503,9 +525,14 @@ namespace TERN.Builtins
             }, "Directory entries as a list.");
             Add(map, "mkdir", 1, 1, (vm, a) =>
             {
-                Directory.CreateDirectory(RequirePath(vm, a[0]));
+                var path = RequirePath(vm, a[0]);
+                Io(vm, "create", path, () =>
+                {
+                    Directory.CreateDirectory(path);
+                    return true;
+                });
                 return Value.Nil;
-            }, "Creates a directory.");
+            }, "Creates a directory and its parents.");
             Add(map, "isFile", 1, 1, (vm, a) => Value.Bool(File.Exists(RequirePath(vm, a[0]))), "True for a regular file.");
             Add(map, "isDir", 1, 1, (vm, a) => Value.Bool(Directory.Exists(RequirePath(vm, a[0]))), "True for a directory.");
 
@@ -516,6 +543,25 @@ namespace TERN.Builtins
                 Members = map,
                 FlatNames = new[] { "read", "write", "append", "exists", "remove", "list", "mkdir" },
             });
+        }
+
+        /// <summary>
+        /// Runs a file system operation, turning the platform's exception into a
+        /// catchable <c>IOError</c>: a script should be able to say
+        /// <c>try { fs.read(p) } catch (e) { }</c> like it can with any other
+        /// failure, and a missing file must not abort the host process.
+        /// </summary>
+        private static T Io<T>(VM vm, string action, string path, Func<T> operation)
+        {
+            try
+            {
+                return operation();
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException
+                                              or NotSupportedException or ArgumentException)
+            {
+                throw vm.Error("IOError", $"cannot {action} '{path}': {error.Message}");
+            }
         }
 
         private static string RequirePath(VM vm, in Value value)
