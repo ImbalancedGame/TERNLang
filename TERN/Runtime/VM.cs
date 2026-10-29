@@ -226,11 +226,11 @@ namespace TERN.Runtime
                             break;
                         }
 
-                        case Op.LoadGlobal:
+                        case Op.LoadGlobal when module is not null:
                             Push(module.Globals[instruction.A]);
                             break;
 
-                        case Op.StoreGlobal:
+                        case Op.StoreGlobal when module is not null:
                             module.Globals[instruction.A] = _stack[--_sp];
                             break;
 
@@ -684,7 +684,7 @@ namespace TERN.Runtime
                             goto nextFrame;
                         }
 
-                        case Op.CallGlobal:
+                        case Op.CallGlobal when module is not null:
                         {
                             var argc = instruction.A;
                             var callee = module.Globals[instruction.B];

@@ -125,7 +125,6 @@ namespace TERN.Compiler
             private int _requiredParams;
             private bool _hasRest;
             private bool _hasThis;
-            private bool _returned;
 
             public FunctionCompiler(ModuleCompiler owner, FunctionCompiler? parent, string name, ModuleScope scope,
                 string? sourceName, string? path, bool isMethod, bool isTopLevel)
@@ -564,7 +563,7 @@ namespace TERN.Compiler
                     if (closure.Proto.Upvalues.Length > 0)
                     {
                         Module.Error("TRN0221",
-                            $"method '{method.Name}' cannot capture outer variables; pass them as fields", method.Body ?? (Node?)declaration);
+                            $"method '{method.Name}' cannot capture outer variables; pass them as fields", (Node?)method.Body ?? declaration);
                     }
                 }
 
@@ -1054,7 +1053,11 @@ namespace TERN.Compiler
                         innerTry = Emit(Op.EnterTry, 0, 0, 0, pop: 0, push: 0);
                     }
 
-                    CompileStatement(statement.Catch);
+                    if (statement.Catch is not null)
+                    {
+                        CompileStatement(statement.Catch);
+                    }
+
                     PopScope();
 
                     if (hasFinally)
