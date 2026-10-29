@@ -858,15 +858,24 @@ namespace TERN.Builtins
             {
                 var callback = a[1];
                 var arguments = new Value[2];
-                Array.Sort(items, (left, right) =>
+                try
                 {
-                    arguments[0] = left;
-                    arguments[1] = right;
-                    var result = vm.CallValue(callback, arguments.AsSpan(0, 2));
-                    return result.Kind == ValueKind.Int
-                        ? (int)Math.Sign(result.AsInt())
-                        : (int)Math.Sign(result.AsDouble());
-                });
+                    Array.Sort(items, (left, right) =>
+                    {
+                        arguments[0] = left;
+                        arguments[1] = right;
+                        var result = vm.CallValue(callback, arguments.AsSpan(0, 2));
+                        return result.Kind == ValueKind.Int
+                            ? (int)Math.Sign(result.AsInt())
+                            : (int)Math.Sign(result.AsDouble());
+                    });
+                }
+                catch (InvalidOperationException error) when (error.InnerException is TernError thrown)
+                {
+                    // Array.Sort wraps a throwing comparator; surface the script's
+                    // own error (with its trace) instead of the .NET wrapper.
+                    throw thrown;
+                }
             }
             else
             {

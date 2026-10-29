@@ -118,6 +118,18 @@ fn localsSurvive() {
 }
 println(localsSurvive());
 
+// Wrong argument counts for methods and namespace members, which are checked
+// with the receiver counted as the first argument.
+show("push-0", fn() { let l = [1]; l.push(); return l; });
+show("repeat-3", fn() { return "ab".repeat(1, 2); });
+show("upper-2", fn() { return "ab".upper(1); });
+show("slice-3", fn() { return "abc".slice(0, 1, 2); });
+show("get-0", fn() { return {"a": 1}.get(); });
+show("sort-bad-fn", fn() { return [2, 1].sort(1); });
+show("max-0", fn() { return max(); });
+show("str-0", fn() { return str(); });
+show("type-2", fn() { return type(1, 2); });
+
 // try/catch inside a loop, and a catch that runs every iteration.
 fn loopCatch() {
     let caught = 0;

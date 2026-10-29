@@ -83,5 +83,14 @@ println(kind(fn() { ~"x"; }));
 println(kind(fn() { [1]["k"]; }));
 println(kind(fn() { keys([1]); }));
 
+// Methods count the receiver as argument 1, so the numbers differ from globals.
+println(kind(fn() { let l = [1]; l.push(); }));
+println(kind(fn() { "ab".repeat(1, 2); }));
+println(kind(fn() { "ab".upper(1); }));
+println(kind(fn() { "abc".slice(0, 1, 2); }));
+println(kind(fn() { let m = {"a": 1}; m.get(); }));
+println(kind(fn() { [2, 1].sort(1); }));
+println(kind(fn() { max(); }));
+
 // The script ends with an uncaught error so the trace report is part of the golden.
 error("custom failure");

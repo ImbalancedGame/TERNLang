@@ -10,6 +10,20 @@
 #include <time.h>
 #include <unistd.h>
 
+// A builtin method table entry. The argument counts include the receiver,
+// mirroring how the interpreter registers its methods.
+typedef struct MethodSlot {
+    const char *name;
+    NativeFn fn;
+    int16_t min_args;   // counts the receiver, like the interpreter's tables
+    int16_t max_args;
+} MethodSlot;
+
+// Defined with the globals table; used by tern_invoke below.
+static void check_method_arity(const char *name, const MethodSlot *slot, int argc_with_receiver);
+static const MethodSlot *builtin_slot(Value receiver, const char *name);
+static Value make_native_arity(const char *name, NativeFn fn, int min_args, int max_args);
+
 // ------------------------------------------------------------------ errors
 
 // Recursion is bounded by the C stack rather than by a bytecode budget. The
@@ -1683,11 +1697,13 @@ Value tern_get_member(Value target, const char *name) {
     }
 
     // A method read as a value (`let f = xs.push;`) becomes a bound method.
-    NativeFn method = tern_builtin_method(target, name);
+    // Its Native carries the receiver-inclusive contract, which is what
+    // tern_call sees once the receiver is prepended.
+    const MethodSlot *method = builtin_slot(target, name);
     if (method) {
-        Native *native = (Native *)tern_alloc(sizeof(Native), O_NATIVE);
-        native->name = name;
-        native->fn = method;
+        Value callee = make_native_arity(name, method->fn, method->min_args, method->max_args);
+        Native *native = (Native *)callee.as.o;
+        (void)native;
         Bound *bound = (Bound *)tern_alloc(sizeof(Bound), O_BOUND);
         bound->receiver = target;
         bound->callee = v_obj((Obj *)native);
@@ -3206,10 +3222,6 @@ static Value m_entries(int argc, Value *argv) {
 
 // --- dispatch --------------------------------------------------------------
 
-typedef struct MethodSlot {
-    const char *name;
-    NativeFn fn;
-} MethodSlot;
 
 
 // --- number methods --------------------------------------------------------
@@ -4411,63 +4423,63 @@ static Value os_args(int argc, Value *argv) {
 // listed here raises MemberError on both back ends, so a script cannot start
 // working only because it was compiled.
 static const MethodSlot int_methods[] = {
-    {"abs", n_abs_self}, {"clamp", n_clamp_self}, {"times", n_times_self},
-    {"toFloat", n_tofloat_self}, {"toString", n_tostring_self}, {NULL, NULL},
+    {"abs", n_abs_self, 1, 1}, {"clamp", n_clamp_self, 3, 3}, {"times", n_times_self, 2, 2},
+    {"toFloat", n_tofloat_self, 1, 1}, {"toString", n_tostring_self, 1, 1}, {NULL, NULL},
 };
 
 static const MethodSlot float_methods[] = {
-    {"abs", n_abs_self}, {"clamp", n_clamp_self}, {"round", n_round_self},
-    {"toInt", n_toint_self}, {"toString", n_tostring_self}, {NULL, NULL},
+    {"abs", n_abs_self, 1, 1}, {"clamp", n_clamp_self, 3, 3}, {"round", n_round_self, 1, 2},
+    {"toInt", n_toint_self, 1, 1}, {"toString", n_tostring_self, 1, 1}, {NULL, NULL},
 };
 
 static const MethodSlot range_methods[] = {
-    {"toList", r_tolist}, {"contains", r_contains}, {"length", r_length},
-    {"toString", r_tostring}, {"map", r_map}, {"each", r_each}, {NULL, NULL},
+    {"toList", r_tolist, 1, 1}, {"contains", r_contains, 2, 2}, {"length", r_length, 1, 1},
+    {"toString", r_tostring, 1, 1}, {"map", r_map, 2, 2}, {"each", r_each, 2, 2}, {NULL, NULL},
 };
 
 static const MethodSlot map_methods[] = {
-    {"keys", m_keys}, {"values", m_values}, {"has", m_has}, {"get", m_get},
-    {"set", m_set}, {"remove", m_remove}, {"isEmpty", m_isempty}, {"clear", m_clear},
-    {"clone", m_clone}, {"entries", m_entries}, {"contains", m_has},
-    {"merge", m_merge}, {"toString", m_tostring_self}, {NULL, NULL},
+    {"keys", m_keys, 1, 1}, {"values", m_values, 1, 1}, {"has", m_has, 2, 2}, {"get", m_get, 2, 3},
+    {"set", m_set, 3, 3}, {"remove", m_remove, 2, 2}, {"isEmpty", m_isempty, 1, 1}, {"clear", m_clear, 1, 1},
+    {"clone", m_clone, 1, 1}, {"entries", m_entries, 1, 1}, {"contains", m_has, 2, 2},
+    {"merge", m_merge, 2, 2}, {"toString", m_tostring_self, 1, 1}, {NULL, NULL},
 };
 static const MethodSlot string_methods[] = {
-    {"upper", s_upper}, {"lower", s_lower}, {"trim", s_trim}, {"trimStart", s_trimstart},
-    {"trimEnd", s_trimend}, {"contains", s_contains}, {"startsWith", s_starts},
-    {"endsWith", s_ends}, {"indexOf", s_indexof}, {"lastIndexOf", s_lastindexof},
-    {"count", s_count},
-    {"substring", s_substring}, {"slice", s_slice}, {"split", s_split},
-    {"replace", s_replace}, {"replaceFirst", s_replacefirst}, {"repeat", s_repeat},
-    {"chars", s_chars}, {"lines", s_lines}, {"words", s_split},
-    {"isEmpty", s_isempty}, {"toInt", s_toint}, {"toFloat", s_tofloat},
-    {"toString", s_tostring}, {"padStart", s_padstart}, {"padEnd", s_padend},
-    {"reversed", s_reversed}, {"format", s_format}, {NULL, NULL},
+    {"upper", s_upper, 1, 1}, {"lower", s_lower, 1, 1}, {"trim", s_trim, 1, 1}, {"trimStart", s_trimstart, 1, 1},
+    {"trimEnd", s_trimend, 1, 1}, {"contains", s_contains, 2, 2}, {"startsWith", s_starts, 2, 2},
+    {"endsWith", s_ends, 2, 2}, {"indexOf", s_indexof, 2, 2}, {"lastIndexOf", s_lastindexof, 2, 2},
+    {"count", s_count, 2, 2},
+    {"substring", s_substring, 2, 3}, {"slice", s_slice, 1, 3}, {"split", s_split, 1, 2},
+    {"replace", s_replace, 3, 3}, {"replaceFirst", s_replacefirst, 3, 3}, {"repeat", s_repeat, 2, 2},
+    {"chars", s_chars, 1, 1}, {"lines", s_lines, 1, 1}, {"words", s_split, 1, 1},
+    {"isEmpty", s_isempty, 1, 1}, {"toInt", s_toint, 1, 2}, {"toFloat", s_tofloat, 1, 2},
+    {"toString", s_tostring, 1, 1}, {"padStart", s_padstart, 2, 3}, {"padEnd", s_padend, 2, 3},
+    {"reversed", s_reversed, 1, 1}, {"format", s_format, 1, -1}, {NULL, NULL},
 };
 
 static const MethodSlot list_methods[] = {
-    {"push", l_push}, {"pop", l_pop}, {"shift", l_shift}, {"unshift", l_unshift},
-    {"join", l_join}, {"contains", l_contains}, {"indexOf", l_indexof},
-    {"slice", l_slice}, {"reverse", l_reverse}, {"sort", l_sort},
-    {"first", l_first}, {"last", l_last}, {"isEmpty", l_isempty}, {"sum", l_sum},
-    {"min", l_min}, {"max", l_max}, {"clear", l_clear}, {"clone", l_clone},
-    {"concat", l_concat}, {"insert", l_insert}, {"remove", l_remove},
-    {"map", l_map}, {"filter", l_filter}, {"each", l_each}, {"reduce", l_reduce},
-    {"toString", l_tostring}, {"flatten", l_flatten}, {"unique", l_unique},
-    {"take", l_take}, {"drop", l_drop}, {"all", l_all}, {"any", l_any},
-    {"find", l_find}, {"findIndex", l_findindex}, {"removeValue", l_removevalue},
+    {"push", l_push, 2, -1}, {"pop", l_pop, 1, 1}, {"shift", l_shift, 1, 1}, {"unshift", l_unshift, 2, -1},
+    {"join", l_join, 1, 2}, {"contains", l_contains, 2, 2}, {"indexOf", l_indexof, 2, 2},
+    {"slice", l_slice, 1, 3}, {"reverse", l_reverse, 1, 1}, {"sort", l_sort, 1, 2},
+    {"first", l_first, 1, 1}, {"last", l_last, 1, 1}, {"isEmpty", l_isempty, 1, 1}, {"sum", l_sum, 1, 1},
+    {"min", l_min, 1, 1}, {"max", l_max, 1, 1}, {"clear", l_clear, 1, 1}, {"clone", l_clone, 1, 1},
+    {"concat", l_concat, 2, 2}, {"insert", l_insert, 3, 3}, {"remove", l_remove, 2, 2},
+    {"map", l_map, 2, 2}, {"filter", l_filter, 2, 2}, {"each", l_each, 2, 2}, {"reduce", l_reduce, 2, 3},
+    {"toString", l_tostring, 1, 1}, {"flatten", l_flatten, 1, 2}, {"unique", l_unique, 1, 1},
+    {"take", l_take, 2, 2}, {"drop", l_drop, 2, 2}, {"all", l_all, 2, 2}, {"any", l_any, 2, 2},
+    {"find", l_find, 2, 2}, {"findIndex", l_findindex, 2, 2}, {"removeValue", l_removevalue, 2, 2},
     {NULL, NULL},
 };
 
-static NativeFn lookup_method(const MethodSlot *slots, const char *name) {
+static const MethodSlot *lookup_method(const MethodSlot *slots, const char *name) {
     for (int i = 0; slots[i].name; i++) {
         if (strcmp(slots[i].name, name) == 0) {
-            return slots[i].fn;
+            return &slots[i];
         }
     }
     return NULL;
 }
 
-NativeFn tern_builtin_method(Value receiver, const char *name) {
+static const MethodSlot *builtin_slot(Value receiver, const char *name) {
     if (v_is_str(receiver)) {
         return lookup_method(string_methods, name);
     }
@@ -4487,6 +4499,11 @@ NativeFn tern_builtin_method(Value receiver, const char *name) {
         return lookup_method(float_methods, name);
     }
     return NULL;
+}
+
+NativeFn tern_builtin_method(Value receiver, const char *name) {
+    const MethodSlot *slot = builtin_slot(receiver, name);
+    return slot ? slot->fn : NULL;
 }
 
 Value tern_invoke(Value receiver, const char *name, int argc, Value *argv) {
@@ -4529,14 +4546,15 @@ Value tern_invoke(Value receiver, const char *name, int argc, Value *argv) {
         }
     }
 
-    NativeFn fn = tern_builtin_method(receiver, name);
-    if (fn) {
+    const MethodSlot *slot = builtin_slot(receiver, name);
+    if (slot) {
+        check_method_arity(name, slot, argc + 1);
         Value stack_args[argc + 1];
         stack_args[0] = receiver;
         for (int i = 0; i < argc; i++) {
             stack_args[i + 1] = argv[i];
         }
-        return fn(argc + 1, stack_args);
+        return slot->fn(argc + 1, stack_args);
     }
 
     tern_panic("TypeError", "%s has no method '%s'", tern_type_name(receiver), name);
@@ -4580,6 +4598,23 @@ static Value make_native_arity(const char *name, NativeFn fn, int min_args, int 
 // Unchecked by default: only the globals table states its contract so far.
 static Value make_native(const char *name, NativeFn fn) {
     return make_native_arity(name, fn, -1, -1);
+}
+
+// Method argument counts are stored with the receiver included, but the
+// message reports them without it, exactly like the interpreter.
+static void check_method_arity(const char *name, const MethodSlot *slot, int argc_with_receiver) {
+    if (argc_with_receiver >= slot->min_args &&
+        (slot->max_args < 0 || argc_with_receiver <= slot->max_args)) {
+        return;
+    }
+    char expected[32];
+    if (slot->max_args < 0) {
+        snprintf(expected, sizeof expected, "at least %d", slot->min_args - 1);
+    } else {
+        snprintf(expected, sizeof expected, "%d to %d", slot->min_args - 1, slot->max_args - 1);
+    }
+    tern_panic("ArgumentError", "%s() expects %s argument(s) but got %d",
+               name, expected, argc_with_receiver - 1);
 }
 
 static void check_arity(const Native *native, int argc) {
