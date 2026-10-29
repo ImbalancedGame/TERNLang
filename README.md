@@ -68,6 +68,7 @@ match tickets.length {
 ./tools/tern check examples/triage.tern   # compile only, report diagnostics
 ./tools/tern disasm examples/triage.tern  # dump bytecode
 ./tools/tern repl                         # interactive
+./tools/tern docs                         # standard library reference (markdown)
 ./tools/tern version
 ```
 
@@ -82,7 +83,9 @@ file system sandboxed.
 
 ## Language tour
 
-Full reference: [`docs/language.md`](docs/language.md).
+Full reference: [`docs/language.md`](docs/language.md) for the language and
+[`docs/stdlib.md`](docs/stdlib.md) for every builtin, generated from the code
+with `tern docs`.
 
 ### Values
 
@@ -206,11 +209,13 @@ TERN/               the language: lexer, parser, compiler, bytecode, VM, builtin
   TernEngine.cs     embeddable engine: modules, compilation, sandboxing
   Diagnostics.cs    diagnostics and TernError
 TernRunner/         the `tern` CLI (run / check / repl / disasm / version)
-tools/              build.py, tern launcher, test.sh, bench.sh, setup-toolchain.sh
+tools/              build.py, tern launcher, test.sh, bench.sh, gen-docs.sh,
+                    setup-toolchain.sh
 tests/              golden-output test suite (NN_name.tern + NN_name.out)
 examples/           runnable sample scripts
 bench/              micro benchmarks
 docs/language.md    the language reference
+docs/stdlib.md      generated builtin reference (`tools/gen-docs.sh`)
 ```
 
 ## Embedding
@@ -255,11 +260,13 @@ turn runaway scripts into catchable errors instead of host OOM crashes.
 ./tools/test.sh           # run the golden test suite
 ./tools/test.sh --update  # re-freeze expected outputs after intentional changes
 ./tools/bench.sh          # run the benchmarks
+./tools/gen-docs.sh       # regenerate docs/stdlib.md from the engine
 ```
 
 The suite is plain TERN: each `tests/NN_name.tern` is run and compared against
 `tests/NN_name.out`, so adding a test means adding one file and freezing its
-output.
+output. `tools/test.sh` also fails when `docs/stdlib.md` drifts from the
+registered standard library.
 
 ## Migrating from TERN 1.x
 

@@ -302,31 +302,31 @@ namespace TERN.Builtins
 
             Add(map, "abs", 1, 1, (vm, a) => a[0].Kind == ValueKind.Int
                 ? new Value(Math.Abs(a[0].AsInt()))
-                : new Value(Math.Abs(a[0].AsDouble())));
-            Add(map, "ceil", 1, 1, (vm, a) => new Value(Math.Ceiling(a[0].AsDouble())));
-            Add(map, "floor", 1, 1, (vm, a) => new Value(Math.Floor(a[0].AsDouble())));
+                : new Value(Math.Abs(a[0].AsDouble())), "Absolute value.");
+            Add(map, "ceil", 1, 1, (vm, a) => new Value(Math.Ceiling(a[0].AsDouble())), "Rounds up.");
+            Add(map, "floor", 1, 1, (vm, a) => new Value(Math.Floor(a[0].AsDouble())), "Rounds down.");
             Add(map, "round", 1, 2, (vm, a) => a.Length > 1
                 ? new Value(Math.Round(a[0].AsDouble(), (int)BuiltinMethods.RequireInt(a[1], "round", 1), MidpointRounding.AwayFromZero))
-                : new Value(Math.Round(a[0].AsDouble(), MidpointRounding.AwayFromZero)));
-            Add(map, "trunc", 1, 1, (vm, a) => new Value(Math.Truncate(a[0].AsDouble())));
-            Add(map, "sqrt", 1, 1, (vm, a) => new Value(Math.Sqrt(a[0].AsDouble())));
-            Add(map, "cbrt", 1, 1, (vm, a) => new Value(Math.Cbrt(a[0].AsDouble())));
-            Add(map, "pow", 2, 2, (vm, a) => new Value(Math.Pow(a[0].AsDouble(), a[1].AsDouble())));
-            Add(map, "exp", 1, 1, (vm, a) => new Value(Math.Exp(a[0].AsDouble())));
+                : new Value(Math.Round(a[0].AsDouble(), MidpointRounding.AwayFromZero)), "Rounds to nearest, optional digits.");
+            Add(map, "trunc", 1, 1, (vm, a) => new Value(Math.Truncate(a[0].AsDouble())), "Drops the fractional part.");
+            Add(map, "sqrt", 1, 1, (vm, a) => new Value(Math.Sqrt(a[0].AsDouble())), "Square root.");
+            Add(map, "cbrt", 1, 1, (vm, a) => new Value(Math.Cbrt(a[0].AsDouble())), "Cube root.");
+            Add(map, "pow", 2, 2, (vm, a) => new Value(Math.Pow(a[0].AsDouble(), a[1].AsDouble())), "base ** exponent.");
+            Add(map, "exp", 1, 1, (vm, a) => new Value(Math.Exp(a[0].AsDouble())), "e raised to the power x.");
             Add(map, "log", 1, 2, (vm, a) => a.Length > 1
                 ? new Value(Math.Log(a[0].AsDouble(), a[1].AsDouble()))
-                : new Value(Math.Log(a[0].AsDouble())));
-            Add(map, "log2", 1, 1, (vm, a) => new Value(Math.Log2(a[0].AsDouble())));
-            Add(map, "log10", 1, 1, (vm, a) => new Value(Math.Log10(a[0].AsDouble())));
-            Add(map, "sin", 1, 1, (vm, a) => new Value(Math.Sin(a[0].AsDouble())));
-            Add(map, "cos", 1, 1, (vm, a) => new Value(Math.Cos(a[0].AsDouble())));
-            Add(map, "tan", 1, 1, (vm, a) => new Value(Math.Tan(a[0].AsDouble())));
-            Add(map, "asin", 1, 1, (vm, a) => new Value(Math.Asin(a[0].AsDouble())));
-            Add(map, "acos", 1, 1, (vm, a) => new Value(Math.Acos(a[0].AsDouble())));
-            Add(map, "atan", 1, 1, (vm, a) => new Value(Math.Atan(a[0].AsDouble())));
-            Add(map, "atan2", 2, 2, (vm, a) => new Value(Math.Atan2(a[0].AsDouble(), a[1].AsDouble())));
-            Add(map, "min", 1, -1, (vm, a) => Extreme(vm, a, smallest: true));
-            Add(map, "max", 1, -1, (vm, a) => Extreme(vm, a, smallest: false));
+                : new Value(Math.Log(a[0].AsDouble())), "Natural logarithm (optional base).");
+            Add(map, "log2", 1, 1, (vm, a) => new Value(Math.Log2(a[0].AsDouble())), "Base 2 logarithm.");
+            Add(map, "log10", 1, 1, (vm, a) => new Value(Math.Log10(a[0].AsDouble())), "Base 10 logarithm.");
+            Add(map, "sin", 1, 1, (vm, a) => new Value(Math.Sin(a[0].AsDouble())), "Sine of an angle in radians.");
+            Add(map, "cos", 1, 1, (vm, a) => new Value(Math.Cos(a[0].AsDouble())), "Cosine of an angle in radians.");
+            Add(map, "tan", 1, 1, (vm, a) => new Value(Math.Tan(a[0].AsDouble())), "Tangent of an angle in radians.");
+            Add(map, "asin", 1, 1, (vm, a) => new Value(Math.Asin(a[0].AsDouble())), "Arc sine.");
+            Add(map, "acos", 1, 1, (vm, a) => new Value(Math.Acos(a[0].AsDouble())), "Arc cosine.");
+            Add(map, "atan", 1, 1, (vm, a) => new Value(Math.Atan(a[0].AsDouble())), "Arc tangent.");
+            Add(map, "atan2", 2, 2, (vm, a) => new Value(Math.Atan2(a[0].AsDouble(), a[1].AsDouble())), "Angle of the vector (x, y).");
+            Add(map, "min", 1, -1, (vm, a) => Extreme(vm, a, smallest: true), "Smallest argument.");
+            Add(map, "max", 1, -1, (vm, a) => Extreme(vm, a, smallest: false), "Largest argument.");
             Add(map, "clamp", 3, 3, (vm, a) =>
             {
                 var value = a[0].AsDouble();
@@ -336,16 +336,16 @@ namespace TERN.Builtins
                 return a[0].Kind == ValueKind.Int && a[1].Kind == ValueKind.Int && a[2].Kind == ValueKind.Int
                     ? new Value((long)clamped)
                     : new Value(clamped);
-            });
-            Add(map, "sign", 1, 1, (vm, a) => new Value(Math.Sign(a[0].AsDouble())));
-            Add(map, "hypot", 2, 2, (vm, a) => new Value(Math.Sqrt(a[0].AsDouble() * a[0].AsDouble() + a[1].AsDouble() * a[1].AsDouble())));
-            Add(map, "gcd", 2, 2, (vm, a) => new Value(Gcd(Math.Abs(BuiltinMethods.RequireInt(a[0], "gcd", 0)), Math.Abs(BuiltinMethods.RequireInt(a[1], "gcd", 1)))));
-            Add(map, "lcm", 2, 2, (vm, a) => new Value(Lcm(Math.Abs(BuiltinMethods.RequireInt(a[0], "lcm", 0)), Math.Abs(BuiltinMethods.RequireInt(a[1], "lcm", 1)))));
+            }, "Constrains a value to [low, high].");
+            Add(map, "sign", 1, 1, (vm, a) => new Value(Math.Sign(a[0].AsDouble())), "-1, 0 or 1.");
+            Add(map, "hypot", 2, 2, (vm, a) => new Value(Math.Sqrt(a[0].AsDouble() * a[0].AsDouble() + a[1].AsDouble() * a[1].AsDouble())), "Length of the vector (x, y).");
+            Add(map, "gcd", 2, 2, (vm, a) => new Value(Gcd(Math.Abs(BuiltinMethods.RequireInt(a[0], "gcd", 0)), Math.Abs(BuiltinMethods.RequireInt(a[1], "gcd", 1)))), "Greatest common divisor.");
+            Add(map, "lcm", 2, 2, (vm, a) => new Value(Lcm(Math.Abs(BuiltinMethods.RequireInt(a[0], "lcm", 0)), Math.Abs(BuiltinMethods.RequireInt(a[1], "lcm", 1)))), "Least common multiple.");
             Add(map, "isInteger", 1, 1, (vm, a) => Value.Bool(a[0].Kind == ValueKind.Int ||
-                                                              (a[0].Kind == ValueKind.Float && Math.Floor(a[0].AsDouble()) == a[0].AsDouble())));
-            Add(map, "isNaN", 1, 1, (vm, a) => Value.Bool(a[0].Kind == ValueKind.Float && double.IsNaN(a[0].AsDouble())));
-            Add(map, "toRadians", 1, 1, (vm, a) => new Value(a[0].AsDouble() * Math.PI / 180.0));
-            Add(map, "toDegrees", 1, 1, (vm, a) => new Value(a[0].AsDouble() * 180.0 / Math.PI));
+                                                              (a[0].Kind == ValueKind.Float && Math.Floor(a[0].AsDouble()) == a[0].AsDouble())), "True for whole numbers.");
+            Add(map, "isNaN", 1, 1, (vm, a) => Value.Bool(a[0].Kind == ValueKind.Float && double.IsNaN(a[0].AsDouble())), "True for NaN.");
+            Add(map, "toRadians", 1, 1, (vm, a) => new Value(a[0].AsDouble() * Math.PI / 180.0), "Degrees to radians.");
+            Add(map, "toDegrees", 1, 1, (vm, a) => new Value(a[0].AsDouble() * 180.0 / Math.PI), "Radians to degrees.");
 
             engine.RegisterValue("math", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -402,14 +402,14 @@ namespace TERN.Builtins
                 }
 
                 return value;
-            });
+            }, "Parses JSON text into TERN values.");
             Add(map, "stringify", 1, 2, (vm, a) =>
             {
                 var indent = a.Length > 1 && a[1].Truthy ? 2 : 0;
                 var builder = new StringBuilder();
                 JsonWriter.Write(builder, a[0], indent, 0);
                 return Value.Str(builder.ToString());
-            });
+            }, "Serialises a value as JSON, optional indent.");
             Add(map, "tryParse", 1, 2, (vm, a) =>
             {
                 try
@@ -423,7 +423,7 @@ namespace TERN.Builtins
                 {
                     return a.Length > 1 ? a[1] : Value.Nil;
                 }
-            });
+            }, "Parses, returning nil instead of raising on bad input.");
 
             engine.RegisterValue("json", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -444,7 +444,7 @@ namespace TERN.Builtins
             {
                 var path = RequirePath(vm, a[0]);
                 return Value.Str(File.ReadAllText(path));
-            });
+            }, "Reads a whole file as text.");
             Add(map, "readBytes", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
@@ -456,23 +456,23 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "Reads a file as a list of byte values.");
             Add(map, "write", 2, 2, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
                 EnsureDirectory(path);
                 File.WriteAllText(path, a[1].ToDisplayString());
                 return Value.Nil;
-            });
+            }, "Writes text, replacing the file.");
             Add(map, "append", 2, 2, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
                 EnsureDirectory(path);
                 File.AppendAllText(path, a[1].ToDisplayString());
                 return Value.Nil;
-            });
-            Add(map, "exists", 1, 1, (vm, a) => Value.Bool(File.Exists(RequirePath(vm, a[0])) || Directory.Exists(RequirePath(vm, a[0]))));
-            Add(map, "size", 1, 1, (vm, a) => new Value(new FileInfo(RequirePath(vm, a[0])).Length));
+            }, "Appends text to a file.");
+            Add(map, "exists", 1, 1, (vm, a) => Value.Bool(File.Exists(RequirePath(vm, a[0])) || Directory.Exists(RequirePath(vm, a[0]))), "True when the path exists.");
+            Add(map, "size", 1, 1, (vm, a) => new Value(new FileInfo(RequirePath(vm, a[0])).Length), "Size of a file in bytes.");
             Add(map, "remove", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
@@ -486,7 +486,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Nil;
-            });
+            }, "Deletes a file.");
             Add(map, "list", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);
@@ -499,14 +499,14 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "Directory entries as a list.");
             Add(map, "mkdir", 1, 1, (vm, a) =>
             {
                 Directory.CreateDirectory(RequirePath(vm, a[0]));
                 return Value.Nil;
-            });
-            Add(map, "isFile", 1, 1, (vm, a) => Value.Bool(File.Exists(RequirePath(vm, a[0]))));
-            Add(map, "isDir", 1, 1, (vm, a) => Value.Bool(Directory.Exists(RequirePath(vm, a[0]))));
+            }, "Creates a directory.");
+            Add(map, "isFile", 1, 1, (vm, a) => Value.Bool(File.Exists(RequirePath(vm, a[0]))), "True for a regular file.");
+            Add(map, "isDir", 1, 1, (vm, a) => Value.Bool(Directory.Exists(RequirePath(vm, a[0]))), "True for a directory.");
 
             engine.RegisterValue("fs", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -559,15 +559,15 @@ namespace TERN.Builtins
                 }
 
                 return a.Length > 1 ? a[1] : Value.Nil;
-            });
+            }, "Environment variable value, or nil.");
             Add(map, "setEnv", 2, 2, (vm, a) =>
             {
                 Environment.SetEnvironmentVariable(a[0].AsString(), a[1].ToDisplayString());
                 return Value.Nil;
-            });
-            Add(map, "cwd", 0, 0, (vm, a) => Value.Str(vm.Engine?.WorkingDirectory ?? Directory.GetCurrentDirectory()));
+            }, "Sets an environment variable for this process.");
+            Add(map, "cwd", 0, 0, (vm, a) => Value.Str(vm.Engine?.WorkingDirectory ?? Directory.GetCurrentDirectory()), "Current working directory.");
             Add(map, "platform", 0, 0, (vm, a) => Value.Str(OperatingSystem.IsWindows() ? "windows" :
-                OperatingSystem.IsMacOS() ? "macos" : OperatingSystem.IsLinux() ? "linux" : "unknown"));
+                OperatingSystem.IsMacOS() ? "macos" : OperatingSystem.IsLinux() ? "linux" : "unknown"), "Host platform name.");
             Add(map, "args", 0, 0, (vm, a) =>
             {
                 var arguments = vm.Engine?.ScriptArguments;
@@ -581,7 +581,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "Script arguments as a list.");
             Add(map, "joinPath", 0, -1, (vm, a) =>
             {
                 var parts = new string[a.Length];
@@ -591,8 +591,8 @@ namespace TERN.Builtins
                 }
 
                 return Value.Str(Path.Combine(parts));
-            });
-            Add(map, "lineSeparator", 0, 0, (vm, a) => Value.Str(Environment.NewLine));
+            }, "Joins path segments for this platform.");
+            Add(map, "lineSeparator", 0, 0, (vm, a) => Value.Str(Environment.NewLine), "The platform line separator.");
 
             engine.RegisterValue("os", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -608,8 +608,8 @@ namespace TERN.Builtins
         private static void InstallTime(TernEngine engine)
         {
             var map = new TernMap();
-            Add(map, "now", 0, 0, (vm, a) => new Value(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0));
-            Add(map, "millis", 0, 0, (vm, a) => new Value(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+            Add(map, "now", 0, 0, (vm, a) => new Value(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0), "Seconds since the Unix epoch as a float.");
+            Add(map, "millis", 0, 0, (vm, a) => new Value(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), "Milliseconds since the Unix epoch.");
             Add(map, "sleep", 1, 1, (vm, a) =>
             {
                 var milliseconds = BuiltinMethods.RequireInt(a[0], "sleep", 0);
@@ -619,13 +619,13 @@ namespace TERN.Builtins
                 }
 
                 return Value.Nil;
-            });
+            }, "Suspends the script for a number of seconds.");
             Add(map, "iso", 1, 1, (vm, a) =>
             {
                 var seconds = a[0].AsDouble();
                 return Value.Str(DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1000)).UtcDateTime
                     .ToString("yyyy-MM-ddTHH:mm:ssZ", Invariant));
-            });
+            }, "Current time as an ISO 8601 string.");
 
             engine.RegisterValue("time", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -650,14 +650,14 @@ namespace TERN.Builtins
                 }
 
                 return Value.Nil;
-            });
+            }, "Seeds the generator for reproducible runs.");
             Add(map, "float", 0, 2, (vm, a) =>
             {
                 var generator = vm.Engine?.Random ?? Random.Shared;
                 var low = a.Length > 0 ? a[0].AsDouble() : 0.0;
                 var high = a.Length > 1 ? a[1].AsDouble() : 1.0;
                 return new Value(low + generator.NextDouble() * (high - low));
-            });
+            }, "Random float in [low, high).");
             Add(map, "int", 1, 2, (vm, a) =>
             {
                 var generator = vm.Engine?.Random ?? Random.Shared;
@@ -670,8 +670,8 @@ namespace TERN.Builtins
                 }
 
                 return new Value(generator.NextInt64(low, high + 1));
-            });
-            Add(map, "bool", 0, 0, (vm, a) => Value.Bool((vm.Engine?.Random ?? Random.Shared).Next(2) == 0));
+            }, "Random integer in [low, high].");
+            Add(map, "bool", 0, 0, (vm, a) => Value.Bool((vm.Engine?.Random ?? Random.Shared).Next(2) == 0), "Random boolean.");
             Add(map, "choice", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -681,7 +681,7 @@ namespace TERN.Builtins
                 }
 
                 return list[(int)((vm.Engine?.Random ?? Random.Shared).NextInt64(list.Count))];
-            });
+            }, "Random item from a list.");
             Add(map, "shuffle", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -693,7 +693,7 @@ namespace TERN.Builtins
                 }
 
                 return a[0];
-            });
+            }, "Shuffles a list in place.");
 
             engine.RegisterValue("random", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -780,11 +780,11 @@ namespace TERN.Builtins
                 }
 
                 return Value.Str(builder.ToString());
-            });
+            }, "Formats {} and {0} placeholders with arguments.");
 
-            Add(map, "upper", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToUpperInvariant()));
-            Add(map, "lower", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToLowerInvariant()));
-            Add(map, "trim", 1, 1, (vm, a) => Value.Str(a[0].AsString().Trim()));
+            Add(map, "upper", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToUpperInvariant()), "Uppercased copy.");
+            Add(map, "lower", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToLowerInvariant()), "Lowercased copy.");
+            Add(map, "trim", 1, 1, (vm, a) => Value.Str(a[0].AsString().Trim()), "Removes surrounding whitespace.");
             Add(map, "split", 2, 2, (vm, a) =>
             {
                 var pieces = a[0].AsString().Split(new[] { a[1].AsString() }, StringSplitOptions.None);
@@ -795,7 +795,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "Splits on a separator.");
             Add(map, "join", 2, 2, (vm, a) =>
             {
                 var list = a[1].AsList();
@@ -812,7 +812,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Str(builder.ToString());
-            });
+            }, "Joins a list with a separator.");
             Add(map, "pad", 2, 3, (vm, a) =>
             {
                 var text = a[0].AsString();
@@ -830,7 +830,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Str(text + builder.ToString(0, width - text.Length));
-            });
+            }, "Pads a string to a width on the right.");
 
             engine.RegisterValue("text", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -868,7 +868,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(new TernRange(start, end, inclusive: false, step).ToList());
-            });
+            }, "List of integers from start to end.");
             Add(map, "repeat", 2, 2, (vm, a) =>
             {
                 var count = (int)Math.Max(0, BuiltinMethods.RequireInt(a[1], "repeat", 1));
@@ -879,7 +879,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "List with a value repeated n times.");
             Add(map, "zip", 1, -1, (vm, a) =>
             {
                 var shortest = int.MaxValue;
@@ -901,7 +901,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(result);
-            });
+            }, "Pairs two lists into [a, b] entries.");
             Add(map, "enumerate", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -915,7 +915,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(result);
-            });
+            }, "Index/value pairs.");
             Add(map, "chunk", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -933,8 +933,8 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(result);
-            });
-            Add(map, "sort", 1, 2, (vm, a) => BuiltinMethods.Sort(vm, a));
+            }, "Splits into lists of at most n items.");
+            Add(map, "sort", 1, 2, (vm, a) => BuiltinMethods.Sort(vm, a), "Sorted copy of a list, optional comparator.");
 
             engine.RegisterValue("lists", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -947,8 +947,9 @@ namespace TERN.Builtins
 
         // ---------------------------------------------------------------- helpers
 
-        private static void Add(TernMap map, string name, int min, int max, NativeFn function) =>
-            map.Set(Value.Str(name), Value.Of(new TernNative(name, function, min, max)));
+        private static void Add(TernMap map, string name, int min, int max, NativeFn function,
+            string? documentation = null) =>
+            map.Set(Value.Str(name), Value.Of(new TernNative(name, function, min, max, documentation)));
     }
 
     /// <summary>Minimal JSON reader producing TERN values (ints stay integers).</summary>

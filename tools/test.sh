@@ -39,6 +39,16 @@ for script in "$HERE"/tests/*.tern; do
   fi
 done
 
+# The generated standard library reference must match the code.
+if [[ -f "$HERE/docs/stdlib.md" ]]; then
+  if diff -q <(cd "$HERE" && "$TERN" docs) "$HERE/docs/stdlib.md" >/dev/null 2>&1; then
+    pass=$((pass+1))
+  else
+    echo "FAIL docs/stdlib.md is stale (run tools/gen-docs.sh)"
+    fail=$((fail+1)); failed_names+=("docs")
+  fi
+fi
+
 echo
 if [[ $UPDATE -eq 1 ]]; then
   echo "expected outputs updated"

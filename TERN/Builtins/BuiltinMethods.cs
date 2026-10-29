@@ -18,11 +18,11 @@ namespace TERN.Builtins
         static BuiltinMethods()
         {
             var stringMethods = Table(ValueKind.Str);
-            Add(stringMethods, "upper", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToUpperInvariant()));
-            Add(stringMethods, "lower", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToLowerInvariant()));
-            Add(stringMethods, "trim", 1, 1, (vm, a) => Value.Str(a[0].AsString().Trim()));
-            Add(stringMethods, "trimStart", 1, 1, (vm, a) => Value.Str(a[0].AsString().TrimStart()));
-            Add(stringMethods, "trimEnd", 1, 1, (vm, a) => Value.Str(a[0].AsString().TrimEnd()));
+            Add(stringMethods, "upper", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToUpperInvariant()), "Uppercased copy.");
+            Add(stringMethods, "lower", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToLowerInvariant()), "Lowercased copy.");
+            Add(stringMethods, "trim", 1, 1, (vm, a) => Value.Str(a[0].AsString().Trim()), "Removes leading and trailing whitespace.");
+            Add(stringMethods, "trimStart", 1, 1, (vm, a) => Value.Str(a[0].AsString().TrimStart()), "Removes leading whitespace.");
+            Add(stringMethods, "trimEnd", 1, 1, (vm, a) => Value.Str(a[0].AsString().TrimEnd()), "Removes trailing whitespace.");
             Add(stringMethods, "split", 1, 2, (vm, a) =>
             {
                 var text = a[0].AsString();
@@ -37,7 +37,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "Splits on a separator (default a space); an empty separator splits into characters.");
             Add(stringMethods, "lines", 1, 1, (vm, a) =>
             {
                 var pieces = a[0].AsString().Replace("\r\n", "\n").Split('\n');
@@ -51,15 +51,15 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "Splits into lines, handling \\n and \\r\\n.");
             Add(stringMethods, "replace", 3, 3, (vm, a) =>
-                Value.Str(a[0].AsString().Replace(a[1].AsString(), a[2].AsString(), StringComparison.Ordinal)));
-            Add(stringMethods, "replaceFirst", 3, 3, (vm, a) => Value.Str(ReplaceFirst(a[0].AsString(), a[1].AsString(), a[2].AsString())));
-            Add(stringMethods, "startsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().StartsWith(a[1].AsString(), StringComparison.Ordinal)));
-            Add(stringMethods, "endsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().EndsWith(a[1].AsString(), StringComparison.Ordinal)));
-            Add(stringMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsString().Contains(a[1].AsString(), StringComparison.Ordinal)));
-            Add(stringMethods, "indexOf", 2, 2, (vm, a) => new Value(a[0].AsString().IndexOf(a[1].AsString(), StringComparison.Ordinal)));
-            Add(stringMethods, "lastIndexOf", 2, 2, (vm, a) => new Value(a[0].AsString().LastIndexOf(a[1].AsString(), StringComparison.Ordinal)));
+                Value.Str(a[0].AsString().Replace(a[1].AsString(), a[2].AsString(), StringComparison.Ordinal)), "Replaces every occurrence of a substring.");
+            Add(stringMethods, "replaceFirst", 3, 3, (vm, a) => Value.Str(ReplaceFirst(a[0].AsString(), a[1].AsString(), a[2].AsString())), "Replaces the first occurrence of a substring.");
+            Add(stringMethods, "startsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().StartsWith(a[1].AsString(), StringComparison.Ordinal)), "True when the string begins with the prefix.");
+            Add(stringMethods, "endsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().EndsWith(a[1].AsString(), StringComparison.Ordinal)), "True when the string ends with the suffix.");
+            Add(stringMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsString().Contains(a[1].AsString(), StringComparison.Ordinal)), "True when the substring occurs.");
+            Add(stringMethods, "indexOf", 2, 2, (vm, a) => new Value(a[0].AsString().IndexOf(a[1].AsString(), StringComparison.Ordinal)), "Index of the first occurrence, or -1.");
+            Add(stringMethods, "lastIndexOf", 2, 2, (vm, a) => new Value(a[0].AsString().LastIndexOf(a[1].AsString(), StringComparison.Ordinal)), "Index of the last occurrence, or -1.");
             Add(stringMethods, "substring", 2, 3, (vm, a) =>
             {
                 var text = a[0].AsString();
@@ -70,8 +70,8 @@ namespace TERN.Builtins
                 end = end < 0 ? end + text.Length : end;
                 end = Math.Max(start, Math.Min(end, text.Length));
                 return Value.Str(text.Substring(start, end - start));
-            });
-            Add(stringMethods, "slice", 1, 3, (vm, a) => Slice(a));
+            }, "Substring from a start index with an optional length.");
+            Add(stringMethods, "slice", 1, 3, (vm, a) => Slice(a), "Substring from start to end, negative indices allowed.");
             Add(stringMethods, "chars", 1, 1, (vm, a) =>
             {
                 var text = a[0].AsString();
@@ -82,7 +82,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
+            }, "List of single character strings.");
             Add(stringMethods, "repeat", 2, 2, (vm, a) =>
             {
                 var count = (int)RequireInt(a[1], "repeat", 1);
@@ -92,19 +92,19 @@ namespace TERN.Builtins
                 }
 
                 return Value.Str(string.Concat(System.Linq.Enumerable.Repeat(a[0].AsString(), count)));
-            });
+            }, "Repeats the string n times.");
             Add(stringMethods, "padStart", 2, 3, (vm, a) => Value.Str(Pad(a[0].AsString(), (int)RequireInt(a[1], "padStart", 1),
-                a.Length > 2 ? a[2].AsString() : " ", true)));
+                a.Length > 2 ? a[2].AsString() : " ", true)), "Left pads to a width with an optional fill.");
             Add(stringMethods, "padEnd", 2, 3, (vm, a) => Value.Str(Pad(a[0].AsString(), (int)RequireInt(a[1], "padEnd", 1),
-                a.Length > 2 ? a[2].AsString() : " ", false)));
+                a.Length > 2 ? a[2].AsString() : " ", false)), "Right pads to a width with an optional fill.");
             Add(stringMethods, "reversed", 1, 1, (vm, a) =>
             {
                 var characters = a[0].AsString().ToCharArray();
                 Array.Reverse(characters);
                 return Value.Str(new string(characters));
-            });
-            Add(stringMethods, "toInt", 1, 2, (vm, a) => ParseInteger(vm, a, "toInt"));
-            Add(stringMethods, "toFloat", 1, 2, (vm, a) => ParseFloat(vm, a, "toFloat"));
+            }, "Reversed copy.");
+            Add(stringMethods, "toInt", 1, 2, (vm, a) => ParseInteger(vm, a, "toInt"), "Parses the string as an integer.");
+            Add(stringMethods, "toFloat", 1, 2, (vm, a) => ParseFloat(vm, a, "toFloat"), "Parses the string as a float.");
             Add(stringMethods, "count", 2, 2, (vm, a) =>
             {
                 var text = a[0].AsString();
@@ -123,7 +123,7 @@ namespace TERN.Builtins
                 }
 
                 return new Value(count);
-            });
+            }, "Number of characters.");
             Add(stringMethods, "words", 1, 1, (vm, a) =>
             {
                 var words = a[0].AsString().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
@@ -134,9 +134,9 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            });
-            Add(stringMethods, "toString", 1, 1, (vm, a) => a[0]);
-            Add(stringMethods, "isEmpty", 1, 1, (vm, a) => Value.Bool(a[0].AsString().Length == 0));
+            }, "Splits on whitespace, dropping empty pieces.");
+            Add(stringMethods, "toString", 1, 1, (vm, a) => a[0], "The string itself.");
+            Add(stringMethods, "isEmpty", 1, 1, (vm, a) => Value.Bool(a[0].AsString().Length == 0), "True when the string has no characters.");
 
             var listMethods = Table(ValueKind.List);
             Add(listMethods, "push", 2, -1, (vm, a) =>
@@ -148,7 +148,7 @@ namespace TERN.Builtins
                 }
 
                 return new Value(list.Count);
-            });
+            }, "Appends an item and returns its position.");
             Add(listMethods, "pop", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -160,7 +160,7 @@ namespace TERN.Builtins
                 var value = list[list.Count - 1];
                 list.RemoveAt(list.Count - 1);
                 return value;
-            });
+            }, "Removes and returns the last item.");
             Add(listMethods, "shift", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -172,7 +172,7 @@ namespace TERN.Builtins
                 var value = list[0];
                 list.RemoveAt(0);
                 return value;
-            });
+            }, "Removes and returns the first item.");
             Add(listMethods, "unshift", 2, -1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -182,12 +182,12 @@ namespace TERN.Builtins
                 }
 
                 return new Value(list.Count);
-            });
+            }, "Prepends an item.");
             Add(listMethods, "insert", 3, 3, (vm, a) =>
             {
                 a[0].AsList().Insert((int)RequireInt(a[1], "insert", 1), a[2]);
                 return a[0];
-            });
+            }, "Inserts an item at an index.");
             Add(listMethods, "remove", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -205,7 +205,7 @@ namespace TERN.Builtins
                 var value = list[index];
                 list.RemoveAt(index);
                 return value;
-            });
+            }, "Removes and returns the item at an index.");
             Add(listMethods, "removeValue", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -217,9 +217,9 @@ namespace TERN.Builtins
 
                 list.RemoveAt(index);
                 return Value.True;
-            });
-            Add(listMethods, "indexOf", 2, 2, (vm, a) => new Value(a[0].AsList().IndexOf(a[1])));
-            Add(listMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsList().IndexOf(a[1]) >= 0));
+            }, "Removes the first occurrence of a value; returns true when found.");
+            Add(listMethods, "indexOf", 2, 2, (vm, a) => new Value(a[0].AsList().IndexOf(a[1])), "Index of the first occurrence, or -1.");
+            Add(listMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsList().IndexOf(a[1]) >= 0), "True when the value is present.");
             Add(listMethods, "join", 1, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -236,20 +236,20 @@ namespace TERN.Builtins
                 }
 
                 return Value.Str(builder.ToString());
-            });
+            }, "Concatenates the items with a separator.");
             Add(listMethods, "reverse", 1, 1, (vm, a) =>
             {
                 a[0].AsList().Reverse();
                 return a[0];
-            });
-            Add(listMethods, "sort", 1, 2, (vm, a) => Sort(vm, a));
+            }, "Reverses in place.");
+            Add(listMethods, "sort", 1, 2, (vm, a) => Sort(vm, a), "Stable in place sort, with an optional comparator.");
             Add(listMethods, "slice", 1, 3, (vm, a) =>
             {
                 var list = a[0].AsList();
                 var start = a.Length > 1 ? RequireInt(a[1], "slice", 1) : 0;
                 var end = a.Length > 2 ? RequireInt(a[2], "slice", 2) : list.Count;
                 return Value.Of(list.Slice(start, end));
-            });
+            }, "Copy of the range [start, end).");
             Add(listMethods, "map", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -263,7 +263,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(result);
-            });
+            }, "New list of callback results.");
             Add(listMethods, "filter", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -280,7 +280,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(result);
-            });
+            }, "New list of the items the callback accepts.");
             Add(listMethods, "reduce", 2, 3, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -297,7 +297,7 @@ namespace TERN.Builtins
                 }
 
                 return accumulator;
-            });
+            }, "Folds the list with a callback, optionally from an initial value.");
             Add(listMethods, "each", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -310,7 +310,7 @@ namespace TERN.Builtins
                 }
 
                 return a[0];
-            });
+            }, "Calls the callback for each item.");
             Add(listMethods, "any", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -326,7 +326,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.False;
-            });
+            }, "True when the callback accepts at least one item.");
             Add(listMethods, "all", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -342,7 +342,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.True;
-            });
+            }, "True when the callback accepts every item.");
             Add(listMethods, "find", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -358,7 +358,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Nil;
-            });
+            }, "First item the callback accepts, or nil.");
             Add(listMethods, "findIndex", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -374,7 +374,7 @@ namespace TERN.Builtins
                 }
 
                 return new Value(-1);
-            });
+            }, "Index of the first item the callback accepts, or -1.");
             Add(listMethods, "sum", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -385,38 +385,38 @@ namespace TERN.Builtins
                 }
 
                 return total;
-            });
-            Add(listMethods, "min", 1, 1, (vm, a) => Extreme(vm, a[0].AsList(), smallest: true));
-            Add(listMethods, "max", 1, 1, (vm, a) => Extreme(vm, a[0].AsList(), smallest: false));
+            }, "Sum of the numeric items.");
+            Add(listMethods, "min", 1, 1, (vm, a) => Extreme(vm, a[0].AsList(), smallest: true), "Smallest item by natural order.");
+            Add(listMethods, "max", 1, 1, (vm, a) => Extreme(vm, a[0].AsList(), smallest: false), "Largest item by natural order.");
             Add(listMethods, "first", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
                 return list.Count > 0 ? list[0] : Value.Nil;
-            });
+            }, "First item, or nil when empty.");
             Add(listMethods, "last", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
                 return list.Count > 0 ? list[list.Count - 1] : Value.Nil;
-            });
+            }, "Last item, or nil when empty.");
             Add(listMethods, "take", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
                 var count = (int)Math.Max(0, Math.Min(RequireInt(a[1], "take", 1), list.Count));
                 return Value.Of(list.Slice(0, count));
-            });
+            }, "Copy of the first n items.");
             Add(listMethods, "drop", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
                 var count = (int)Math.Max(0, Math.Min(RequireInt(a[1], "drop", 1), list.Count));
                 return Value.Of(list.Slice(count, list.Count));
-            });
+            }, "Copy without the first n items.");
             Add(listMethods, "flatten", 1, 2, (vm, a) =>
             {
                 var depth = a.Length > 1 ? RequireInt(a[1], "flatten", 1) : 1;
                 var result = new TernList();
                 Flatten(a[0].AsList(), result, depth);
                 return Value.Of(result);
-            });
+            }, "Flattens one level of nested lists.");
             Add(listMethods, "unique", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -435,7 +435,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(result);
-            });
+            }, "New list without duplicates, order preserved.");
             Add(listMethods, "clone", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -446,19 +446,19 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(copy);
-            });
+            }, "Shallow copy.");
             Add(listMethods, "clear", 1, 1, (vm, a) =>
             {
                 a[0].AsList().Clear();
                 return a[0];
-            });
-            Add(listMethods, "concat", 2, 2, (vm, a) => vm.AddValues(a[0], a[1]));
-            Add(listMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].AsList().ToString()));
-            Add(listMethods, "isEmpty", 1, 1, (vm, a) => Value.Bool(a[0].AsList().Count == 0));
+            }, "Removes every item in place.");
+            Add(listMethods, "concat", 2, 2, (vm, a) => vm.AddValues(a[0], a[1]), "New list with the items of another list appended.");
+            Add(listMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].AsList().ToString()), "Debug rendering of the list.");
+            Add(listMethods, "isEmpty", 1, 1, (vm, a) => Value.Bool(a[0].AsList().Count == 0), "True when the list has no items.");
 
             var mapMethods = Table(ValueKind.Map);
-            Add(mapMethods, "keys", 1, 1, (vm, a) => Value.Of(a[0].AsMap().Keys()));
-            Add(mapMethods, "values", 1, 1, (vm, a) => Value.Of(a[0].AsMap().Values()));
+            Add(mapMethods, "keys", 1, 1, (vm, a) => Value.Of(a[0].AsMap().Keys()), "List of keys in insertion order.");
+            Add(mapMethods, "values", 1, 1, (vm, a) => Value.Of(a[0].AsMap().Values()), "List of values in insertion order.");
             Add(mapMethods, "entries", 1, 1, (vm, a) =>
             {
                 var map = a[0].AsMap();
@@ -478,8 +478,8 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(result);
-            });
-            Add(mapMethods, "has", 2, 2, (vm, a) => Value.Bool(a[0].AsMap().ContainsKey(a[1])));
+            }, "List of [key, value] pairs in insertion order.");
+            Add(mapMethods, "has", 2, 2, (vm, a) => Value.Bool(a[0].AsMap().ContainsKey(a[1])), "True when the key exists.");
             Add(mapMethods, "get", 2, 3, (vm, a) =>
             {
                 if (a[0].AsMap().TryGet(a[1], out var value))
@@ -488,27 +488,27 @@ namespace TERN.Builtins
                 }
 
                 return a.Length > 2 ? a[2] : Value.Nil;
-            });
+            }, "Value for a key, or a default when missing.");
             Add(mapMethods, "set", 3, 3, (vm, a) =>
             {
                 a[0].AsMap().Set(a[1], a[2]);
                 return a[0];
-            });
-            Add(mapMethods, "remove", 2, 2, (vm, a) => Value.Bool(a[0].AsMap().Remove(a[1])));
+            }, "Inserts a key value pair and returns the map.");
+            Add(mapMethods, "remove", 2, 2, (vm, a) => Value.Bool(a[0].AsMap().Remove(a[1])), "Deletes a key; returns the removed value or nil.");
             Add(mapMethods, "clear", 1, 1, (vm, a) =>
             {
                 a[0].AsMap().Clear();
                 return a[0];
-            });
-            Add(mapMethods, "merge", 2, 2, (vm, a) => vm.AddValues(a[0], a[1]));
-            Add(mapMethods, "clone", 1, 1, (vm, a) => Value.Of(a[0].AsMap().Clone()));
-            Add(mapMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].AsMap().ToString()));
-            Add(mapMethods, "isEmpty", 1, 1, (vm, a) => Value.Bool(a[0].AsMap().Count == 0));
+            }, "Removes every key in place.");
+            Add(mapMethods, "merge", 2, 2, (vm, a) => vm.AddValues(a[0], a[1]), "New map with another map's pairs merged in.");
+            Add(mapMethods, "clone", 1, 1, (vm, a) => Value.Of(a[0].AsMap().Clone()), "Shallow copy.");
+            Add(mapMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].AsMap().ToString()), "Debug rendering of the map.");
+            Add(mapMethods, "isEmpty", 1, 1, (vm, a) => Value.Bool(a[0].AsMap().Count == 0), "True when the map has no keys.");
 
             var intMethods = Table(ValueKind.Int);
-            Add(intMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].ToDisplayString()));
-            Add(intMethods, "toFloat", 1, 1, (vm, a) => new Value((double)a[0].AsInt()));
-            Add(intMethods, "abs", 1, 1, (vm, a) => new Value(Math.Abs(a[0].AsInt())));
+            Add(intMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].ToDisplayString()), "Decimal representation.");
+            Add(intMethods, "toFloat", 1, 1, (vm, a) => new Value((double)a[0].AsInt()), "The same value as a float.");
+            Add(intMethods, "abs", 1, 1, (vm, a) => new Value(Math.Abs(a[0].AsInt())), "Absolute value.");
             Add(intMethods, "times", 2, 2, (vm, a) =>
             {
                 var count = a[0].AsInt();
@@ -521,34 +521,34 @@ namespace TERN.Builtins
                 }
 
                 return a[0];
-            });
+            }, "Calls the callback n times with the index.");
             Add(intMethods, "clamp", 3, 3, (vm, a) =>
             {
                 var value = a[0].AsInt();
                 var low = RequireInt(a[1], "clamp", 1);
                 var high = RequireInt(a[2], "clamp", 2);
                 return new Value(value < low ? low : value > high ? high : value);
-            });
+            }, "Constrains the value to [low, high].");
 
             var floatMethods = Table(ValueKind.Float);
-            Add(floatMethods, "toString", 1, 1, (vm, a) => Value.Str(Value.FormatDouble(a[0].AsDouble())));
-            Add(floatMethods, "toInt", 1, 1, (vm, a) => new Value((long)a[0].AsDouble()));
-            Add(floatMethods, "abs", 1, 1, (vm, a) => new Value(Math.Abs(a[0].AsDouble())));
-            Add(floatMethods, "round", 1, 2, (vm, a) => RoundFloat(a));
+            Add(floatMethods, "toString", 1, 1, (vm, a) => Value.Str(Value.FormatDouble(a[0].AsDouble())), "Decimal representation.");
+            Add(floatMethods, "toInt", 1, 1, (vm, a) => new Value((long)a[0].AsDouble()), "Truncates toward zero.");
+            Add(floatMethods, "abs", 1, 1, (vm, a) => new Value(Math.Abs(a[0].AsDouble())), "Absolute value.");
+            Add(floatMethods, "round", 1, 2, (vm, a) => RoundFloat(a), "Rounds to the nearest integer, with optional digits.");
             Add(floatMethods, "clamp", 3, 3, (vm, a) =>
             {
                 var value = a[0].AsDouble();
                 var low = a[1].AsDouble();
                 var high = a[2].AsDouble();
                 return new Value(value < low ? low : value > high ? high : value);
-            });
+            }, "Constrains the value to [low, high].");
 
             var rangeMethods = Table(ValueKind.Range);
-            Add(rangeMethods, "toList", 1, 1, (vm, a) => Value.Of(a[0].AsRange().ToList()));
+            Add(rangeMethods, "toList", 1, 1, (vm, a) => Value.Of(a[0].AsRange().ToList()), "Materialises the range as a list.");
             Add(rangeMethods, "contains", 2, 2, (vm, a) =>
-                Value.Bool(a[1].Kind == ValueKind.Int && a[0].AsRange().Contains(a[1].AsInt())));
-            Add(rangeMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].AsRange().ToString()));
-            Add(rangeMethods, "length", 1, 1, (vm, a) => new Value(a[0].AsRange().Length));
+                Value.Bool(a[1].Kind == ValueKind.Int && a[0].AsRange().Contains(a[1].AsInt())), "True when the number is inside the range.");
+            Add(rangeMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].AsRange().ToString()), "Range notation such as 0..<5.");
+            Add(rangeMethods, "length", 1, 1, (vm, a) => new Value(a[0].AsRange().Length), "Number of values in the range.");
         }
 
         private static Dictionary<string, TernNative> Table(ValueKind kind)
@@ -558,8 +558,33 @@ namespace TERN.Builtins
             return table;
         }
 
-        private static void Add(Dictionary<string, TernNative> table, string name, int min, int max, NativeFn function) =>
-            table[name] = new TernNative(name, function, min, max);
+        private static void Add(Dictionary<string, TernNative> table, string name, int min, int max, NativeFn function,
+            string? documentation = null) =>
+            table[name] = new TernNative(name, function, min, max, documentation);
+
+        /// <summary>Every built-in method, for documentation and tooling.</summary>
+        public static IEnumerable<(string Kind, string Name, int Min, int Max, string? Documentation)> Describe()
+        {
+            foreach (var (kind, table) in Tables)
+            {
+                foreach (var (name, native) in table)
+                {
+                    yield return (KindName(kind), name, native.MinArguments, native.MaxArguments, native.Documentation);
+                }
+            }
+        }
+
+        /// <summary>Script visible name for a value kind, matching <c>type()</c>.</summary>
+        public static string KindName(ValueKind kind) => kind switch
+        {
+            ValueKind.Str => "string",
+            ValueKind.List => "list",
+            ValueKind.Map => "map",
+            ValueKind.Int => "int",
+            ValueKind.Float => "float",
+            ValueKind.Range => "range",
+            _ => kind.ToString().ToLowerInvariant(),
+        };
 
         public static bool TryResolve(ValueKind kind, string name, out TernNative native)
         {

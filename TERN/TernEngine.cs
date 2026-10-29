@@ -8,6 +8,15 @@ using TERN.Syntax;
 
 namespace TERN
 {
+    /// <summary>One entry in the standard library catalogue.</summary>
+    public sealed record BuiltinDoc(
+        string Group,
+        string Name,
+        int MinArguments,
+        int MaxArguments,
+        string? Documentation,
+        bool IsConstant);
+
     /// <summary>
     /// Host facing entry point. An engine owns the standard library, the module
     /// cache and the sandbox policy; a fresh <see cref="VM"/> is used per execution
@@ -69,6 +78,78 @@ namespace TERN
         }
 
         public bool TryGetStdModule(string name, out StdModule module) => _stdModules.TryGetValue(name, out module!);
+
+        /// <summary>Names of the `std:` modules available to scripts.</summary>
+        public IEnumerable<string> StandardModuleNames
+        {
+            get
+            {
+                var names = new List<string>(_stdModules.Keys);
+                names.Sort(StringComparer.Ordinal);
+                return names;
+            }
+        }
+
+        /// <summary>
+        /// Catalogue of everything the engine exposes to scripts: globals,
+        /// namespaces (math, json, ...) and their members. Used by tooling and
+        /// documentation generators so the reference cannot drift from the code.
+        /// </summary>
+        public IEnumerable<BuiltinDoc> DescribeStandardLibrary()
+        {
+            var result = new List<BuiltinDoc>();
+
+            foreach (var (name, value) in _hostBindings)
+            {
+                if (value.Kind == ValueKind.Map)
+                {
+                    var members = value.AsMap();
+                    var keys = members.Keys();
+
+                    for (var i = 0; i < keys.Count; i++)
+                    {
+                        var key = keys[i];
+                        if (key.Kind != ValueKind.Str)
+                        {
+                            continue;
+                        }
+
+                        var member = members.GetOrNil(key);
+                        if (member.Kind == ValueKind.Native)
+                        {
+                            var native = member.AsNative();
+                            result.Add(new BuiltinDoc(name, key.AsString(), native.MinArguments, native.MaxArguments,
+                                native.Documentation, IsConstant: false));
+                        }
+                        else
+                        {
+                            result.Add(new BuiltinDoc(name, key.AsString(), 0, 0, null, IsConstant: true));
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (value.Kind == ValueKind.Native)
+                {
+                    var native = value.AsNative();
+                    result.Add(new BuiltinDoc("global", name, native.MinArguments, native.MaxArguments,
+                        native.Documentation, IsConstant: false));
+                }
+                else
+                {
+                    result.Add(new BuiltinDoc("global", name, 0, 0, null, IsConstant: true));
+                }
+            }
+
+            result.Sort((a, b) =>
+            {
+                var byGroup = string.CompareOrdinal(a.Group, b.Group);
+                return byGroup != 0 ? byGroup : string.CompareOrdinal(a.Name, b.Name);
+            });
+
+            return result;
+        }
 
         // -------------------------------------------------------------- compiling
 
