@@ -1,0 +1,9 @@
+fields 3,4
+chained 2 2
+10 nil 1
+nil 20 2
+[10, 2, 8]
+nested 43
+hits 5
+grown 2 4
+safe ok

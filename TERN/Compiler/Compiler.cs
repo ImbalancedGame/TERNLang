@@ -2273,6 +2273,13 @@ namespace TERN.Compiler
                         CompileAssign(assign, keepValue: false);
                         return;
 
+                    case AssignExpr { Operator: TokenKind.Equal } assign
+                        when assign.Target is MemberExpr or IndexExpr && IsJumpFree(assign.Value):
+                        // `obj.field = v;` / `m[k] = v;` as a statement: the value is
+                        // not needed, so the store opcode does not push it back.
+                        CompileDiscardingStore(assign);
+                        return;
+
                     case IncrementExpr increment when increment.Target is IdentifierExpr:
                         CompileIncrement(increment, keepValue: false);
                         return;
@@ -2380,6 +2387,53 @@ namespace TERN.Compiler
                 _ => false,
             };
 
+            /// <summary>
+            /// True for expressions that compile to straight-line code: no jumps, so
+            /// they can be evaluated while another value (an assignment receiver or
+            /// index) is still sitting on the value stack. That is what lets
+            /// <c>m[k] = v</c> skip spilling the receiver and the index to locals.
+            /// </summary>
+            private static bool IsJumpFree(Expr expression) => expression switch
+            {
+                LiteralExpr or IdentifierExpr or ThisExpr or LambdaExpr => true,
+                UnaryExpr unary => IsJumpFree(unary.Operand),
+                BinaryExpr binary => binary.Operator is not (TokenKind.AmpAmp or TokenKind.PipePipe or
+                    TokenKind.QuestionQuestion) &&
+                    IsJumpFree(binary.Left) && IsJumpFree(binary.Right),
+                MemberExpr member => !member.Safe && IsJumpFree(member.Target),
+                IndexExpr index => IsJumpFree(index.Target) && IsJumpFree(index.Index),
+                CallExpr call => IsJumpFree(call.Callee) && call.Arguments.TrueForAll(IsJumpFree),
+                InterpolatedStringExpr interpolated => interpolated.Expressions.TrueForAll(
+                    part => part is null || IsJumpFree(part)),
+                RangeExpr range => IsJumpFree(range.Start) && (range.End is null || IsJumpFree(range.End)),
+                SliceExpr slice => IsJumpFree(slice.Target) &&
+                    (slice.Start is null || IsJumpFree(slice.Start)) &&
+                    (slice.End is null || IsJumpFree(slice.End)),
+                _ => false,
+            };
+
+            /// <summary>
+            /// Statement form of <c>x.f = v</c> / <c>x[i] = v</c>: no receiver spill,
+            /// no value retained, so the whole statement is a single opcode.
+            /// </summary>
+            private void CompileDiscardingStore(AssignExpr assign)
+            {
+                if (assign.Target is MemberExpr member)
+                {
+                    var name = AddStringConstant(member.Name);
+                    CompileExpression(member.Target);
+                    CompileExpression(assign.Value);
+                    Emit(Op.StoreFieldDiscard, name, 0, 0, pop: 2, push: 0);
+                    return;
+                }
+
+                var index = (IndexExpr)assign.Target;
+                CompileExpression(index.Target);
+                CompileExpression(index.Index);
+                CompileExpression(assign.Value);
+                Emit(Op.StoreIndexDiscard, 0, 0, 0, pop: 3, push: 0);
+            }
+
             private void CompileAssign(AssignExpr assign, bool keepValue = true)
             {
                 var simple = assign.Operator == TokenKind.Equal;
@@ -2486,6 +2540,16 @@ namespace TERN.Compiler
 
                 if (assign.Target is MemberExpr member)
                 {
+                    if (simple && IsJumpFree(assign.Value))
+                    {
+                        // Both operands stay on the stack: no temporary slot, no
+                        // reload, and the stored value is already the result.
+                        CompileExpression(member.Target);
+                        CompileExpression(assign.Value);
+                        Emit(Op.StoreField, AddStringConstant(member.Name), 0, 0, pop: 2, push: 1);
+                        return;
+                    }
+
                     // receiver is evaluated once into a temporary slot
                     PushScope();
                     CompileExpression(member.Target);
@@ -2516,6 +2580,16 @@ namespace TERN.Compiler
 
                 if (assign.Target is IndexExpr index)
                 {
+                    if (simple && IsJumpFree(index.Target) && IsJumpFree(index.Index) &&
+                        IsJumpFree(assign.Value))
+                    {
+                        CompileExpression(index.Target);
+                        CompileExpression(index.Index);
+                        CompileExpression(assign.Value);
+                        Emit(Op.StoreIndex, 0, 0, 0, pop: 3, push: 1);
+                        return;
+                    }
+
                     PushScope();
                     CompileExpression(index.Target);
                     var targetSlot = DeclareLocal("$target", isConst: true);

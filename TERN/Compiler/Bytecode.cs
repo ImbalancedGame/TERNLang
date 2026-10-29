@@ -40,6 +40,8 @@ namespace TERN.Compiler
         StoreField,     // A = name constant
         LoadIndex,
         StoreIndex,
+        StoreIndexDiscard, // assignment statement: store, do not push the value back
+        StoreFieldDiscard,
 
         // aggregates
         NewRange,

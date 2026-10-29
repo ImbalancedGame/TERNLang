@@ -176,31 +176,31 @@ TypeError: nil has no method 'missing'
 
 `tools/compare.sh` runs five workloads written identically in TERN, Lua 5.4,
 LuaJIT, Node 22 and C# (Roslyn) and compares in-process timings, so startup and
-host warm-up are excluded. Best of seven runs on a 2 vCPU / 2.6 GHz machine:
+host warm-up are excluded. Best of nine runs on a 2 vCPU / 2.6 GHz machine:
 
 | Workload   | TERN | Lua 5.4 | LuaJIT | Node 22 | C#    | TERN / Lua |
 | ---------- | ---: | ------: | -----: | ------: | ----: | ---------: |
-| `fib`      |  113 |      51 |      6 |       8 |     5 |      2.21x |
-| `loop`     |  101 |      30 |     12 |       8 |     4 |      3.37x |
-| `maps`     |  204 |     140 |     55 |      86 |    61 |      1.45x |
-| `bintree`  |   33 |      26 |      6 |       4 |    22 |      1.25x |
-| `strings`  |   16 |      10 |      5 |       2 |     4 |      1.54x |
+| `fib`      |  157 |      57 |      8 |      10 |     5 |      2.75x |
+| `loop`     |  104 |      37 |     14 |      10 |     6 |      2.81x |
+| `maps`     |  148 |     200 |     60 |     100 |    68 |      0.74x |
+| `bintree`  |   45 |      45 |      8 |       5 |    30 |      1.00x |
+| `strings`  |   18 |      14 |      6 |       3 |     4 |      1.29x |
+
+TERN beats the reference interpreter on `maps` and is level on `bintree`; the
+two tight numeric loops are 2.8x behind. LuaJIT, Node and C# are tracing/AOT
+compilers and are 10-30x ahead on numeric code. See `bench/compare/workloads.md`
+for per-workload notes and the remaining per-opcode costs.
 
 Whole-process times for the equivalent scripts (`./tools/bench.sh`, including
-~86 ms of process start, parse, compile and JIT):
+~90 ms of process start, parse, compile and JIT):
 
 | Benchmark      | Workload                                   | Time      |
 | -------------- | ------------------------------------------ | --------- |
-| `fib.tern`     | `fib(30)`, 2.7 M calls                     | ~170 ms   |
+| `fib.tern`     | `fib(30)`, 2.7 M calls                     | ~200 ms   |
 | `loop.tern`    | 5 M iteration numeric loop                 | ~194 ms   |
-| `maps.tern`    | 200 k string-keyed inserts + 200 k lookups | ~258 ms   |
-| `bintree.tern` | 65 535-node struct tree, alloc heavy       | ~76 ms    |
-| `strings.tern` | 20 k interpolations + join/split/upper     | ~61 ms    |
-
-TERN is a bytecode interpreter, so the honest comparison is against Lua 5.4;
-LuaJIT, Node and C# are tracing/AOT compilers and are 20-30x ahead on numeric
-code. See `bench/compare/workloads.md` for the full breakdown and the remaining
-per-opcode costs.
+| `maps.tern`    | 200 k string-keyed inserts + 200 k lookups | ~194 ms   |
+| `bintree.tern` | 65 535-node struct tree, alloc heavy       | ~96 ms    |
+| `strings.tern` | 20 k interpolations + join/split/upper     | ~66 ms    |
 
 The optimisations that get there:
 
@@ -211,9 +211,9 @@ The optimisations that get there:
   `[MethodImpl(AggressiveOptimization)]` entry point so the interpreter is fully
   optimised from its first call while everything else stays quick-jitted for a
   fast start.
-* **Fused arithmetic, compare and store opcodes** — `AddLocalLocal`,
-  `AddLocalConst`, `AddLocalConstStore`, `AddLocalStack`, `JumpLtLocalInt`, ...,
-  so `total += i % 7` compiles to three instructions.
+* **Fused opcodes** — `AddLocalLocal`, `AddLocalConst`, `AddLocalConstStore`,
+  `AddLocalStack`, `JumpLtLocalInt`, `Length`, `StoreIndexDiscard`, ... so
+  `total += i % 7` is three instructions and `m[k] = v;` is four.
 * **Counted loops** — `ForPrep{Lt,Le,Gt,Ge}` / `ForNext{Lt,Le,Gt,Ge}` fold the
   increment, the comparison and the branch into one opcode per iteration, and
   update the counter in place.
@@ -222,6 +222,11 @@ The optimisations that get there:
   the hardware divide.
 * **Cheap calls** — pooled pre-populated frames, per-frame stack reservation, an
   unrolled argument copy for the first nine arities, and inline return paths.
+* **Cheap builtin calls** — a direct-mapped method cache replaces the builtin
+  dictionary lookups, and argument buffers are reused per nesting depth instead
+  of allocating a `Value[]` per call.
+* **Allocation-light strings** — interpolations of ints, bools and strings are
+  written into a stack buffer and copied once into the result string.
 * **Constant folding** in the compiler, including integer `**`.
 * **Locals in a flat slot array** — parameters, receivers and loop counters are
   index-addressed, never looked up by name at runtime.

@@ -178,6 +178,12 @@ namespace TERN.Runtime
                 return Value.Nil;
             }
 
+            // The instruction budget is counted in a local and only published to the
+            // field at frame boundaries: incrementing a heap field on every loop back
+            // edge costs a load/store pair per iteration.
+            var steps = _steps;
+            var budget = _maxInstructions;
+
             while (_frameCount > frameFloor)
             {
                 var frame = _frames[_frameCount - 1];
@@ -415,8 +421,9 @@ namespace TERN.Runtime
 
                             if (value < (long)instruction.B)
                             {
-                                if (++_steps > _maxInstructions)
+                                if (++steps > budget)
                                 {
+                                    _steps = steps;
                                     CheckBudget(frame, ip);
                                 }
 
@@ -439,8 +446,9 @@ namespace TERN.Runtime
 
                             if (value <= (long)instruction.B)
                             {
-                                if (++_steps > _maxInstructions)
+                                if (++steps > budget)
                                 {
+                                    _steps = steps;
                                     CheckBudget(frame, ip);
                                 }
 
@@ -463,8 +471,9 @@ namespace TERN.Runtime
 
                             if (value > (long)instruction.B)
                             {
-                                if (++_steps > _maxInstructions)
+                                if (++steps > budget)
                                 {
+                                    _steps = steps;
                                     CheckBudget(frame, ip);
                                 }
 
@@ -487,8 +496,9 @@ namespace TERN.Runtime
 
                             if (value >= (long)instruction.B)
                             {
-                                if (++_steps > _maxInstructions)
+                                if (++steps > budget)
                                 {
+                                    _steps = steps;
                                     CheckBudget(frame, ip);
                                 }
 
@@ -509,8 +519,9 @@ namespace TERN.Runtime
                                 _ => throw Error("TypeError", $"cannot increment {TypeName(current)}"),
                             };
 
-                            if (++_steps > _maxInstructions)
+                            if (++steps > budget)
                             {
+                                _steps = steps;
                                 CheckBudget(frame, ip);
                             }
 
@@ -621,6 +632,23 @@ namespace TERN.Runtime
                             var target = _stack[--_sp];
                             StoreIndexed(target, index, value);
                             Push(value);
+                            break;
+                        }
+
+                        case Op.StoreIndexDiscard:
+                        {
+                            var value = _stack[--_sp];
+                            var index = _stack[--_sp];
+                            var target = _stack[--_sp];
+                            StoreIndexed(target, index, value);
+                            break;
+                        }
+
+                        case Op.StoreFieldDiscard:
+                        {
+                            var value = _stack[--_sp];
+                            var target = _stack[--_sp];
+                            StoreMember(target, constants[instruction.A].AsString(), value);
                             break;
                         }
 
@@ -973,8 +1001,9 @@ namespace TERN.Runtime
                             // Every loop back edge is an unconditional jump, so counting
                             // steps here is enough to stop runaway scripts while keeping
                             // the per-instruction dispatch free of bookkeeping.
-                            if (++_steps > _maxInstructions)
+                            if (++steps > budget)
                             {
+                                _steps = steps;
                                 CheckBudget(frame, ip);
                             }
 
@@ -1293,6 +1322,7 @@ namespace TERN.Runtime
 
                                 if (_frameCount <= frameFloor)
                                 {
+                                    _steps = steps;
                                     return result;
                                 }
 
@@ -1322,6 +1352,7 @@ namespace TERN.Runtime
 
                                 if (_frameCount <= frameFloor)
                                 {
+                                    _steps = steps;
                                     return result;
                                 }
 
@@ -1344,6 +1375,7 @@ namespace TERN.Runtime
                             frame.Ip = ip;
                             if (ReturnFrame(Value.Nil, frameFloor))
                             {
+                                _steps = steps;
                                 return Value.Nil;
                             }
 
@@ -1417,6 +1449,10 @@ namespace TERN.Runtime
                 }
                 catch (TernError error)
                 {
+                    // Publish the counted steps: an escaping error aborts the loop, and
+                    // the budget must not silently reset when execution resumes later.
+                    _steps = steps;
+
                     // Runtime errors use the same handler stack as `throw`, so scripts
                     // can catch arity/index/type failures alongside their own errors.
                     frame.Ip = ip;
@@ -1427,6 +1463,9 @@ namespace TERN.Runtime
                 }
 
                 nextFrame:
+                _steps = steps;
+                steps = _steps;
+
                 if (_frameCount <= frameFloor)
                 {
                     return Value.Nil;
@@ -1436,6 +1475,7 @@ namespace TERN.Runtime
             return Value.Nil;
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
         private void CheckBudget(Frame frame, int ip)
         {
             if (_steps > Options.MaxInstructions)
@@ -2133,7 +2173,7 @@ namespace TERN.Runtime
             return Value.Str(new string(buffer[..written]));
         }
 
-        private const int ConcatBufferSize = 512;
+        private const int ConcatBufferSize = 64;
         private const int MaxIntLength = 20;
         private const int MaxBoolLength = 5;
 

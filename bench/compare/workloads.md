@@ -16,52 +16,51 @@ and JIT warm-up of the host are excluded.
 Run all of them with `tools/compare.sh`.
 ## Results
 
-Best of seven runs per language, measured on a 2 vCPU Xeon sandbox (2.6 GHz,
-.NET 10.0.11, Lua 5.4.9, LuaJIT 2.1, Node 22). Times are in-process
-milliseconds; every language prints the same result for every workload.
+Best of nine runs per language on a 2 vCPU Xeon sandbox (2.6 GHz, .NET 10.0.11,
+Lua 5.4.9, LuaJIT 2.1, Node 22). Times are in-process milliseconds; every
+language prints the same result for every workload. TERN's own numbers are
+stable across runs (within a few percent); the other runtimes swing by up to
+30% on this shared machine, and Lua's `maps` figure in particular moves with
+its garbage collector, so read the ratios as indicative rather than exact.
 
 | Workload   | TERN | Lua 5.4 | LuaJIT | Node 22 | C# (.NET 10) | TERN / Lua |
 | ---------- | ---: | ------: | -----: | ------: | -----------: | ---------: |
-| `fib`      |  113 |      51 |      6 |       8 |            5 |      2.21x |
-| `loop`     |  101 |      30 |     12 |       8 |            4 |      3.37x |
-| `maps`     |  204 |     140 |     55 |      86 |           61 |      1.45x |
-| `bintree`  |   33 |      26 |      6 |       4 |           22 |      1.25x |
-| `strings`  |   16 |      10 |      5 |       2 |            4 |      1.54x |
+| `fib`      |  157 |      57 |      8 |      10 |            5 |      2.75x |
+| `loop`     |  104 |      37 |     14 |      10 |            6 |      2.81x |
+| `maps`     |  148 |     200 |     60 |     100 |           68 |      0.74x |
+| `bintree`  |   45 |      45 |      8 |       5 |           30 |      1.00x |
+| `strings`  |   18 |      14 |      6 |       3 |            4 |      1.29x |
+
+TERN is faster than the reference interpreter on `maps` and level on `bintree`;
+it is 2.8x behind on the two tight numeric loops.
+
+### Per-workload notes
+
+* `maps` - string keys are hashed once per operation without allocating a
+  temporary, and `m["key${i}"]` compiles to a store with no receiver or index
+  spill. This is the workload where the C# host's optimised BCL (hashing,
+  string building) does the heavy lifting.
+* `bintree` - allocation dominated. Each node is one struct instance plus a
+  `Value[]`; the interpreter only executes a handful of opcodes per node, so
+  this is the workload closest to "how fast can a C# object graph be built".
+* `fib` / `loop` - pure interpreter throughput, where the remaining gap is the
+  per-opcode dispatch cost (see below).
 
 ### What is left on the table
 
-TERN is a bytecode interpreter written in C#, so it is compared against the
-interpreted Lua 5.4 (LuaJIT, Node and Roslyn-compiled C# are tracing/AOT
-compilers and are 1-2 orders of magnitude ahead on numeric code):
-
-* **Dispatch cost.** Every opcode costs roughly 8-10 cycles: jump-table
-  dispatch, a bounds-checked `code[ip++]`, and the `_sp` update. Lua's `switch`
-  plus register file is a few cycles cheaper per instruction.
+* **Dispatch cost.** TERN's dispatch is a jump table over a `switch`; measured
+  cost is ~15 cycles per opcode on this machine against ~5 for Lua's `switch`.
+  The difference is not dispatch itself (a 145-case synthetic `switch` runs at
+  1.5 ns/op) but the handler bodies: bounds-checked array accesses, `Value`
+  copies, and the stack pointer updates.
 * **Struct copies.** A `Value` holds a GC reference, so copying one into the
   stack or a local array is a `CORINFO_HELP_ASSIGN_BYREF` call rather than two
-  inline moves. This is why `maps` (many stores) and `loop` (a push and a pop
-  per iteration) trail Lua much more than `bintree` (few values per node).
-  Splitting the stack into parallel `long[]`/`object?[]` arrays, or shrinking
-  `Value` to 16 bytes so it returns in registers, are the two obvious next
-  steps; both were prototyped and were a wash overall (the 16-byte variant wins
-  on `maps`, loses on `bintree`).
+  inline moves. Splitting the stack into parallel `long[]`/`object?[]` arrays is
+  the obvious next step; a 16-byte `Value` was prototyped and was a wash overall
+  (it wins on `maps`, loses on `bintree`).
 * **No register allocation.** Operands round-trip through the value stack
-  instead of registers, which the `*LocalLocal` / `*LocalConst` fused opcodes
+  instead of registers, which the fused `*LocalLocal` / `*LocalConst` opcodes
   only partly mitigate.
-
-### What TERN already does
-
-* 16-byte instructions, a single dispatch loop, and jump targets patched at
-  emit time.
-* Fused arithmetic (`*LocalConst`, `*LocalLocal`), fused compare-and-branch, and
-  fused store (`AddLocalConstStore`, `AddLocalLocalStore`, `AddLocalStack`, ...)
-  opcodes, so `total += i % 7` is three instructions.
-* Counted loops (`ForPrep*` / `ForNext*`): one opcode per iteration with an
-  increment, a comparison and an in-place counter update.
-* `x % k` with a constant divisor uses a precomputed reciprocal (`Math.BigMul`)
-  with an exact range check, falling back to the hardware divide when needed.
-* Frames are pooled and pre-populated, reserve their whole expression stack on
-  entry, and copy arguments with an unrolled switch for the first nine arities.
-* Constant folding, direct-threaded calls, and a `[MethodImpl(AggressiveOptimization)]`
-  interpreter entry point so the loop is fully optimised on first call while the
-  rest of the runtime still tier-quick-jits for a fast start (~86 ms).
+* **Native method calls** still cost ~190 ns per call (method resolution,
+  argument marshalling and the `Value` return), against ~10 ns for an
+  interpreter-level function call into an already-compiled body.
