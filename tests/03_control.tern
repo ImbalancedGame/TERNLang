@@ -1,0 +1,34 @@
+let n = 0;
+while n < 3 {
+    println("while " + n);
+    n = n + 1;
+}
+
+for (let i = 0; i < 3; i++) {
+    if (i == 1) { continue; }
+    println("cfor " + i);
+}
+
+for i in 0..3 { println("range " + i); }
+for i in 0..<3 { println("excl " + i); }
+for item in ["a", "b"] { println("item " + item); }
+
+let total = 0;
+loop {
+    total += 1;
+    if (total >= 3) { break; }
+}
+println("loop total " + total);
+
+let i = 0;
+do {
+    i++;
+} while (i < 2);
+println("do " + i);
+
+if n == 3 { println("if"); } else if n == 4 { println("elseif"); } else { println("else"); }
+let label = if n > 2 { "big" } else { "small" };
+println(label);
+let nested = if true { if false { 1 } else { 2 } } else { 3 };
+println(nested);
+println(if n == 0 { "zero" } else { "nonzero" });

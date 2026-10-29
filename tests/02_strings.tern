@@ -1,0 +1,27 @@
+let name = "TERN";
+println("hello, ${name}!");
+println("sum: ${1 + 2}, nested: ${"in" + "ner"}");
+println("tab:\there");
+println("quote: \"q\"");
+println("unicode: \u{1F600}");
+println("${name}".length);
+println("abc".upper());
+println("  pad  ".trim());
+println("a,b,c".split(","));
+println("a,b,c".split(",").join("-"));
+println("hello".startsWith("he"));
+println("hello".endsWith("lo"));
+println("hello".contains("ell"));
+println("hello".indexOf("l"));
+println("hello".replace("l", "L"));
+println("hello".substring(1, 3));
+println("ab".repeat(3));
+println("x".padStart(3, "."));
+println("12".toInt() + 1);
+println("3.5".toFloat() * 2);
+println("abc"[1]);
+println("abcdef"[1..3]);
+println("a b  c".words());
+for c in "hey" { print(c + "."); }
+println("");
+println(str(42) + str(1.5) + str(nil) + str(true));

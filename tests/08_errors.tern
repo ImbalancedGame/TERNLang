@@ -1,0 +1,59 @@
+try {
+    throw "boom";
+} catch (e) {
+    println("caught: " + e);
+}
+
+try {
+    let x = [1][5];
+} catch (e) {
+    println("index: " + e);
+}
+
+try {
+    nil.foo();
+} catch (e) {
+    println("member: " + e);
+}
+
+fn mayFail(n) {
+    if (n < 0) { throw "negative input"; }
+    return n;
+}
+try {
+    mayFail(-1);
+} catch (e) {
+    println("fn: " + e);
+}
+
+try { throw "a"; } catch (e) { println("inner " + e); } finally { println("finally runs"); }
+
+try {
+    try {
+        throw "deep";
+    } finally {
+        println("cleanup");
+    }
+} catch (e) {
+    println("outer caught: " + e);
+}
+
+let count = 0;
+fn risky() {
+    try {
+        count += 1;
+        if count < 3 { throw "retry"; }
+        return "ok";
+    } catch (e) {
+        return risky();
+    }
+}
+println(risky());
+
+try {
+    assert(1 == 2, "math is broken");
+} catch (e) {
+    println("assert: " + e);
+}
+
+error("custom failure");

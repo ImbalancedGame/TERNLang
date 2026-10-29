@@ -1,0 +1,9 @@
+import "10_modules_lib.tern" as lib;
+println(lib.greet("TERN"));
+println(lib.VERSION);
+println(lib.double(21));
+import "std:math";
+println(sqrt(25));
+println(max(3, 9));
+import "std:json";
+println(stringify({"imported": true}));

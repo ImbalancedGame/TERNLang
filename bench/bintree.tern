@@ -1,0 +1,12 @@
+// Allocation + field access heavy.
+struct Node { left, right }
+fn make(depth) {
+    if (depth == 0) { return nil; }
+    return Node(make(depth - 1), make(depth - 1));
+}
+fn count(node) {
+    if (node == nil) { return 0; }
+    return 1 + count(node.left) + count(node.right);
+}
+let tree = make(16);
+println(count(tree));

@@ -1,0 +1,9 @@
+// String building and method dispatch.
+let parts = [];
+for (let i = 0; i < 20000; i++) {
+    parts.push("item-${i}");
+}
+let text = parts.join(",");
+println(text.length);
+println(text.split(",").length);
+println(text.upper().length);

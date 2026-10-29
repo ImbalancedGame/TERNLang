@@ -1,0 +1,46 @@
+let xs = [3, 1, 2];
+println(xs);
+println(xs.length);
+xs.push(4);
+println(xs);
+println(xs.pop());
+println(xs.sort());
+println(xs.map(fn(v) => v * 10));
+println(xs.filter(fn(v) => v > 1));
+println(xs.reduce(fn(acc, v) => acc + v, 0));
+println(xs.sum());
+println(xs.min());
+println(xs.max());
+println(xs.contains(2));
+println(xs.indexOf(2));
+println([1, 2] + [3]);
+println([1, [2, [3]]].flatten(2));
+println([1, 1, 2].unique());
+println(["b", "a"].sort());
+println([3, 1, 2].sort(fn(a, b) => b - a));
+println(range(0, 5));
+println(range(0, 5).toList());
+println([1, 2, 3][-1]);
+
+let m = {"b": 2, "a": 1};
+println(m);
+println(m.a);
+println(m["b"]);
+m["c"] = 3;
+println(m);
+println(m.keys());
+println(m.values());
+println(m.length);
+println(m.has("a"));
+println(m.get("zz", "default"));
+println(m.entries());
+for k, v in m { print("${k}=${v} "); }
+println("");
+let merged = {"a": 1} + {"a": 2, "b": 3};
+println(merged);
+
+let nested = {"list": [1, {"deep": true}]};
+println(nested.list[1].deep);
+println(json.stringify({"k": [1, nil, true]}));
+println(json.parse("{\"n\": 1, \"f\": 2.5, \"s\": \"x\"}"));
+println(type([]), type({}), type(""), type(1), type(1.5), type(nil), type(true));

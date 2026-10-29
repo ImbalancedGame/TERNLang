@@ -1,0 +1,11 @@
+caught: boom
+index: index 5 out of range for list of length 1
+member: nil has no method 'foo'
+fn: negative input
+inner a
+finally runs
+cleanup
+outer caught: deep
+ok
+assert: math is broken
+Error: custom failure

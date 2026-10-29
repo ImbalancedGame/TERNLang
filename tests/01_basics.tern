@@ -1,0 +1,46 @@
+// arithmetic, precedence and numbers
+println(1 + 2 * 3);
+println((1 + 2) * 3);
+println(10 / 2);
+println(7 / 2);
+println(7 % 3);
+println(2 ** 10);
+println(-2 ** 2);
+println(1 + 2.5);
+println(0.1 + 0.2);
+println(1 == 1.0);
+println(3 > 2 && 2 > 1);
+println(!false);
+println(5 & 3);
+println(5 | 3);
+println(5 ^ 3);
+println(1 << 4);
+println(16 >> 2);
+println(~0);
+println(nil ?? "fallback");
+println("a" + "b" + 1);
+
+// variables and scoping
+let x = 1;
+{
+    let x = 2;
+    println("inner " + x);
+}
+println("outer " + x);
+const LIMIT = 3;
+println(LIMIT);
+
+// assignment operators
+let counter = 0;
+counter += 5;
+counter -= 2;
+counter *= 3;
+counter /= 3;
+println(counter);
+let y = 5;
+y++;
+println(y);
+println(++y);
+let z = 10;
+println(z--);
+println(z);

@@ -1,0 +1,325 @@
+using System;
+using System.Collections.Generic;
+using TERN.Runtime;
+
+namespace TERN.Compiler
+{
+    /// <summary>
+    /// Stack machine instruction set. Instructions are fixed size and carry up to
+    /// four operands so the dispatch loop never has to decode variable length data.
+    /// The most common patterns (local arithmetic, compare-and-branch) have fused
+    /// opcodes to cut dispatch count in hot loops.
+    /// </summary>
+    public enum Op : byte
+    {
+        Nop = 0,
+        Pop,
+        Dup,
+        Swap,
+
+        // literals
+        LoadNil,
+        LoadTrue,
+        LoadFalse,
+        LoadInt,        // A = int32 immediate
+        LoadConst,      // A = constant index
+
+        // variables
+        LoadLocal,      // A = slot
+        StoreLocal,     // A = slot
+        LoadGlobal,     // A = module global slot
+        StoreGlobal,    // A = module global slot
+        LoadUpvalue,    // A = upvalue index
+        StoreUpvalue,   // A = upvalue index
+        IncLocal,       // A = slot, B = delta
+        ArgOrJump,      // A = slot, B = target (jump when argument was provided)
+
+        // members
+        LoadField,      // A = name constant
+        StoreField,     // A = name constant
+        LoadIndex,
+        StoreIndex,
+
+        // aggregates
+        NewRange,
+        NewList,        // A = item count
+        NewMap,         // A = pair count
+        NewInstance,    // A = type constant, B = argument count
+        LoadModule,     // A = module constant
+        Concat,         // A = part count
+
+        // arithmetic
+        Add,
+        Sub,
+        Mul,
+        Div,
+        Mod,
+        Pow,
+        Neg,
+        Not,
+        BNot,
+        BAnd,
+        BOr,
+        BXor,
+        Shl,
+        Shr,
+
+        // comparison
+        Eq,
+        Ne,
+        Lt,
+        Le,
+        Gt,
+        Ge,
+
+        // fused arithmetic on operands already in locals
+        AddLocalLocal, SubLocalLocal, MulLocalLocal, DivLocalLocal, ModLocalLocal,
+        AddLocalConst, SubLocalConst, MulLocalConst, DivLocalConst, ModLocalConst,
+
+        // control flow
+        Jump,
+        JumpIfFalse,      // pops
+        JumpIfTrue,       // pops
+        JumpIfFalseLocal, // A = slot, B = target (no pop)
+        JumpIfTrueLocal,  // A = slot, B = target (no pop)
+        JumpIfFalseKeep,  // peeks
+        JumpIfTrueKeep,   // peeks
+        JumpIfNotNullKeep,// peeks
+        JumpIfNotList,    // A = slot, B = target (no pop)
+        JumpCmp,          // A = comparison op code, B = target, C = 1 when jumping on true
+
+        // calls
+        Call,             // A = argument count
+        CallLocal,        // A = argument count, B = slot
+        CallGlobal,       // A = argument count, B = global slot
+        Invoke,           // A = name constant, B = argument count
+        Return,
+        ReturnNil,
+        MakeClosure,      // A = prototype index
+        CloseUpvalues,    // A = first slot to close
+
+        // conversions
+        ToString,
+        TypeOf,
+
+        // iteration
+        IterNew,
+        IterNext,         // A = exit target, B = binding count
+
+        // exceptions
+        EnterTry,         // A = handler target
+        ExitTry,
+        Throw,
+
+        // operators and slicing
+        In,               // pops item, container; pushes bool
+        Slice,            // A = 1 when the end bound is inclusive; pops end, start, target
+    }
+
+    public readonly struct Instr
+    {
+        public readonly Op Op;
+        public readonly int A;
+        public readonly int B;
+        public readonly int C;
+
+        public Instr(Op op, int a = 0, int b = 0, int c = 0)
+        {
+            Op = op;
+            A = a;
+            B = b;
+            C = c;
+        }
+
+        public override string ToString() => A == 0 && B == 0 && C == 0
+            ? Op.ToString()
+            : $"{Op} {A} {B} {C}".TrimEnd();
+    }
+
+    /// <summary>How a closure captures one of its upvalues.</summary>
+    public readonly struct UpvalueDescriptor
+    {
+        public readonly bool FromLocal;
+        public readonly int Index;
+
+        public UpvalueDescriptor(bool fromLocal, int index)
+        {
+            FromLocal = fromLocal;
+            Index = index;
+        }
+    }
+
+    /// <summary>A compiled function or module body.</summary>
+    public sealed class FunctionProto
+    {
+        public required string Name { get; init; }
+        public required Instr[] Instructions { get; init; }
+        public required Value[] Constants { get; init; }
+        public required UpvalueDescriptor[] Upvalues { get; init; }
+        public required FunctionProto?[] Prototypes { get; init; }
+        public required int ParamCount { get; init; }
+        public required int RequiredParams { get; init; }
+        public required bool HasRest { get; init; }
+        public required int LocalCount { get; init; }
+        public required int MaxStack { get; init; }
+        public required int[] Lines { get; init; }
+        public string? SourceName { get; init; }
+        public bool IsMethod { get; init; }
+        public ModuleScope? Scope { get; init; }
+
+        public int Arity => RequiredParams;
+    }
+
+    /// <summary>One module-level variable slot. Host bindings are prefilled by the engine.</summary>
+    public sealed class GlobalSlot
+    {
+        public required string Name { get; init; }
+        public bool IsConst { get; init; }
+        public Value HostValue { get; init; }
+        public bool IsHost { get; init; }
+        public bool Exported { get; set; }
+    }
+
+    /// <summary>Compile time view of a module's globals.</summary>
+    public sealed class ModuleScope
+    {
+        private readonly List<GlobalSlot> _slots = new();
+        private readonly Dictionary<string, int> _byName = new(StringComparer.Ordinal);
+
+        public ModuleScope(string name)
+        {
+            Name = name;
+        }
+
+        public string Name { get; }
+
+        public IReadOnlyList<GlobalSlot> Slots => _slots;
+
+        public int Count => _slots.Count;
+
+        public bool TryResolve(string name, out int slot) => _byName.TryGetValue(name, out slot);
+
+        public int Declare(string name, bool isConst, bool exported = false)
+        {
+            if (_byName.TryGetValue(name, out var existing))
+            {
+                return existing;
+            }
+
+            var slot = _slots.Count;
+            _slots.Add(new GlobalSlot { Name = name, IsConst = isConst, Exported = exported });
+            _byName[name] = slot;
+            return slot;
+        }
+
+        public int DeclareHost(string name, Value value)
+        {
+            if (_byName.TryGetValue(name, out var existing))
+            {
+                return existing;
+            }
+
+            var slot = _slots.Count;
+            _slots.Add(new GlobalSlot { Name = name, IsConst = true, IsHost = true, HostValue = value });
+            _byName[name] = slot;
+            return slot;
+        }
+
+        public void MarkExported(string name)
+        {
+            if (_byName.TryGetValue(name, out var slot))
+            {
+                _slots[slot].Exported = true;
+            }
+        }
+
+        public bool IsConst(int slot) => _slots[slot].IsConst;
+    }
+
+    /// <summary>A loaded module: its compiled body plus its runtime global array.</summary>
+    public sealed class TernModule
+    {
+        public TernModule(string name, string? path, FunctionProto entry, ModuleScope scope)
+        {
+            Name = name;
+            Path = path;
+            Entry = entry;
+            Scope = scope;
+            Globals = new Value[Math.Max(scope.Count, 8)];
+            SeedHostValues(0);
+        }
+
+        public string Name { get; }
+        public string? FilePath => Path;
+        public string? Path { get; }
+        public FunctionProto Entry { get; private set; }
+        public ModuleScope Scope { get; }
+        public Value[] Globals { get; private set; }
+        public bool Initialized { get; set; }
+
+        /// <summary>Replaces the body (used by the REPL, which recompiles into one module).</summary>
+        public void ReplaceEntry(FunctionProto entry)
+        {
+            Entry = entry;
+            EnsureGlobals(Scope.Count);
+            Initialized = false;
+            _exports = null;
+        }
+
+        public void EnsureGlobals(int count)
+        {
+            if (Globals.Length < count)
+            {
+                var replacement = new Value[Math.Max(count, Globals.Length * 2)];
+                Array.Copy(Globals, replacement, Globals.Length);
+                Globals = replacement;
+            }
+
+            SeedHostValues(count);
+        }
+
+        /// <summary>Fills slots that the host pre-registered (print, math, ...).</summary>
+        private void SeedHostValues(int upTo)
+        {
+            var slots = Scope.Slots;
+            var limit = Math.Min(upTo <= 0 ? slots.Count : upTo, Math.Min(slots.Count, Globals.Length));
+
+            for (var i = 0; i < limit; i++)
+            {
+                if (slots[i].IsHost)
+                {
+                    Globals[i] = slots[i].HostValue;
+                }
+            }
+        }
+        public bool Initializing { get; set; }
+        private TernMap? _exports;
+
+        public TernMap Exports
+        {
+            get
+            {
+                if (_exports is not null)
+                {
+                    return _exports;
+                }
+
+                var map = new TernMap();
+                var slots = Scope.Slots;
+                for (var i = 0; i < slots.Count; i++)
+                {
+                    var slot = slots[i];
+                    if (slot.IsHost || !slot.Exported)
+                    {
+                        continue;
+                    }
+
+                    map.Set(Value.Str(slot.Name), Globals[i]);
+                }
+
+                _exports = map;
+                return map;
+            }
+        }
+    }
+}

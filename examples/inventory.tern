@@ -1,0 +1,34 @@
+// Structs, methods and derived values.
+struct Item {
+    sku, name, price, quantity
+
+    fn total() { return this.price * this.quantity; }
+    fn label() { return "${this.sku}: ${this.name}"; }
+}
+
+struct Inventory {
+    items = []
+
+    fn add(item) { this.items.push(item); return this; }
+
+    fn value() {
+        let sum = 0.0;
+        for item in this.items { sum += item.total(); }
+        return sum;
+    }
+
+    fn reorder() {
+        return this.items.filter(fn(i) => i.quantity < 5).map(fn(i) => i.label());
+    }
+}
+
+let store = Inventory();
+store.add(Item("A-1", "kettle", 24.5, 12));
+store.add(Item("B-7", "toaster", 39.0, 3));
+store.add(Item("C-3", "mug", 6.25, 40));
+
+for item in store.items {
+    println(item.label().padEnd(22) + str(item.total()).padStart(8) + " qty " + str(item.quantity));
+}
+println("inventory value: ${store.value()}");
+println("needs reordering: ${store.reorder()}");

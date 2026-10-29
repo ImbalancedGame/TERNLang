@@ -1,0 +1,2104 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using TERN.Builtins;
+using TERN.Compiler;
+
+namespace TERN.Runtime
+{
+    /// <summary>Limits that keep a script from taking the host down.</summary>
+    public sealed class VmOptions
+    {
+        public long MaxInstructions { get; set; } = 2_000_000_000;
+        public int MaxCallDepth { get; set; } = 1024;
+        public int MaxCollectionSize { get; set; } = 8_000_000;
+        public long MaxStringLength { get; set; } = 16_000_000;
+    }
+
+    /// <summary>
+    /// Stack based bytecode interpreter.
+    ///
+    /// Design notes (all aimed at the hot path):
+    ///  * values are 16 byte structs, so int/float math never allocates;
+    ///  * locals live in one flat <see cref="Value"/> array indexed by frame base,
+    ///    which the compiler resolves to constant slots, so variable access is a
+    ///    single array read;
+    ///  * instructions are fixed size and the switch below is dense, which the JIT
+    ///    turns into a jump table;
+    ///  * the frequent patterns (local + const, compare + branch, local increment)
+    ///    have dedicated opcodes, cutting dispatch count in loops;
+    ///  * frames, handlers and iteration state are pooled arrays rather than
+    ///    per call heap objects.
+    /// </summary>
+    public sealed class VM
+    {
+        private sealed class Frame
+        {
+            public TernClosure? Closure;
+            public TernModule? Module;
+            public Instr[] Code = Array.Empty<Instr>();
+            public Value[] Constants = Array.Empty<Value>();
+            public int Ip;
+            public int LocalsBase;
+            public int StackBase;
+            public int Argc;
+            public bool IsMethod;
+            public List<Upvalue>? OpenUpvalues;
+        }
+
+        private readonly struct Handler
+        {
+            public readonly int FrameIndex;
+            public readonly int Ip;
+            public readonly int StackDepth;
+
+            public Handler(int frameIndex, int ip, int stackDepth)
+            {
+                FrameIndex = frameIndex;
+                Ip = ip;
+                StackDepth = stackDepth;
+            }
+        }
+
+        private Value[] _stack = new Value[256];
+        private int _sp;
+        private Value[] _locals = new Value[256];
+        private int _localsTop;
+        private Frame[] _frames = new Frame[64];
+        private int _frameCount;
+        private readonly List<Handler> _handlers = new();
+        private long _steps;
+
+        private static readonly Frame EmptyFrame = new();
+
+        public VM(VmOptions? options = null)
+        {
+            Options = options ?? new VmOptions();
+        }
+
+        public VmOptions Options { get; }
+
+        public TernEngine? Engine { get; internal set; }
+
+        public TextWriter Output { get; set; } = Console.Out;
+
+        public TextReader Input { get; set; } = Console.In;
+
+        public TextWriter ErrorOutput { get; set; } = Console.Error;
+
+        // ------------------------------------------------------------- execution
+
+        /// <summary>Runs a module body once.</summary>
+        public Value ExecuteModule(TernModule module)
+        {
+            if (module.Initialized)
+            {
+                return Value.Nil;
+            }
+
+            if (module.Initializing)
+            {
+                throw Error("ImportError", $"circular import of module '{module.Name}'");
+            }
+
+            module.Initializing = true;
+
+            try
+            {
+                var closure = new TernClosure(module.Entry, Array.Empty<Upvalue>()) { Module = module };
+                var result = CallValue(Value.Of(closure), ReadOnlySpan<Value>.Empty);
+                module.Initialized = true;
+                return result;
+            }
+            finally
+            {
+                module.Initializing = false;
+            }
+        }
+
+        /// <summary>Runs a bare prototype (used for lazy struct field defaults).</summary>
+        public Value CallProto(FunctionProto prototype)
+        {
+            var closure = new TernClosure(prototype, Array.Empty<Upvalue>());
+            return CallValue(Value.Of(closure), ReadOnlySpan<Value>.Empty);
+        }
+
+        /// <summary>Calls a TERN value from host code (or from a native function).</summary>
+        public Value CallValue(in Value callee, ReadOnlySpan<Value> arguments)
+        {
+            var floor = _frameCount;
+            Push(callee);
+            var argsBase = _sp;
+            foreach (var argument in arguments)
+            {
+                Push(argument);
+            }
+
+            if (!TryEnterCall(callee, arguments.Length, argsBase, argsBase - 1))
+            {
+                throw Error("TypeError", $"{TypeName(callee)} is not callable");
+            }
+
+            return Run(floor);
+        }
+
+        private Value Run(int frameFloor)
+        {
+            if (_frameCount <= frameFloor)
+            {
+                return Value.Nil;
+            }
+
+            while (_frameCount > frameFloor)
+            {
+                var frame = _frames[_frameCount - 1];
+                var code = frame.Code;
+                var constants = frame.Constants;
+                var ip = frame.Ip;
+                var frameBase = frame.LocalsBase;
+                var locals = _locals;
+                var module = frame.Module;
+
+                try
+                {
+                while (true)
+                {
+                    if ((_steps++ & 0x0FFF) == 0)
+                    {
+                        CheckBudget(frame, ip);
+                    }
+
+                    var instruction = code[ip++];
+
+                    switch (instruction.Op)
+                    {
+                        case Op.Nop:
+                            break;
+
+                        case Op.Pop:
+                            _sp--;
+                            break;
+
+                        case Op.Dup:
+                            Push(_stack[_sp - 1]);
+                            break;
+
+                        case Op.Swap:
+                        {
+                            var top = _stack[_sp - 1];
+                            _stack[_sp - 1] = _stack[_sp - 2];
+                            _stack[_sp - 2] = top;
+                            break;
+                        }
+
+                        case Op.LoadNil:
+                            Push(Value.Nil);
+                            break;
+
+                        case Op.LoadTrue:
+                            Push(Value.True);
+                            break;
+
+                        case Op.LoadFalse:
+                            Push(Value.False);
+                            break;
+
+                        case Op.LoadInt:
+                            Push(new Value(instruction.A));
+                            break;
+
+                        case Op.LoadConst:
+                            Push(constants[instruction.A]);
+                            break;
+
+                        case Op.LoadLocal:
+                        {
+                            locals = _locals;
+                            Push(locals[frameBase + instruction.A]);
+                            break;
+                        }
+
+                        case Op.StoreLocal:
+                        {
+                            locals = _locals;
+                            locals[frameBase + instruction.A] = _stack[--_sp];
+                            break;
+                        }
+
+                        case Op.LoadGlobal:
+                            Push(module.Globals[instruction.A]);
+                            break;
+
+                        case Op.StoreGlobal:
+                            module.Globals[instruction.A] = _stack[--_sp];
+                            break;
+
+                        case Op.LoadUpvalue:
+                            Push(frame.Closure!.Upvalues[instruction.A].Get());
+                            break;
+
+                        case Op.StoreUpvalue:
+                            frame.Closure!.Upvalues[instruction.A].Set(_stack[--_sp]);
+                            break;
+
+                        case Op.IncLocal:
+                        {
+                            locals = _locals;
+                            ref var cell = ref locals[frameBase + instruction.A];
+                            var current = cell;
+                            if (current.Kind == ValueKind.Int)
+                            {
+                                cell = new Value(unchecked(current.AsInt() + instruction.B));
+                                break;
+                            }
+
+                            if (current.Kind == ValueKind.Float)
+                            {
+                                cell = new Value(current.AsDouble() + instruction.B);
+                                break;
+                            }
+
+                            throw Error("TypeError", $"cannot increment {TypeName(current)}");
+                        }
+
+                        case Op.ArgOrJump:
+                        {
+                            locals = _locals;
+                            if (locals[frameBase + instruction.A].Kind != ValueKind.Missing)
+                            {
+                                ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
+                        case Op.CloseUpvalues:
+                        {
+                            var open = frame.OpenUpvalues;
+                            if (open is not null)
+                            {
+                                for (var i = open.Count - 1; i >= 0; i--)
+                                {
+                                    if (open[i].Index >= frameBase + instruction.A)
+                                    {
+                                        open[i].Close();
+                                        open.RemoveAt(i);
+                                    }
+                                }
+                            }
+
+                            break;
+                        }
+
+                        case Op.LoadField:
+                        {
+                            var target = _stack[--_sp];
+                            Push(LoadMember(target, constants[instruction.A].AsString()));
+                            break;
+                        }
+
+                        case Op.LoadIndex:
+                        {
+                            var index = _stack[--_sp];
+                            var target = _stack[--_sp];
+                            Push(LoadIndexed(target, index));
+                            break;
+                        }
+
+                        case Op.StoreIndex:
+                        {
+                            var value = _stack[--_sp];
+                            var index = _stack[--_sp];
+                            var target = _stack[--_sp];
+                            StoreIndexed(target, index, value);
+                            Push(value);
+                            break;
+                        }
+
+                        case Op.StoreField:
+                        {
+                            var value = _stack[--_sp];
+                            var target = _stack[--_sp];
+                            StoreMember(target, constants[instruction.A].AsString(), value);
+                            Push(value);
+                            break;
+                        }
+
+                        case Op.In:
+                        {
+                            var container = _stack[--_sp];
+                            var item = _stack[--_sp];
+
+                            if (container.Kind == ValueKind.List)
+                            {
+                                var list = container.AsList();
+                                var found = false;
+                                for (var i = 0; i < list.Count; i++)
+                                {
+                                    if (list[i].Equals(item))
+                                    {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+
+                                Push(Value.Bool(found));
+                                break;
+                            }
+
+                            Push(Value.Bool(Contains(item, container)));
+                            break;
+                        }
+
+                        case Op.Slice:
+                        {
+                            var end = _stack[--_sp];
+                            var start = _stack[--_sp];
+                            var target = _stack[--_sp];
+                            Push(Slice(target, start, end, instruction.A != 0));
+                            break;
+                        }
+
+                        case Op.NewRange:
+                        {
+                            var end = _stack[--_sp];
+                            var start = _stack[--_sp];
+                            if (start.Kind != ValueKind.Int || end.Kind != ValueKind.Int)
+                            {
+                                throw Error("TypeError", "range bounds must be integers");
+                            }
+
+                            Push(Value.Of(new TernRange(start.AsInt(), end.AsInt(), instruction.A != 0)));
+                            break;
+                        }
+
+                        case Op.LoadModule:
+                        {
+                            var target = constants[instruction.A].AsModule();
+                            ExecuteModule(target);
+                            Push(Value.Of(target));
+                            break;
+                        }
+
+                        case Op.NewList:
+                        {
+                            var count = instruction.A;
+                            var list = new TernList(count);
+                            var start = _sp - count;
+                            for (var i = 0; i < count; i++)
+                            {
+                                list.Add(_stack[start + i]);
+                            }
+
+                            _sp = start;
+                            Push(Value.Of(list));
+                            break;
+                        }
+
+                        case Op.NewMap:
+                        {
+                            var pairs = instruction.A;
+                            var map = new TernMap(Math.Max(4, pairs));
+                            var start = _sp - pairs * 2;
+                            for (var i = 0; i < pairs; i++)
+                            {
+                                map.Set(_stack[start + i * 2], _stack[start + i * 2 + 1]);
+                            }
+
+                            _sp = start;
+                            Push(Value.Of(map));
+                            break;
+                        }
+
+                        case Op.NewInstance:
+                        {
+                            var argc = instruction.B;
+                            var typeValue = constants[instruction.A];
+                            var type = (TernType)typeValue.AsObject()!;
+                            var instance = type.Create(this);
+
+                            if (argc > type.FieldCount)
+                            {
+                                throw Error("TypeError",
+                                    $"{type.Name}() takes at most {type.FieldCount} field arguments but {argc} were given");
+                            }
+
+                            var start = _sp - argc;
+                            for (var i = 0; i < argc; i++)
+                            {
+                                instance.Fields[i] = _stack[start + i];
+                            }
+
+                            _sp = start;
+                            Push(Value.Of(instance));
+                            break;
+                        }
+
+                        case Op.Concat:
+                        {
+                            var count = instruction.A;
+                            var start = _sp - count;
+                            if (count == 1)
+                            {
+                                _stack[start] = Value.Str(_stack[start].ToDisplayString());
+                                _sp = start + 1;
+                                break;
+                            }
+
+                            var builder = new StringBuilder(32);
+                            for (var i = 0; i < count; i++)
+                            {
+                                builder.Append(_stack[start + i].ToDisplayString());
+                            }
+
+                            _sp = start;
+                            Push(Value.Str(builder.ToString()));
+                            break;
+                        }
+
+                        case Op.Add:
+                        case Op.Sub:
+                        case Op.Mul:
+                        case Op.Div:
+                        case Op.Mod:
+                        case Op.Pow:
+                        case Op.BAnd:
+                        case Op.BOr:
+                        case Op.BXor:
+                        case Op.Shl:
+                        case Op.Shr:
+                        case Op.Eq:
+                        case Op.Ne:
+                        case Op.Lt:
+                        case Op.Le:
+                        case Op.Gt:
+                        case Op.Ge:
+                        {
+                            var right = _stack[--_sp];
+                            var left = _stack[--_sp];
+                            Push(BinaryOp(instruction.Op, left, right));
+                            break;
+                        }
+
+                        case Op.AddLocalLocal:
+                        case Op.SubLocalLocal:
+                        case Op.MulLocalLocal:
+                        case Op.DivLocalLocal:
+                        case Op.ModLocalLocal:
+                        {
+                            locals = _locals;
+                            var left = locals[frameBase + instruction.A];
+                            var right = locals[frameBase + instruction.B];
+                            Push(ArithmeticOp(instruction.Op, left, right));
+                            break;
+                        }
+
+                        case Op.AddLocalConst:
+                        case Op.SubLocalConst:
+                        case Op.MulLocalConst:
+                        case Op.DivLocalConst:
+                        case Op.ModLocalConst:
+                        {
+                            locals = _locals;
+                            var left = locals[frameBase + instruction.A];
+                            Push(ArithmeticOp(instruction.Op, left, constants[instruction.B]));
+                            break;
+                        }
+
+                        case Op.Neg:
+                        {
+                            var value = _stack[_sp - 1];
+                            if (value.Kind == ValueKind.Int)
+                            {
+                                _stack[_sp - 1] = new Value(unchecked(-value.AsInt()));
+                                break;
+                            }
+
+                            if (value.Kind == ValueKind.Float)
+                            {
+                                _stack[_sp - 1] = new Value(-value.AsDouble());
+                                break;
+                            }
+
+                            throw Error("TypeError", $"cannot negate {TypeName(value)}");
+                        }
+
+                        case Op.Not:
+                            _stack[_sp - 1] = Value.Bool(!_stack[_sp - 1].Truthy);
+                            break;
+
+                        case Op.BNot:
+                        {
+                            var value = _stack[_sp - 1];
+                            if (value.Kind != ValueKind.Int)
+                            {
+                                throw Error("TypeError", "bitwise not requires an integer");
+                            }
+
+                            _stack[_sp - 1] = new Value(~value.AsInt());
+                            break;
+                        }
+
+                        case Op.Jump:
+                            ip = instruction.A;
+                            break;
+
+                        case Op.JumpIfFalse:
+                            if (!_stack[--_sp].Truthy)
+                            {
+                                ip = instruction.A;
+                            }
+
+                            break;
+
+                        case Op.JumpIfTrue:
+                            if (_stack[--_sp].Truthy)
+                            {
+                                ip = instruction.A;
+                            }
+
+                            break;
+
+                        case Op.JumpIfFalseKeep:
+                            if (!_stack[_sp - 1].Truthy)
+                            {
+                                ip = instruction.A;
+                            }
+
+                            break;
+
+                        case Op.JumpIfTrueKeep:
+                            if (_stack[_sp - 1].Truthy)
+                            {
+                                ip = instruction.A;
+                            }
+
+                            break;
+
+                        case Op.JumpIfNotNullKeep:
+                            if (!_stack[_sp - 1].IsNil)
+                            {
+                                ip = instruction.A;
+                            }
+
+                            break;
+
+                        case Op.JumpIfFalseLocal:
+                        {
+                            locals = _locals;
+                            if (!locals[frameBase + instruction.A].Truthy)
+                            {
+                                ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
+                        case Op.JumpIfTrueLocal:
+                        {
+                            locals = _locals;
+                            if (locals[frameBase + instruction.A].Truthy)
+                            {
+                                ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
+                        case Op.JumpIfNotList:
+                        {
+                            locals = _locals;
+                            if (locals[frameBase + instruction.A].Kind != ValueKind.List)
+                            {
+                                ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
+                        case Op.JumpCmp:
+                        {
+                            var right = _stack[--_sp];
+                            var left = _stack[--_sp];
+                            bool condition;
+                            switch ((CompareOp)instruction.A)
+                            {
+                                case CompareOp.Lt:
+                                    condition = CompareOrThrow(left, right) < 0;
+                                    break;
+                                case CompareOp.Le:
+                                    condition = CompareOrThrow(left, right) <= 0;
+                                    break;
+                                case CompareOp.Gt:
+                                    condition = CompareOrThrow(left, right) > 0;
+                                    break;
+                                case CompareOp.Ge:
+                                    condition = CompareOrThrow(left, right) >= 0;
+                                    break;
+                                case CompareOp.Eq:
+                                    condition = left.Equals(right);
+                                    break;
+                                default:
+                                    condition = !left.Equals(right);
+                                    break;
+                            }
+
+                            if (condition == (instruction.C != 0))
+                            {
+                                ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
+                        case Op.Call:
+                        {
+                            var argc = instruction.A;
+                            var argsBase = _sp - argc;
+                            var callee = _stack[argsBase - 1];
+                            frame.Ip = ip;
+
+                            if (!TryEnterCall(callee, argc, argsBase, argsBase - 1))
+                            {
+                                throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.CallLocal:
+                        {
+                            locals = _locals;
+                            var argc = instruction.A;
+                            var slot = frameBase + instruction.B;
+                            var callee = locals[slot];
+                            var argsBase = _sp - argc;
+                            frame.Ip = ip;
+
+                            if (!TryEnterCall(callee, argc, argsBase, argsBase))
+                            {
+                                throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.CallGlobal:
+                        {
+                            var argc = instruction.A;
+                            var callee = module.Globals[instruction.B];
+                            var argsBase = _sp - argc;
+                            frame.Ip = ip;
+
+                            if (!TryEnterCall(callee, argc, argsBase, argsBase))
+                            {
+                                throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.Invoke:
+                        {
+                            var argc = instruction.B;
+                            var receiverIndex = _sp - argc - 1;
+                            var receiver = _stack[receiverIndex];
+                            frame.Ip = ip;
+
+                            if (!TryInvoke(receiver, constants[instruction.A].AsString(), argc, receiverIndex))
+                            {
+                                throw Error("TypeError",
+                                    $"{TypeName(receiver)} has no method '{constants[instruction.A].AsString()}'", frame, ip);
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.MakeClosure:
+                        {
+                            var prototype = frame.Closure!.Proto.Prototypes[instruction.A]!;
+                            var upvalueCount = prototype.Upvalues.Length;
+                            var upvalues = upvalueCount == 0 ? Array.Empty<Upvalue>() : new Upvalue[upvalueCount];
+
+                            for (var i = 0; i < upvalueCount; i++)
+                            {
+                                var descriptor = prototype.Upvalues[i];
+                                if (descriptor.FromLocal)
+                                {
+                                    upvalues[i] = CaptureUpvalue(frame, frameBase + descriptor.Index);
+                                }
+                                else
+                                {
+                                    upvalues[i] = frame.Closure.Upvalues[descriptor.Index];
+                                }
+                            }
+
+                            Push(Value.Of(new TernClosure(prototype, upvalues) { Module = module }));
+                            break;
+                        }
+
+                        case Op.Return:
+                        {
+                            var result = _stack[--_sp];
+                            frame.Ip = ip;
+
+                            if (ReturnFrame(result, frameFloor))
+                            {
+                                return result;
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.ReturnNil:
+                        {
+                            frame.Ip = ip;
+                            if (ReturnFrame(Value.Nil, frameFloor))
+                            {
+                                return Value.Nil;
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.IterNew:
+                        {
+                            var iterable = _stack[_sp - 1];
+                            _stack[_sp - 1] = Value.Of(CreateIterator(iterable));
+                            break;
+                        }
+
+                        case Op.IterNext:
+                        {
+                            var iterator = _stack[_sp - 1].AsIterator();
+                            var bindings = instruction.B;
+
+                            if (!iterator.Next(out var first, out var second))
+                            {
+                                ip = instruction.A;
+                                break;
+                            }
+
+                            for (var i = 0; i < bindings; i++)
+                            {
+                                Push(i == 0 ? first : second);
+                            }
+
+                            break;
+                        }
+
+                        case Op.EnterTry:
+                            _handlers.Add(new Handler(_frameCount - 1, instruction.A, _sp));
+                            break;
+
+                        case Op.ExitTry:
+                            if (_handlers.Count > 0)
+                            {
+                                _handlers.RemoveAt(_handlers.Count - 1);
+                            }
+
+                            break;
+
+                        case Op.Throw:
+                        {
+                            var value = _stack[--_sp];
+                            frame.Ip = ip;
+
+                            if (!DispatchThrow(value, frame, ip))
+                            {
+                                throw BuildError(value);
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.ToString:
+                            _stack[_sp - 1] = Value.Str(_stack[_sp - 1].ToDisplayString());
+                            break;
+
+                        case Op.TypeOf:
+                            Push(Value.Str(TypeName(_stack[--_sp])));
+                            break;
+
+                        default:
+                            throw Error("InternalError", $"unknown opcode {instruction.Op}", frame, ip);
+                    }
+                }
+
+                }
+                catch (TernError error)
+                {
+                    // Runtime errors use the same handler stack as `throw`, so scripts
+                    // can catch arity/index/type failures alongside their own errors.
+                    frame.Ip = ip;
+                    if (!DispatchThrow(error.Payload, frame, ip))
+                    {
+                        throw;
+                    }
+                }
+
+                nextFrame:
+                if (_frameCount <= frameFloor)
+                {
+                    return Value.Nil;
+                }
+            }
+
+            return Value.Nil;
+        }
+
+        private void CheckBudget(Frame frame, int ip)
+        {
+            if (_steps > Options.MaxInstructions)
+            {
+                throw Error("ResourceError", $"script exceeded the instruction budget of {Options.MaxInstructions}", frame, ip);
+            }
+        }
+
+        // ------------------------------------------------------------------ stack
+
+        private void Push(in Value value)
+        {
+            if (_sp >= _stack.Length)
+            {
+                Array.Resize(ref _stack, _stack.Length * 2);
+            }
+
+            _stack[_sp++] = value;
+        }
+
+        private Value Pop() => _stack[--_sp];
+
+        private void EnsureLocals(int needed)
+        {
+            if (needed <= _locals.Length)
+            {
+                return;
+            }
+
+            var size = _locals.Length;
+            while (size < needed)
+            {
+                size *= 2;
+            }
+
+            var replacement = new Value[size];
+            Array.Copy(_locals, replacement, _localsTop);
+
+            // Rebind open upvalues; they point into the old array.
+            for (var f = 0; f < _frameCount; f++)
+            {
+                var open = _frames[f].OpenUpvalues;
+                if (open is null)
+                {
+                    continue;
+                }
+
+                foreach (var upvalue in open)
+                {
+                    upvalue.Array = replacement;
+                }
+            }
+
+            _locals = replacement;
+        }
+
+        private Upvalue CaptureUpvalue(Frame frame, int slot)
+        {
+            frame.OpenUpvalues ??= new List<Upvalue>(4);
+
+            foreach (var existing in frame.OpenUpvalues)
+            {
+                if (existing.Index == slot)
+                {
+                    return existing;
+                }
+            }
+
+            var upvalue = new Upvalue { Array = _locals, Index = slot };
+            frame.OpenUpvalues.Add(upvalue);
+            return upvalue;
+        }
+
+        // ------------------------------------------------------------------ frames
+
+        private Frame AllocateFrame()
+        {
+            if (_frameCount == _frames.Length)
+            {
+                Array.Resize(ref _frames, _frames.Length * 2);
+            }
+
+            var index = _frameCount++;
+            var frame = _frames[index];
+            if (frame is null)
+            {
+                frame = new Frame();
+                _frames[index] = frame;
+            }
+
+            return frame;
+        }
+
+        private void PushFrame(TernClosure closure, int argc, int stackBase, bool isMethod)
+        {
+            var proto = closure.Proto;
+
+            if (_frameCount >= Options.MaxCallDepth)
+            {
+                throw Error("StackOverflow", $"call depth exceeded {Options.MaxCallDepth}");
+            }
+
+            EnsureLocals(_localsTop + proto.LocalCount);
+
+            var frame = AllocateFrame();
+            frame.Closure = closure;
+            frame.Module = closure.Module;
+            frame.Code = proto.Instructions;
+            frame.Constants = proto.Constants;
+            frame.Ip = 0;
+            frame.LocalsBase = _localsTop;
+            frame.StackBase = stackBase;
+            frame.Argc = argc;
+            frame.IsMethod = isMethod;
+            frame.OpenUpvalues?.Clear();
+
+            _localsTop += Math.Max(proto.LocalCount, 1);
+        }
+
+        /// <summary>
+        /// Sets up a call. Closures, natives, bound methods and struct types are
+        /// handled here; natives are invoked immediately and never allocate a frame.
+        /// </summary>
+        private bool TryEnterCall(in Value callee, int argc, int argsBase, int resultSlot)
+        {
+            switch (callee.Kind)
+            {
+                case ValueKind.Closure:
+                {
+                    var closure = callee.AsClosure();
+                    var proto = closure.Proto;
+
+                    if (argc < proto.RequiredParams)
+                    {
+                        throw Error("ArgumentError",
+                            $"{proto.Name ?? "function"}() expects at least {proto.RequiredParams} argument(s) but got {argc}");
+                    }
+
+                    if (!proto.HasRest && argc > proto.ParamCount)
+                    {
+                        throw Error("ArgumentError",
+                            $"{proto.Name ?? "function"}() expects at most {proto.ParamCount} argument(s) but got {argc}");
+                    }
+
+                    PushFrame(closure, argc, resultSlot, proto.IsMethod);
+
+                    var frame = _frames[_frameCount - 1];
+                    var baseSlot = frame.LocalsBase;
+                    var offset = proto.IsMethod ? 1 : 0;
+
+                    if (proto.IsMethod)
+                    {
+                        // Called without a receiver: `this` is nil, fields are unavailable.
+                        _locals[baseSlot] = Value.Nil;
+                    }
+
+                    for (var i = 0; i < proto.ParamCount; i++)
+                    {
+                        _locals[baseSlot + offset + i] = i < argc ? _stack[argsBase + i] : Value.Missing;
+                    }
+
+                    if (proto.HasRest)
+                    {
+                        var rest = new TernList(Math.Max(0, argc - proto.ParamCount));
+                        for (var i = proto.ParamCount; i < argc; i++)
+                        {
+                            rest.Add(_stack[argsBase + i]);
+                        }
+
+                        _locals[baseSlot + offset + proto.ParamCount] = Value.Of(rest);
+                    }
+
+                    _sp = resultSlot;
+                    return true;
+                }
+
+                case ValueKind.Native:
+                {
+                    var native = callee.AsNative();
+                    var slice = new ReadOnlySpan<Value>(_stack, argsBase, argc);
+                    var result = InvokeNative(native, argc, slice);
+                    _sp = resultSlot;
+                    Push(result);
+                    return true;
+                }
+
+                case ValueKind.Bound:
+                {
+                    var bound = callee.AsBound();
+                    return TryEnterBound(bound, argc, argsBase, resultSlot);
+                }
+
+                case ValueKind.Instance:
+                {
+                    var instance = callee.AsInstance();
+                    var result = ConstructInstance(instance.Type, argc, argsBase);
+                    _sp = resultSlot;
+                    Push(result);
+                    return true;
+                }
+
+                case ValueKind.Type:
+                {
+                    var result = ConstructInstance(callee.AsType(), argc, argsBase);
+                    _sp = resultSlot;
+                    Push(result);
+                    return true;
+                }
+
+                default:
+                    return false;
+            }
+        }
+
+        private bool TryEnterBound(TernBoundMethod bound, int argc, int argsBase, int resultSlot)
+        {
+            var target = bound.Callee;
+
+            if (target.Kind == ValueKind.Native)
+            {
+                var native = target.AsNative();
+                if (argc + 1 < native.MinArguments || (native.MaxArguments >= 0 && argc + 1 > native.MaxArguments))
+                {
+                    throw Error("ArgumentError",
+                        $"{native.Name}() expects {(native.MaxArguments < 0 ? $"at least {native.MinArguments - 1}" : $"{native.MinArguments - 1} to {native.MaxArguments - 1}")} argument(s) but got {argc}");
+                }
+
+                var scratch = new Value[argc + 1];
+                scratch[0] = bound.Receiver;
+                for (var i = 0; i < argc; i++)
+                {
+                    scratch[i + 1] = _stack[argsBase + i];
+                }
+
+                var result = native.Function(this, scratch);
+                _sp = resultSlot;
+                Push(result);
+                return true;
+            }
+
+            if (target.Kind == ValueKind.Closure)
+            {
+                var closure = target.AsClosure();
+                var proto = closure.Proto;
+
+                if (argc + 1 < proto.RequiredParams)
+                {
+                    throw Error("ArgumentError",
+                        $"{proto.Name ?? "method"}() expects at least {proto.RequiredParams - 1} argument(s) but got {argc}");
+                }
+
+                var isMethod = proto.IsMethod;
+                if (closure.Module is null)
+                {
+                    closure.Module = _frameCount > 0 ? _frames[_frameCount - 1].Module : null;
+                }
+
+                PushFrame(closure, argc, resultSlot, isMethod);
+                var frame = _frames[_frameCount - 1];
+                var baseSlot = frame.LocalsBase;
+                var offset = isMethod ? 1 : 0;
+
+                if (isMethod)
+                {
+                    _locals[baseSlot] = bound.Receiver;
+                }
+
+                for (var i = 0; i < proto.ParamCount; i++)
+                {
+                    _locals[baseSlot + offset + i] = i < argc ? _stack[argsBase + i] : Value.Missing;
+                }
+
+                if (proto.HasRest)
+                {
+                    var rest = new TernList(Math.Max(0, argc - proto.ParamCount));
+                    for (var i = proto.ParamCount; i < argc; i++)
+                    {
+                        rest.Add(_stack[argsBase + i]);
+                    }
+
+                    _locals[baseSlot + offset + proto.ParamCount] = Value.Of(rest);
+                }
+
+                _sp = resultSlot;
+                return true;
+            }
+
+            throw Error("TypeError", $"{TypeName(bound.Receiver)} method is not callable");
+        }
+
+        private Value ConstructInstance(TernType type, int argc, int argsBase)
+        {
+            if (argc > type.FieldCount)
+            {
+                throw Error("TypeError",
+                    $"{type.Name}() takes at most {type.FieldCount} field arguments but got {argc}");
+            }
+
+            var instance = type.Create(this);
+            for (var i = 0; i < argc; i++)
+            {
+                instance.Fields[i] = _stack[argsBase + i];
+            }
+
+            return Value.Of(instance);
+        }
+
+        private Value InvokeNative(TernNative native, int argc, ReadOnlySpan<Value> args)
+        {
+            if (argc < native.MinArguments || (native.MaxArguments >= 0 && argc > native.MaxArguments))
+            {
+                var expected = native.MaxArguments < 0
+                    ? $"at least {native.MinArguments}"
+                    : native.MinArguments == native.MaxArguments
+                        ? $"{native.MinArguments}"
+                        : $"{native.MinArguments} to {native.MaxArguments}";
+                throw Error("ArgumentError", $"{native.Name}() expects {expected} argument(s) but got {argc}");
+            }
+
+            return native.Function(this, args);
+        }
+
+        private bool ReturnFrame(in Value result, int frameFloor)
+        {
+            var frame = _frames[_frameCount - 1];
+            CloseFrame(frame);
+
+            _frameCount--;
+            _sp = frame.StackBase;
+            _localsTop = frame.LocalsBase;
+
+            if (_frameCount <= frameFloor)
+            {
+                return true;
+            }
+
+            Push(result);
+            return false;
+        }
+
+        private void CloseFrame(Frame frame)
+        {
+            var open = frame.OpenUpvalues;
+            if (open is not null)
+            {
+                foreach (var upvalue in open)
+                {
+                    upvalue.Close();
+                }
+
+                open.Clear();
+            }
+
+            // Drop try handlers that belong to this frame.
+            for (var i = _handlers.Count - 1; i >= 0; i--)
+            {
+                if (_handlers[i].FrameIndex >= _frameCount - 1)
+                {
+                    _handlers.RemoveAt(i);
+                }
+            }
+        }
+
+        // -------------------------------------------------------------- exceptions
+
+        private bool DispatchThrow(in Value value, Frame frame, int ip)
+        {
+            while (_handlers.Count > 0)
+            {
+                var handler = _handlers[^1];
+                _handlers.RemoveAt(_handlers.Count - 1);
+
+                if (handler.FrameIndex >= _frameCount)
+                {
+                    continue;
+                }
+
+                // Unwind frames until the handler's frame is on top.
+                while (_frameCount - 1 > handler.FrameIndex)
+                {
+                    var dying = _frames[_frameCount - 1];
+                    CloseFrame(dying);
+                    _frameCount--;
+                    _sp = dying.StackBase;
+                    _localsTop = dying.LocalsBase;
+                }
+
+                var target = _frames[_frameCount - 1];
+                target.Ip = handler.Ip;
+                _sp = handler.StackDepth;
+                Push(value);
+                return true;
+            }
+
+            return false;
+        }
+
+        private TernError BuildError(in Value value)
+        {
+            var trace = CaptureTrace();
+            if (value.Kind == ValueKind.Instance)
+            {
+                var instance = value.AsInstance();
+                var message = instance.Fields.Length > 0 ? instance.Fields[0].ToDisplayString() : instance.ToString();
+                return new TernError(instance.Type.Name, message, trace, value);
+            }
+
+            return new TernError("Error", value.ToDisplayString(), trace, value);
+        }
+
+        public List<string> CaptureTrace()
+        {
+            var trace = new List<string>(Math.Min(_frameCount, 32));
+
+            for (var i = _frameCount - 1; i >= 0 && trace.Count < 32; i--)
+            {
+                var frame = _frames[i];
+                var proto = frame.Closure?.Proto;
+                if (proto is null)
+                {
+                    continue;
+                }
+
+                var line = 0;
+                var instructionIndex = Math.Max(0, frame.Ip - 1);
+                if (instructionIndex < proto.Lines.Length)
+                {
+                    line = proto.Lines[instructionIndex];
+                }
+
+                var source = proto.SourceName;
+                trace.Add($"{proto.Name ?? "<anonymous>"} ({source ?? "<script>"}:{line})");
+            }
+
+            return trace;
+        }
+
+        // ------------------------------------------------------------- operations
+
+        public TernError Error(string type, string message) => new(type, message, CaptureTrace());
+
+        private TernError Error(string type, string message, Frame frame, int ip)
+        {
+            var trace = CaptureTrace();
+            return new TernError(type, message, trace);
+        }
+
+        private enum CompareOp
+        {
+            Lt = 0,
+            Le = 1,
+            Gt = 2,
+            Ge = 3,
+            Eq = 4,
+            Ne = 5,
+        }
+
+        private Value BinaryOp(Op op, in Value left, in Value right)
+        {
+            switch (op)
+            {
+                case Op.Add:
+                    return Add(left, right);
+                case Op.Sub:
+                case Op.Mul:
+                case Op.Div:
+                case Op.Mod:
+                case Op.Pow:
+                    return ArithmeticOp(op, left, right);
+                case Op.BAnd:
+                    return IntegerOp(op, left, right);
+                case Op.BOr:
+                    return IntegerOp(op, left, right);
+                case Op.BXor:
+                    return IntegerOp(op, left, right);
+                case Op.Shl:
+                    return IntegerOp(op, left, right);
+                case Op.Shr:
+                    return IntegerOp(op, left, right);
+                case Op.Eq:
+                    return Value.Bool(left.Equals(right));
+                case Op.Ne:
+                    return Value.Bool(!left.Equals(right));
+                case Op.Lt:
+                    return Value.Bool(CompareOrThrow(left, right) < 0);
+                case Op.Le:
+                    return Value.Bool(CompareOrThrow(left, right) <= 0);
+                case Op.Gt:
+                    return Value.Bool(CompareOrThrow(left, right) > 0);
+                case Op.Ge:
+                    return Value.Bool(CompareOrThrow(left, right) >= 0);
+                default:
+                    throw Error("InternalError", $"unexpected binary opcode {op}");
+            }
+        }
+
+        private Value ArithmeticOp(Op op, in Value left, in Value right)
+        {
+            op = BaseArithmeticOp(op);
+
+            if (left.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
+            {
+                var a = left.AsInt();
+                var b = right.AsInt();
+
+                switch (op)
+                {
+                    case Op.Add:
+                        return new Value(unchecked(a + b));
+                    case Op.Sub:
+                        return new Value(unchecked(a - b));
+                    case Op.Mul:
+                        return new Value(unchecked(a * b));
+                    case Op.Div:
+                        if (b == 0)
+                        {
+                            throw Error("DivisionByZero", "division by zero");
+                        }
+
+                        // Exact integer division stays an int; otherwise promote to float.
+                        return a % b == 0 ? new Value(a / b) : new Value((double)a / b);
+                    case Op.Mod:
+                        if (b == 0)
+                        {
+                            throw Error("DivisionByZero", "modulo by zero");
+                        }
+
+                        return new Value(a % b);
+                    case Op.Pow:
+                        if (b >= 0 && b <= 62)
+                        {
+                            long result = 1;
+                            var baseValue = a;
+                            var exponent = b;
+                            while (exponent > 0)
+                            {
+                                if ((exponent & 1) != 0)
+                                {
+                                    result = unchecked(result * baseValue);
+                                }
+
+                                baseValue = unchecked(baseValue * baseValue);
+                                exponent >>= 1;
+                            }
+
+                            return new Value(result);
+                        }
+
+                        return new Value(Math.Pow(a, b));
+                    case Op.AddLocalConst:
+                    case Op.SubLocalConst:
+                    case Op.MulLocalConst:
+                    case Op.DivLocalConst:
+                    case Op.ModLocalConst:
+                        break;
+                }
+            }
+
+            if (left.IsNumber && right.IsNumber)
+            {
+                var a = left.AsDouble();
+                var b = right.AsDouble();
+
+                switch (op)
+                {
+                    case Op.Add:
+                    case Op.AddLocalLocal:
+                    case Op.AddLocalConst:
+                        return new Value(a + b);
+                    case Op.Sub:
+                    case Op.SubLocalLocal:
+                    case Op.SubLocalConst:
+                        return new Value(a - b);
+                    case Op.Mul:
+                    case Op.MulLocalLocal:
+                    case Op.MulLocalConst:
+                        return new Value(a * b);
+                    case Op.Div:
+                    case Op.DivLocalLocal:
+                    case Op.DivLocalConst:
+                        if (b == 0)
+                        {
+                            throw Error("DivisionByZero", "division by zero");
+                        }
+
+                        return new Value(a / b);
+                    case Op.Mod:
+                    case Op.ModLocalLocal:
+                    case Op.ModLocalConst:
+                        if (b == 0)
+                        {
+                            throw Error("DivisionByZero", "modulo by zero");
+                        }
+
+                        return new Value(a - b * Math.Floor(a / b));
+                    case Op.Pow:
+                        return new Value(Math.Pow(a, b));
+                }
+            }
+
+            if (IsLocalArithmeticOp(op))
+            {
+                throw Error("TypeError",
+                    $"operator '{OpSymbol(op)}' is not defined for {TypeName(left)} and {TypeName(right)}");
+            }
+
+            throw Error("TypeError",
+                $"operator '{OpSymbol(op)}' is not defined for {TypeName(left)} and {TypeName(right)}");
+        }
+
+        /// <summary>Maps the fused local opcodes onto their base arithmetic operation.</summary>
+        private static Op BaseArithmeticOp(Op op) => op switch
+        {
+            Op.AddLocalLocal or Op.AddLocalConst => Op.Add,
+            Op.SubLocalLocal or Op.SubLocalConst => Op.Sub,
+            Op.MulLocalLocal or Op.MulLocalConst => Op.Mul,
+            Op.DivLocalLocal or Op.DivLocalConst => Op.Div,
+            Op.ModLocalLocal or Op.ModLocalConst => Op.Mod,
+            _ => op,
+        };
+
+        private static bool IsLocalArithmeticOp(Op op) => op is
+            Op.AddLocalLocal or Op.SubLocalLocal or Op.MulLocalLocal or Op.DivLocalLocal or Op.ModLocalLocal or
+            Op.AddLocalConst or Op.SubLocalConst or Op.MulLocalConst or Op.DivLocalConst or Op.ModLocalConst;
+
+        private static string OpSymbol(Op op) => op switch
+        {
+            Op.Add or Op.AddLocalLocal or Op.AddLocalConst => "+",
+            Op.Sub or Op.SubLocalLocal or Op.SubLocalConst => "-",
+            Op.Mul or Op.MulLocalLocal or Op.MulLocalConst => "*",
+            Op.Div or Op.DivLocalLocal or Op.DivLocalConst => "/",
+            Op.Mod or Op.ModLocalLocal or Op.ModLocalConst => "%",
+            Op.Pow => "**",
+            Op.BAnd => "&",
+            Op.BOr => "|",
+            Op.BXor => "^",
+            Op.Shl => "<<",
+            Op.Shr => ">>",
+            _ => op.ToString(),
+        };
+
+        private Value Add(in Value left, in Value right)
+        {
+            if (left.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
+            {
+                var a = left.AsInt();
+                var b = right.AsInt();
+                var sum = unchecked(a + b);
+                // Overflow promotes to float instead of silently wrapping.
+                if (((a ^ sum) & (b ^ sum)) < 0)
+                {
+                    return new Value((double)a + b);
+                }
+
+                return new Value(sum);
+            }
+
+            if (left.Kind == ValueKind.Float && right.Kind == ValueKind.Float)
+            {
+                return new Value(left.AsDouble() + right.AsDouble());
+            }
+
+            if (left.IsNumber && right.IsNumber)
+            {
+                return new Value(left.AsDouble() + right.AsDouble());
+            }
+
+            if (left.Kind == ValueKind.Str || right.Kind == ValueKind.Str)
+            {
+                return Value.Str(left.ToDisplayString() + right.ToDisplayString());
+            }
+
+            if (left.Kind == ValueKind.List && right.Kind == ValueKind.List)
+            {
+                var a = left.AsList();
+                var b = right.AsList();
+                var combined = new TernList(a.Count + b.Count);
+                for (var i = 0; i < a.Count; i++)
+                {
+                    combined.Add(a[i]);
+                }
+
+                for (var i = 0; i < b.Count; i++)
+                {
+                    combined.Add(b[i]);
+                }
+
+                return Value.Of(combined);
+            }
+
+            if (left.Kind == ValueKind.Map && right.Kind == ValueKind.Map)
+            {
+                var merged = left.AsMap().Clone();
+                var source = right.AsMap();
+                var slots = source.SlotCount;
+                for (var i = 0; i < slots; i++)
+                {
+                    if (source.TryGetEntry(i, out var key, out var value))
+                    {
+                        merged.Set(key, value);
+                    }
+                }
+
+                return Value.Of(merged);
+            }
+
+            throw Error("TypeError",
+                $"operator '+' is not defined for {TypeName(left)} and {TypeName(right)}");
+        }
+
+        private Value IntegerOp(Op op, in Value left, in Value right)
+        {
+            var a = ToInteger(left, OpSymbol(op));
+            var b = ToInteger(right, OpSymbol(op));
+
+            return op switch
+            {
+                Op.BAnd => new Value(a & b),
+                Op.BOr => new Value(a | b),
+                Op.BXor => new Value(a ^ b),
+                Op.Shl => new Value(a << (int)(b & 63)),
+                Op.Shr => new Value(a >> (int)(b & 63)),
+                _ => throw Error("InternalError", $"unexpected integer opcode {op}"),
+            };
+        }
+
+        private long ToInteger(in Value value, string symbol)
+        {
+            if (value.Kind == ValueKind.Int)
+            {
+                return value.AsInt();
+            }
+
+            if (value.Kind == ValueKind.Float)
+            {
+                var number = value.AsDouble();
+                if (Math.Floor(number) == number && Math.Abs(number) < 9.22e18)
+                {
+                    return (long)number;
+                }
+            }
+
+            throw Error("TypeError", $"operator '{symbol}' requires integers but got {TypeName(value)}");
+        }
+
+        private int CompareOrThrow(in Value left, in Value right)
+        {
+            if (Value.TryCompare(left, right, out var result))
+            {
+                return result;
+            }
+
+            if (left.Kind == ValueKind.Str && right.Kind == ValueKind.Str)
+            {
+                return string.CompareOrdinal(left.AsString(), right.AsString());
+            }
+
+            if (left.Kind == ValueKind.List && right.Kind == ValueKind.List)
+            {
+                var a = left.AsList();
+                var b = right.AsList();
+                var shared = Math.Min(a.Count, b.Count);
+                for (var i = 0; i < shared; i++)
+                {
+                    var comparison = CompareOrThrow(a[i], b[i]);
+                    if (comparison != 0)
+                    {
+                        return comparison;
+                    }
+                }
+
+                return a.Count.CompareTo(b.Count);
+            }
+
+            throw Error("TypeError", $"cannot compare {TypeName(left)} with {TypeName(right)}");
+        }
+
+        public string TypeName(in Value value) => value.Kind switch
+        {
+            ValueKind.Nil => "nil",
+            ValueKind.Bool => "bool",
+            ValueKind.Int => "int",
+            ValueKind.Float => "float",
+            ValueKind.Str => "string",
+            ValueKind.List => "list",
+            ValueKind.Map => "map",
+            ValueKind.Instance => value.AsInstance().Type.Name,
+            ValueKind.Closure => "function",
+            ValueKind.Native => "native",
+            ValueKind.Bound => "method",
+            ValueKind.Range => "range",
+            ValueKind.Module => "module",
+            ValueKind.Type => "struct",
+            _ => "nil",
+        };
+
+        // -------------------------------------------------------- member access
+
+        /// <summary>Used by native helpers (sum, min/max, ...) to reuse interpreter semantics.</summary>
+        public Value AddValues(in Value left, in Value right) => Add(left, right);
+
+        public int CompareValues(in Value left, in Value right) => CompareOrThrow(left, right);
+
+        public Value LoadMember(in Value target, string name)
+        {
+            switch (target.Kind)
+            {
+                case ValueKind.Instance:
+                {
+                    var instance = target.AsInstance();
+                    if (instance.Type.TryGetField(name, out var index))
+                    {
+                        return instance.Fields[index];
+                    }
+
+                    if (instance.Type.Methods.TryGetValue(name, out var method))
+                    {
+                        return Value.Of(new TernBoundMethod(target, Value.Of(method)));
+                    }
+
+                    throw Error("MemberError", $"{instance.Type.Name} has no member '{name}'");
+                }
+
+                case ValueKind.Map:
+                {
+                    var map = target.AsMap();
+                    if (map.TryGet(Value.Str(name), out var value))
+                    {
+                        return value;
+                    }
+
+                    if (BuiltinMethods.TryGetProperty(target, name, out var property))
+                    {
+                        return property;
+                    }
+
+                    if (BuiltinMethods.TryResolve(ValueKind.Map, name, out var member))
+                    {
+                        return Value.Of(new TernBoundMethod(target, Value.Of(member)));
+                    }
+
+                    throw Error("MemberError", $"map has no member '{name}'");
+                }
+
+                case ValueKind.Module:
+                {
+                    var module = target.AsModule();
+                    if (module.Scope.TryResolve(name, out var slot))
+                    {
+                        return module.Globals[slot];
+                    }
+
+                    throw Error("MemberError", $"module '{module.Name}' has no export '{name}'");
+                }
+
+                default:
+                {
+                    if (BuiltinMethods.TryGetProperty(target, name, out var property))
+                    {
+                        return property;
+                    }
+
+                    if (BuiltinMethods.TryResolve(target.Kind, name, out var native))
+                    {
+                        return Value.Of(new TernBoundMethod(target, Value.Of(native)));
+                    }
+
+                    if (target.Kind is ValueKind.Nil)
+                    {
+                        throw Error("TypeError", $"cannot read member '{name}' of nil");
+                    }
+
+                    throw Error("MemberError", $"{TypeName(target)} has no member '{name}'");
+                }
+            }
+        }
+
+        /// <summary>Method dispatch used by the Invoke opcode; avoids allocating bound methods.</summary>
+        private bool TryInvoke(in Value receiver, string name, int argc, int receiverIndex)
+        {
+            switch (receiver.Kind)
+            {
+                case ValueKind.Instance:
+                {
+                    var instance = receiver.AsInstance();
+                    if (instance.Type.TryGetField(name, out var fieldIndex))
+                    {
+                        var field = instance.Fields[fieldIndex];
+                        if (field.Kind is ValueKind.Closure or ValueKind.Native or ValueKind.Bound)
+                        {
+                            return TryEnterCall(field, argc, receiverIndex + 1, receiverIndex);
+                        }
+
+                        throw Error("TypeError", $"{instance.Type.Name}.{name} is {TypeName(field)}, not callable");
+                    }
+
+                    if (instance.Type.Methods.TryGetValue(name, out var method))
+                    {
+                        return TryEnterCallWithReceiver(Value.Of(method), receiver, argc, receiverIndex + 1, receiverIndex);
+                    }
+
+                    break;
+                }
+
+                case ValueKind.Map:
+                {
+                    var map = receiver.AsMap();
+                    if (map.TryGet(Value.Str(name), out var value))
+                    {
+                        return TryEnterCallWithReceiver(value, Value.Nil, argc, receiverIndex + 1, receiverIndex);
+                    }
+
+                    break;
+                }
+
+                case ValueKind.Module:
+                {
+                    var module = receiver.AsModule();
+                    if (module.Scope.TryResolve(name, out var slot))
+                    {
+                        return TryEnterCallWithReceiver(module.Globals[slot], Value.Nil, argc, receiverIndex + 1, receiverIndex);
+                    }
+
+                    break;
+                }
+            }
+
+            if (!BuiltinMethods.TryResolve(receiver.Kind, name, out var native))
+            {
+                return false;
+            }
+
+            var scratch = new Value[argc + 1];
+            scratch[0] = receiver;
+            for (var i = 0; i < argc; i++)
+            {
+                scratch[i + 1] = _stack[receiverIndex + 1 + i];
+            }
+
+            if (argc + 1 < native.MinArguments || (native.MaxArguments >= 0 && argc + 1 > native.MaxArguments))
+            {
+                var expected = native.MaxArguments < 0
+                    ? $"at least {native.MinArguments - 1}"
+                    : $"{native.MinArguments - 1} to {native.MaxArguments - 1}";
+                throw Error("ArgumentError", $"{name}() expects {expected} argument(s) but got {argc}");
+            }
+
+            var result = native.Function(this, scratch);
+            _sp = receiverIndex;
+            Push(result);
+            return true;
+        }
+
+        private bool TryEnterCallWithReceiver(in Value callee, in Value receiver, int argc, int argsBase, int resultSlot)
+        {
+            if (receiver.IsNil)
+            {
+                return TryEnterCall(callee, argc, argsBase, resultSlot);
+            }
+
+            return TryEnterBound(new TernBoundMethod(receiver, callee), argc, argsBase, resultSlot);
+        }
+
+        public void StoreMember(in Value target, string name, in Value value)
+        {
+            switch (target.Kind)
+            {
+                case ValueKind.Instance:
+                {
+                    var instance = target.AsInstance();
+                    if (instance.Type.TryGetField(name, out var index))
+                    {
+                        instance.Fields[index] = value;
+                        return;
+                    }
+
+                    throw Error("MemberError", $"{instance.Type.Name} has no field '{name}'");
+                }
+
+                case ValueKind.Map:
+                    target.AsMap().Set(Value.Str(name), value);
+                    return;
+
+                case ValueKind.Module:
+                {
+                    var module = target.AsModule();
+                    if (module.Scope.TryResolve(name, out var slot))
+                    {
+                        if (module.Scope.IsConst(slot))
+                        {
+                            throw Error("TypeError", $"cannot assign to constant '{name}'");
+                        }
+
+                        module.Globals[slot] = value;
+                        return;
+                    }
+
+                    throw Error("MemberError", $"module '{module.Name}' has no export '{name}'");
+                }
+
+                default:
+                    throw Error("TypeError", $"cannot set member '{name}' on {TypeName(target)}");
+            }
+        }
+
+        /// <summary>The `in` operator: membership of `item` inside `container`.</summary>
+        public bool Contains(in Value item, in Value container)
+        {
+            switch (container.Kind)
+            {
+                case ValueKind.Str:
+                    return container.AsString().Contains(
+                        item.Kind == ValueKind.Str ? item.AsString() : item.ToDisplayString(),
+                        StringComparison.Ordinal);
+
+                case ValueKind.List:
+                {
+                    var list = container.AsList();
+                    for (var i = 0; i < list.Count; i++)
+                    {
+                        if (list[i].Equals(item))
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
+                case ValueKind.Map:
+                    return container.AsMap().ContainsKey(item);
+
+                case ValueKind.Range:
+                {
+                    if (item.Kind != ValueKind.Int)
+                    {
+                        return false;
+                    }
+
+                    var range = container.AsRange();
+                    var end = range.Inclusive ? range.End : range.End - 1;
+                    return item.AsInt() >= range.Start && item.AsInt() <= end;
+                }
+
+                case ValueKind.Instance:
+                    return container.AsInstance().Type.TryGetField(
+                        item.Kind == ValueKind.Str ? item.AsString() : item.ToDisplayString(), out _);
+
+                default:
+                    throw Error("TypeError", $"cannot use 'in' on a {TypeName(container)}");
+            }
+        }
+
+        /// <summary>Slice with optional bounds: <c>xs[1..3]</c>, <c>xs[..2]</c>, <c>xs[2..]</c>.</summary>
+        public Value Slice(in Value target, in Value start, in Value end, bool inclusive)
+        {
+            if (target.Kind is not (ValueKind.List or ValueKind.Str))
+            {
+                throw Error("TypeError", $"cannot slice a {TypeName(target)}");
+            }
+
+            var length = target.Kind == ValueKind.List ? target.AsList().Count : target.AsString().Length;
+
+            var from = start.Kind == ValueKind.Nil ? 0 : RequireInteger(start, "slice start");
+            var to = end.Kind == ValueKind.Nil ? length : RequireInteger(end, "slice end") + (inclusive ? 1 : 0);
+
+            from = from < 0 ? from + length : from;
+            to = to < 0 ? to + length : to;
+            from = Math.Max(0, Math.Min(from, length));
+            to = Math.Max(from, Math.Min(to, length));
+
+            return target.Kind == ValueKind.List
+                ? Value.Of(target.AsList().Slice((int)from, (int)to))
+                : Value.Str(target.AsString().Substring((int)from, (int)(to - from)));
+        }
+
+        private long RequireInteger(in Value value, string what) => value.Kind switch
+        {
+            ValueKind.Int => value.AsInt(),
+            ValueKind.Float => (long)value.AsDouble(),
+            _ => throw Error("TypeError", $"{what} must be an integer, not {TypeName(value)}"),
+        };
+
+        public Value LoadIndexed(in Value target, in Value index)
+        {
+            switch (target.Kind)
+            {
+                case ValueKind.List:
+                {
+                    var list = target.AsList();
+
+                    if (index.Kind == ValueKind.Range)
+                    {
+                        var range = index.AsRange();
+                        return Value.Of(list.Slice(range.Start, range.Inclusive ? range.End + 1 : range.End));
+                    }
+
+                    if (index.Kind != ValueKind.Int)
+                    {
+                        throw Error("TypeError", $"list index must be an integer, not {TypeName(index)}");
+                    }
+
+                    if (!list.TryGet(index.AsInt(), out var value))
+                    {
+                        throw Error("IndexError", $"index {index.AsInt()} out of range for list of length {list.Count}");
+                    }
+
+                    return value;
+                }
+
+                case ValueKind.Map:
+                    return target.AsMap().GetOrNil(index);
+
+                case ValueKind.Str:
+                {
+                    var text = target.AsString();
+
+                    if (index.Kind == ValueKind.Range)
+                    {
+                        var range = index.AsRange();
+                        var from = (int)range.Start;
+                        var to = (int)(range.Inclusive ? range.End + 1 : range.End);
+                        from = from < 0 ? from + text.Length : from;
+                        to = to < 0 ? to + text.Length : to;
+                        from = Math.Max(0, Math.Min(from, text.Length));
+                        to = Math.Max(from, Math.Min(to, text.Length));
+                        return Value.Str(text.Substring(from, to - from));
+                    }
+
+                    if (index.Kind != ValueKind.Int)
+                    {
+                        throw Error("TypeError", $"string index must be an integer, not {TypeName(index)}");
+                    }
+
+                    var position = index.AsInt() < 0 ? index.AsInt() + text.Length : index.AsInt();
+                    if (position < 0 || position >= text.Length)
+                    {
+                        throw Error("IndexError", $"index {index.AsInt()} out of range for string of length {text.Length}");
+                    }
+
+                    return Value.Str(text[(int)position].ToString());
+                }
+
+                case ValueKind.Instance:
+                {
+                    var instance = target.AsInstance();
+                    if (index.Kind != ValueKind.Str)
+                    {
+                        throw Error("TypeError", $"{instance.Type.Name} index must be a string");
+                    }
+
+                    var name = index.AsString();
+                    if (instance.Type.TryGetField(name, out var field))
+                    {
+                        return instance.Fields[field];
+                    }
+
+                    throw Error("MemberError", $"{instance.Type.Name} has no field '{name}'");
+                }
+
+                case ValueKind.Range:
+                {
+                    if (index.Kind != ValueKind.Int)
+                    {
+                        throw Error("TypeError", "range index must be an integer");
+                    }
+
+                    var range = target.AsRange();
+                    var offset = index.AsInt();
+                    var length = range.Length;
+                    if (offset < 0)
+                    {
+                        offset += length;
+                    }
+
+                    if (offset < 0 || offset >= length)
+                    {
+                        throw Error("IndexError", $"index {index.AsInt()} out of range for range of length {length}");
+                    }
+
+                    return new Value(range.Start + offset * range.Step);
+                }
+
+                case ValueKind.Nil:
+                    throw Error("TypeError", "cannot index nil");
+
+                default:
+                    throw Error("TypeError", $"{TypeName(target)} cannot be indexed");
+            }
+        }
+
+        public void StoreIndexed(in Value target, in Value index, in Value value)
+        {
+            switch (target.Kind)
+            {
+                case ValueKind.List:
+                {
+                    var list = target.AsList();
+                    if (index.Kind != ValueKind.Int)
+                    {
+                        throw Error("TypeError", $"list index must be an integer, not {TypeName(index)}");
+                    }
+
+                    var position = index.AsInt() < 0 ? index.AsInt() + list.Count : index.AsInt();
+                    if (position < 0 || position >= list.Count)
+                    {
+                        throw Error("IndexError", $"index {index.AsInt()} out of range for list of length {list.Count}");
+                    }
+
+                    list[(int)position] = value;
+                    return;
+                }
+
+                case ValueKind.Map:
+                    target.AsMap().Set(index, value);
+                    return;
+
+                case ValueKind.Instance:
+                {
+                    var instance = target.AsInstance();
+                    if (index.Kind != ValueKind.Str || !instance.Type.TryGetField(index.AsString(), out var field))
+                    {
+                        throw Error("MemberError", $"{instance.Type.Name} has no such field");
+                    }
+
+                    instance.Fields[field] = value;
+                    return;
+                }
+
+                default:
+                    throw Error("TypeError", $"{TypeName(target)} does not support indexed assignment");
+            }
+        }
+
+        public TernIterator CreateIterator(in Value value)
+        {
+            switch (value.Kind)
+            {
+                case ValueKind.List:
+                    return TernIterator.ForList(value.AsList());
+                case ValueKind.Map:
+                    return TernIterator.ForMap(value.AsMap());
+                case ValueKind.Str:
+                    return TernIterator.ForString(value.AsString());
+                case ValueKind.Range:
+                    return TernIterator.ForRange(value.AsRange());
+                case ValueKind.Nil:
+                    throw Error("TypeError", "cannot iterate nil");
+                default:
+                    throw Error("TypeError", $"{TypeName(value)} is not iterable");
+            }
+        }
+    }
+}

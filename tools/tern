@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Runs the compiled TERN CLI. On a machine with the .NET SDK you can instead use
+#   dotnet build && dotnet run --project TernRunner -- "$@"
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export DOTNET_ROOT="${TERN_TOOLCHAIN_DIR:-/tmp/tern-toolchain}/dotnet"
+exec "$HERE/build/dotnet" "$HERE/build/TERN.Runner.dll" "$@"

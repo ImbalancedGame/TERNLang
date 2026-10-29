@@ -1,0 +1,37 @@
+struct Point {
+    x, y
+
+    fn length() { return math.sqrt(this.x * this.x + this.y * this.y); }
+
+    fn add(other) { return Point(this.x + other.x, this.y + other.y); }
+}
+
+let p = Point(3, 4);
+println(p.x, p.y, p.length());
+let q = p.add(Point(1, 1));
+println(q);
+q.x = 10;
+println(q.x);
+println(p);
+
+struct Config { name = "default", retries = 3 }
+let c = Config();
+println(c);
+let c2 = Config("custom");
+println(c2);
+
+struct Counter { value = 0
+  fn increment() { this.value += 1; return this.value; }
+}
+let counter = Counter();
+counter.increment();
+counter.increment();
+println(counter.value);
+
+struct Money { amount, currency }
+struct Wallet { cash
+  fn total() { return this.cash.amount; }
+}
+let wallet = Wallet(Money(10, "GBP"));
+println(wallet.total(), wallet);
+println(type(p), type(counter));

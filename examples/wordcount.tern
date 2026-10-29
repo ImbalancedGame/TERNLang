@@ -1,0 +1,19 @@
+// Word frequency counter.
+//   tern run examples/wordcount.tern <file>
+let arguments = os.args();
+let path = arguments.length > 0 ? arguments[0] : "README.md";
+let text = fs.read(path);
+
+let counts = {};
+for word in text.lower().words() {
+    let cleaned = word.trim().replace(",", "").replace(".", "");
+    if cleaned.length > 0 {
+        counts[cleaned] = (counts[cleaned] ?? 0) + 1;
+    }
+}
+
+let ranked = counts.entries().sort(fn(a, b) => b[1] - a[1]);
+println("${ranked.length} unique words in ${path}");
+for entry in ranked.take(10) {
+    println(entry[0].padEnd(16) + entry[1]);
+}

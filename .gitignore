@@ -1,0 +1,15 @@
+# build output
+build/
+bin/
+obj/
+out/
+
+# toolchain bootstrap artefacts (see tools/setup-toolchain.sh)
+.toolchain/
+
+# editor / OS noise
+.vs/
+.idea/
+*.user
+*.suo
+.DS_Store

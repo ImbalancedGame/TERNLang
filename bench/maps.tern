@@ -1,0 +1,10 @@
+// Hash map insert/lookup.
+let m = {};
+for (let i = 0; i < 200000; i++) {
+    m["key${i}"] = i;
+}
+let total = 0;
+for (let i = 0; i < 200000; i++) {
+    total += m["key${i}"];
+}
+println(total);
