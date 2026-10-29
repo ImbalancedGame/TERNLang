@@ -438,10 +438,9 @@ class Generator:
 
         elif op == "NewRange":
             line("{ Value e = st[--sp]; Value s = st[--sp];")
-            line("  Range *r = (Range *)tern_alloc(sizeof(Range), O_RANGE);")
-            line("  r->start = s.tag == T_INT ? s.as.i : (int64_t)v_as_double(s);")
-            line("  r->end = e.tag == T_INT ? e.as.i : (int64_t)v_as_double(e);")
-            line("  r->inclusive = %s; st[sp++] = v_obj((Obj *)r); }" % ("true" if a else "false"))
+            line("  int64_t from = s.tag == T_INT ? s.as.i : (int64_t)v_as_double(s);")
+            line("  int64_t to = e.tag == T_INT ? e.as.i : (int64_t)v_as_double(e);")
+            line("  st[sp++] = v_obj((Obj *)range_make(from, to, %s, 1)); }" % ("true" if a else "false"))
 
         elif op == "Concat":
             line("st[sp - %d] = tern_concat(NP(&st[sp - %d]), %d); sp -= %d;" % (a, a, a, a - 1))

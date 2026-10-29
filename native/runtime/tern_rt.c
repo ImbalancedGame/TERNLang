@@ -1461,6 +1461,11 @@ Value tern_compare(Value a, Value b) {
 
 // ------------------------------------------------------------------ access
 
+// Defined with the range methods below; `len(range)` and `x in range` need them
+// before they are defined.
+static int64_t range_length(const Range *range);
+static bool range_contains(const Range *range, int64_t value);
+
 int64_t tern_length(Value v) {
     if (v_is_str(v)) {
         return str_units((Str *)v.as.o);
@@ -1472,9 +1477,7 @@ int64_t tern_length(Value v) {
         return ((Map *)v.as.o)->count;
     }
     if (v.tag == T_OBJ && v.as.o->type == O_RANGE) {
-        Range *range = (Range *)v.as.o;
-        int64_t end = range->inclusive ? range->end + 1 : range->end;
-        return end - range->start > 0 ? end - range->start : 0;
+        return (int32_t)range_length((Range *)v.as.o);
     }
     tern_panic("TypeError", "%s has no length", tern_type_name(v));
     return 0;
@@ -1701,6 +1704,19 @@ Value tern_get_index(Value target, Value index) {
                 utf8_decode(s->chars + offset, s->chars + s->len, &size);
                 return str_value(s->chars + offset, (size_t)size);
             }
+            case O_RANGE: {
+                Range *range = (Range *)target.as.o;
+                int64_t offset = require_int(index, "range index");
+                int64_t length = range_length(range);
+                if (offset < 0) {
+                    offset += length;
+                }
+                if (offset < 0 || offset >= length) {
+                    tern_panic("IndexError", "index %lld out of range for range of length %lld",
+                               (long long)offset, (long long)length);
+                }
+                return v_int(range->start + offset * range->step);
+            }
             case O_INSTANCE: {
                 Instance *instance = (Instance *)target.as.o;
                 if (!v_is_str(index)) {
@@ -1794,9 +1810,11 @@ bool tern_iter_next(Value value, Value *first, Value *second) {
         }
         case 2: {
             Range *range = (Range *)it->target.as.o;
-            int64_t end = range->inclusive ? range->end + 1 : range->end;
-            int64_t current = range->start + it->index;
-            if (current >= end) {
+            int64_t current = range->start + (int64_t)it->index * range->step;
+            bool done = range->step > 0
+                ? (range->inclusive ? current > range->end : current >= range->end)
+                : (range->inclusive ? current < range->end : current <= range->end);
+            if (done) {
                 return false;
             }
             *first = v_int(current);
@@ -1935,12 +1953,10 @@ bool tern_contains(Value container, Value item) {
         return map_has((Map *)container.as.o, item);
     }
     if (container.tag == T_OBJ && container.as.o->type == O_RANGE) {
-        Range *range = (Range *)container.as.o;
         if (item.tag != T_INT) {
             return false;
         }
-        int64_t end = range->inclusive ? range->end : range->end - 1;
-        return item.as.i >= range->start && item.as.i <= end;
+        return range_contains((Range *)container.as.o, item.as.i);
     }
     tern_panic("TypeError", "cannot use 'in' on a %s", tern_type_name(container));
     return false;
@@ -2097,17 +2113,27 @@ static Value n_ord(int argc, Value *argv) {
     return v_int((int64_t)utf8_decode(s->chars, s->chars + s->len, &size));
 }
 
-static Value n_range(int argc, Value *argv) {
+// The only way to make a range: `tern_alloc` does not zero, so every field has
+// to be written here rather than at each construction site.
+static Range *range_make(int64_t start, int64_t end, bool inclusive, int64_t step) {
     Range *range = (Range *)tern_alloc(sizeof(Range), O_RANGE);
+    range->start = start;
+    range->end = end;
+    range->step = step == 0 ? 1 : step;
+    range->inclusive = inclusive;
+    return range;
+}
+
+static Value n_range(int argc, Value *argv) {
+    int64_t start = 0, end = 0;
     if (argc >= 2) {
-        range->start = iarg(argc, argv, 0, "range");
-        range->end = iarg(argc, argv, 1, "range");
+        start = iarg(argc, argv, 0, "range");
+        end = iarg(argc, argv, 1, "range");
     } else {
-        range->start = 0;
-        range->end = iarg(argc, argv, 0, "range");
+        end = iarg(argc, argv, 0, "range");
     }
-    range->inclusive = false;
-    return v_obj((Obj *)range);
+    int64_t step = argc > 2 ? iarg(argc, argv, 2, "range") : 1;
+    return v_obj((Obj *)range_make(start, end, false, step));
 }
 
 static Value n_keys(int argc, Value *argv) {
@@ -2775,7 +2801,10 @@ static List *self_list(int argc, Value *argv) {
 }
 
 static Value l_push(int argc, Value *argv) {
-    list_push(self_list(argc, argv), arg(argc, argv, 1));
+    List *list = self_list(argc, argv);
+    for (int i = 1; i < argc; i++) {
+        list_push(list, argv[i]);
+    }
     return argv[0];
 }
 
@@ -3163,12 +3192,43 @@ static Value n_times_self(int argc, Value *argv) {
 
 // --- range methods ---------------------------------------------------------
 
+// ------------------------------------------------------------------- ranges
+//
+// A range is start, end and step; `range(0, 10, 3)` walks 0, 3, 6, 9 and a
+// negative step walks backwards, exactly like the interpreter's.
+
+static int64_t range_length(const Range *range) {
+    int64_t span = range->step > 0
+        ? (range->inclusive ? range->end - range->start + 1 : range->end - range->start)
+        : (range->inclusive ? range->start - range->end + 1 : range->start - range->end);
+    if (span <= 0) {
+        return 0;
+    }
+    int64_t step = range->step < 0 ? -range->step : range->step;
+    return (span + step - 1) / step;
+}
+
+static bool range_contains(const Range *range, int64_t value) {
+    if (range->step > 0) {
+        if (value < range->start || (range->inclusive ? value > range->end : value >= range->end)) {
+            return false;
+        }
+    } else {
+        if (value > range->start || (range->inclusive ? value < range->end : value <= range->end)) {
+            return false;
+        }
+    }
+    return (value - range->start) % range->step == 0;
+}
+
 static Value r_tolist(int argc, Value *argv) {
     (void)argc;
     Range *range = (Range *)argv[0].as.o;
-    int64_t end = range->inclusive ? range->end + 1 : range->end;
-    List *list = list_new((int)(end > range->start ? end - range->start : 0));
-    for (int64_t i = range->start; i < end; i++) list_push(list, v_int(i));
+    int64_t count = range_length(range);
+    List *list = list_new((int)count);
+    for (int64_t i = 0, value = range->start; i < count; i++, value += range->step) {
+        list_push(list, v_int(value));
+    }
     return v_obj((Obj *)list);
 }
 
@@ -3176,8 +3236,7 @@ static Value r_contains(int argc, Value *argv) {
     Value needle = arg(argc, argv, 1);
     if (needle.tag != T_INT) return v_bool(false);
     Range *range = (Range *)argv[0].as.o;
-    int64_t high = range->inclusive ? range->end : range->end - 1;
-    return v_bool(needle.as.i >= range->start && needle.as.i <= high);
+    return v_bool(range_contains(range, needle.as.i));
 }
 
 static Value r_length(int argc, Value *argv) {

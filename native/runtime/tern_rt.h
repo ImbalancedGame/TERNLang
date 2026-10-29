@@ -213,6 +213,7 @@ typedef struct Range {
     Obj h;
     int64_t start;
     int64_t end;
+    int64_t step;      // never 0: `range(0, 10, 0)` is normalised to 1
     bool inclusive;
 } Range;
 

@@ -37,3 +37,18 @@ println((5.5).abs(), (5.5).toInt(), (5.5).round(), (5.5).round(1), (5.5).clamp(0
 let total = 0;
 (4).times(fn(i) { total += i; });
 println(total);
+
+// Several values at once, and ranges with a step.
+let grown = [1];
+grown.push(2, 3);
+println(grown);
+println(range(0, 10, 3).toList(), len(range(0, 10, 3)));
+println(range(5, 0, -2).toList(), len(range(5, 0, -2)));
+println(range(0, 10, 3).contains(9), range(0, 10, 3).contains(8));
+println(range(10, 0, -3)[1], range(10, 0, -3)[-1], len(range(10, 0, -3)));
+let stepped = [];
+for i in range(0, 7, 2) {
+    stepped.push(i);
+}
+println(stepped);
+println(range(0, 5, 0).toList());
