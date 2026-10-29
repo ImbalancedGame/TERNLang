@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Differential test: `tern run` versus the compiled binary.
 
-    python3 native/parity.py              # tests/, examples/ and sweep.tern
+    python3 native/parity.py              # tests/, examples/ and sweep*.tern
     python3 native/parity.py 05 examples  # only names containing a pattern
     python3 native/parity.py --keep       # keep the binaries
 
 `run_tests.py` compares a compiled program against a checked-in golden file.
 This script compares it against the interpreter instead, so it also covers
-programs that have no golden file (`examples/`) and `sweep.tern`, which calls
+programs that have no golden file (`examples/`) and `sweep*.tern`, which call
 every documented method and builtin and prints `repr` or `ERR`. Both are useful
 tests for the same reason: any difference is a backend bug.
 """
@@ -39,7 +39,10 @@ def scripts():
         for name in sorted(os.listdir(examples)):
             if name.endswith(".tern"):
                 found.append(os.path.join(examples, name))
-    found.append(os.path.join(HERE, "sweep.tern"))
+    # Extra differential sweeps live beside the harness as sweep*.tern.
+    for name in sorted(os.listdir(HERE)):
+        if name.startswith("sweep") and name.endswith(".tern"):
+            found.append(os.path.join(HERE, name))
     return [path for path in found if os.path.exists(path)]
 
 

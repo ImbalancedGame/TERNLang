@@ -103,7 +103,7 @@ Other notable points:
 ```bash
 python3 native/run_tests.py        # all tests/*.tern, compiled natively
 python3 native/run_tests.py 05 14  # a subset
-python3 native/parity.py           # tests, examples and sweep.tern, diffed
+python3 native/parity.py           # tests, examples and sweep*.tern, diffed
                                    # against `tern run` instead of a golden
 ```
 
@@ -117,17 +117,18 @@ runtime behaviour) is compiled and run, and its output compared with
 02_strings      ok     08_errors       ok     15_stores       ok     21_depth        ok
 03_control      ok     09_builtins     ok     16_gc           ok     22_fs           ok
 04_functions    ok     10_modules_main ok     17_stdlib       ok     23_methods      ok
-05_collections  ok     11_operators    ok     18_patterns     ok
+05_collections  ok     11_operators    ok     18_patterns     ok     25_numbers      ok
 06_structs      ok     13_loops        ok     19_unicode      ok
 ```
 
 `parity.py` is the differential version of the same idea: it compiles every
-script (the tests, the examples, and `sweep.tern`, which calls every documented
-method, namespace member and global and prints `repr` or `ERR`) and diffs the
+script (the tests, the examples, and the `sweep*.tern` scripts, which call every
+documented method, namespace member, global and operator and print `repr` or
+`ERR`) and diffs the
 combined output against `./tools/tern run` with no golden file in sight. That is
 how the method-table, namespace-collision and stepped-range differences between
 the two back ends were found; when in doubt about a builtin, add a line to
-`sweep.tern`. Both sides run in a scratch directory, so a script that writes
+`sweep.tern`, and for an operator to `sweep_ops.tern`. Both sides run in a scratch directory, so a script that writes
 files cannot disturb the working tree.
 
 The five `bench/*.tern` workloads produce byte-identical output to

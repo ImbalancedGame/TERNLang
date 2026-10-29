@@ -296,6 +296,37 @@ namespace TernRunner
                 json.Append("]}");
             }
 
+            /// <summary>
+            /// JSON text for a float constant that survives the trip through Python's
+            /// json module. Bare "-0" would parse as the integer zero, losing the sign,
+            /// so integral floats always carry a fractional part.
+            /// </summary>
+            private static string FloatText(double number)
+            {
+                if (double.IsNaN(number))
+                {
+                    return "NaN";
+                }
+
+                if (double.IsPositiveInfinity(number))
+                {
+                    return "Infinity";
+                }
+
+                if (double.IsNegativeInfinity(number))
+                {
+                    return "-Infinity";
+                }
+
+                var text = number.ToString("R", CultureInfo.InvariantCulture);
+                if (text.IndexOfAny(new[] { '.', 'E', 'e' }) < 0)
+                {
+                    text += ".0";
+                }
+
+                return text;
+            }
+
             private void writeConstant(StringBuilder json, in Value value)
             {
                 switch (value.Kind)
@@ -313,8 +344,7 @@ namespace TernRunner
                         return;
 
                     case ValueKind.Float:
-                        json.Append("{\"k\":\"f\",\"v\":")
-                            .Append(value.AsDouble().ToString("R", CultureInfo.InvariantCulture)).Append('}');
+                        json.Append("{\"k\":\"f\",\"v\":").Append(FloatText(value.AsDouble())).Append('}');
                         return;
 
                     case ValueKind.Str:

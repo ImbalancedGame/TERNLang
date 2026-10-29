@@ -777,6 +777,14 @@ Value str_from_double(double value) {
         buffer[n] = '.';
         buffer[n + 1] = '0';
         buffer[n + 2] = '\0';
+    } else {
+        // .NET writes exponents in upper case ("1E+20"); match it exactly so
+        // both back ends print identical text.
+        for (char *p = buffer; *p; p++) {
+            if (*p == 'e') {
+                *p = 'E';
+            }
+        }
     }
     return str_from_cstr(buffer);
 }

@@ -106,7 +106,11 @@ namespace TERN.Compiler
 
             private readonly List<Instr> _code = new();
             private readonly List<Value> _constants = new();
-            private readonly Dictionary<Value, int> _constantIndex = new();
+            // Constants are distinct unless they are the *same* value: Value's
+            // own equality is numeric on purpose (`1 == 1.0` at run time), which
+            // would otherwise make `3000000000.0` and `3000000000` share a pool
+            // entry and `-0.0` share one with `0.0`.
+            private readonly Dictionary<Value, int> _constantIndex = new(ConstantComparer.Instance);
             private readonly List<FunctionProto> _prototypes = new();
             private readonly List<DivMagic> _divisions = new();
             private readonly Dictionary<long, int> _divisionIndex = new();
@@ -304,6 +308,46 @@ namespace TERN.Compiler
                 _divisions.Add(DivisionMagic.TryFor(divisor, out var magic) ? magic : default);
                 _divisionIndex[divisor] = index;
                 return index;
+            }
+
+            /// <summary>
+            /// Pools constants by identity: kind plus the exact bits for numbers,
+            /// ordinal text for strings, reference for everything else.
+            /// </summary>
+            private sealed class ConstantComparer : IEqualityComparer<Value>
+            {
+                public static readonly ConstantComparer Instance = new();
+
+                public bool Equals(Value left, Value right)
+                {
+                    if (left.Kind != right.Kind)
+                    {
+                        return false;
+                    }
+
+                    return left.Kind switch
+                    {
+                        ValueKind.Nil or ValueKind.Missing => true,
+                        ValueKind.Bool => left.AsBool() == right.AsBool(),
+                        ValueKind.Int => left.AsInt() == right.AsInt(),
+                        ValueKind.Float => BitConverter.DoubleToInt64Bits(left.AsDouble())
+                                           == BitConverter.DoubleToInt64Bits(right.AsDouble()),
+                        ValueKind.Str => string.Equals(left.AsString(), right.AsString(), StringComparison.Ordinal),
+                        _ => ReferenceEquals(left.AsObject(), right.AsObject()),
+                    };
+                }
+
+                public int GetHashCode(Value value) => value.Kind switch
+                {
+                    ValueKind.Nil or ValueKind.Missing => 0,
+                    ValueKind.Bool => value.AsBool() ? 1 : 2,
+                    ValueKind.Int => value.AsInt().GetHashCode(),
+                    // Deliberately unlike Int's hash: 1 and 1.0 are different
+                    // constants even though they compare equal at run time.
+                    ValueKind.Float => BitConverter.DoubleToInt64Bits(value.AsDouble()).GetHashCode(),
+                    ValueKind.Str => StringComparer.Ordinal.GetHashCode(value.AsString()),
+                    _ => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value.AsObject()!),
+                };
             }
 
             private int AddConstant(in Value value)
