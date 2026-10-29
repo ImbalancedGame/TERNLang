@@ -104,14 +104,14 @@ namespace TERN
         public Runtime.Value Payload { get; }
 
         public TernError(string errorType, string message, IReadOnlyList<string>? trace = null,
-            Runtime.Value payload = default)
+            Runtime.Value? payload = null)
             : base(message)
         {
             ErrorType = errorType;
             Trace = trace ?? Array.Empty<string>();
-            Payload = payload.Kind is Runtime.ValueKind.Missing or Runtime.ValueKind.Nil
-                ? Runtime.Value.Str(message)
-                : payload;
+            Payload = payload is { Kind: not (Runtime.ValueKind.Missing or Runtime.ValueKind.Nil) } given
+                ? given
+                : Runtime.Value.Str(message);
         }
 
         public string Describe()

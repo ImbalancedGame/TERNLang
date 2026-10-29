@@ -40,6 +40,7 @@ namespace TERN.Runtime
             public TernModule? Module;
             public Instr[] Code = Array.Empty<Instr>();
             public Value[] Constants = Array.Empty<Value>();
+            public DivMagic[] Divisions = Array.Empty<DivMagic>();
             public int Ip;
             public int LocalsBase;
             public int StackBase;
@@ -65,9 +66,9 @@ namespace TERN.Runtime
         private readonly int _maxCallDepth;
         private readonly long _maxInstructions;
 
-        private Value[] _stack = new Value[256];
+        private Value[] _stack = CreateValues(256);
         private int _sp;
-        private Value[] _locals = new Value[256];
+        private Value[] _locals = CreateValues(256);
         private int _localsTop;
         private Frame[] _frames = CreateFrames(64);
         private int _frameCount;
@@ -161,6 +162,7 @@ namespace TERN.Runtime
                 var frame = _frames[_frameCount - 1];
                 var code = frame.Code;
                 var constants = frame.Constants;
+                var divisions = frame.Divisions;
                 var ip = frame.Ip;
                 var frameBase = frame.LocalsBase;
                 var locals = _locals;
@@ -726,8 +728,11 @@ namespace TERN.Runtime
                         case Op.Gt:
                         case Op.Ge:
                         {
-                            var right = _stack[--_sp];
-                            var left = _stack[--_sp];
+                            // Operands are read through refs: copying a Value into a
+                            // local costs a struct-copy helper call on .NET.
+                            _sp -= 2;
+                            ref var left = ref _stack[_sp];
+                            ref var right = ref _stack[_sp + 1];
 
                             // Integers dominate real scripts, so they skip the
                             // generic dispatch in BinaryOp entirely.
@@ -847,6 +852,36 @@ namespace TERN.Runtime
                             }
 
                             Push(ArithmeticOp(instruction.Op, left, right));
+                            break;
+                        }
+
+                        case Op.ModLocalConstMagic:
+                        {
+                            var cell = _locals[frameBase + instruction.A];
+                            if (cell.Kind == ValueKind.Int)
+                            {
+                                var x = cell.AsInt();
+                                ref readonly var magic = ref divisions[instruction.B];
+                                var divisor = magic.Divisor;
+
+                                // Unsigned reciprocal of |x|, then an exact range check.
+                                var magnitude = x < 0 ? (ulong)(-(x + 1)) + 1 : (ulong)x;
+                                var quotient = Math.BigMul(magnitude, magic.Magic, out _) >> magic.Shift;
+                                var remainder = (long)(magnitude - quotient * (ulong)divisor);
+
+                                if ((ulong)remainder >= (ulong)divisor)
+                                {
+                                    // Reciprocal was off by one for this value: divide for real.
+                                    remainder = x % divisor;
+                                    Push(new Value(remainder));
+                                    break;
+                                }
+
+                                Push(new Value(x < 0 ? -remainder : remainder));
+                                break;
+                            }
+
+                            Push(ArithmeticOp(Op.Mod, cell, new Value((long)divisions[instruction.B].Divisor)));
                             break;
                         }
 
@@ -1372,6 +1407,17 @@ namespace TERN.Runtime
             _stack[_sp++] = value;
         }
 
+        /// <summary>
+        /// A <see cref="Value"/> array zero-filled as nil rather than as integer 0
+        /// (a default <c>Value</c> is the integer 0).
+        /// </summary>
+        internal static Value[] CreateValues(int length)
+        {
+            var values = new Value[length];
+            Array.Fill(values, Value.Nil);
+            return values;
+        }
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         private void GrowStack(int needed)
         {
@@ -1381,7 +1427,9 @@ namespace TERN.Runtime
                 size *= 2;
             }
 
+            var old = _stack.Length;
             Array.Resize(ref _stack, size);
+            Array.Fill(_stack, Value.Nil, old, size - old);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1400,7 +1448,7 @@ namespace TERN.Runtime
                 size *= 2;
             }
 
-            var replacement = new Value[size];
+            var replacement = CreateValues(size);
             Array.Copy(_locals, replacement, _localsTop);
 
             // Rebind open upvalues; they point into the old array.
@@ -1458,7 +1506,9 @@ namespace TERN.Runtime
                 size *= 2;
             }
 
+            var old = _locals.Length;
             Array.Resize(ref _locals, size);
+            Array.Fill(_locals, Value.Nil, old, size - old);
         }
 
         private static Frame[] CreateFrames(int count)
@@ -1522,6 +1572,7 @@ namespace TERN.Runtime
             frame.Module = closure.Module;
             frame.Code = proto.Instructions;
             frame.Constants = proto.Constants;
+            frame.Divisions = proto.Divisions;
             frame.Ip = 0;
             frame.LocalsBase = _localsTop;
             frame.StackBase = stackBase;
@@ -2042,6 +2093,12 @@ namespace TERN.Runtime
                             throw Error("DivisionByZero", "division by zero");
                         }
 
+                        // long.MinValue / -1 overflows the integer range; fall back to a float.
+                        if (b == -1)
+                        {
+                            return a == long.MinValue ? new Value(-(double)a) : new Value(-a);
+                        }
+
                         // Exact integer division stays an int; otherwise promote to float.
                         return a % b == 0 ? new Value(a / b) : new Value((double)a / b);
                     case Op.Mod:
@@ -2050,7 +2107,8 @@ namespace TERN.Runtime
                             throw Error("DivisionByZero", "modulo by zero");
                         }
 
-                        return new Value(a % b);
+                        // long.MinValue % -1 overflows the hardware divide; the result is 0.
+                        return new Value(b == -1 ? 0 : a % b);
                     case Op.Pow:
                         if (b >= 0 && b <= 62)
                         {

@@ -108,6 +108,8 @@ namespace TERN.Compiler
             private readonly List<Value> _constants = new();
             private readonly Dictionary<Value, int> _constantIndex = new();
             private readonly List<FunctionProto> _prototypes = new();
+            private readonly List<DivMagic> _divisions = new();
+            private readonly Dictionary<long, int> _divisionIndex = new();
             private readonly List<int> _lines = new();
             private readonly List<Local> _locals = new();
             private readonly List<int> _scopeMarks = new();
@@ -216,6 +218,7 @@ namespace TERN.Compiler
                     LocalCount = Math.Max(_maxSlots, _nextSlot),
                     MaxStack = Math.Max(_maxDepth, 8),
                     Lines = _lines.ToArray(),
+                    Divisions = _divisions.ToArray(),
                     SourceName = _sourceName,
                     Scope = _scope,
                 };
@@ -288,6 +291,19 @@ namespace TERN.Compiler
             {
                 var instruction = _code[index];
                 _code[index] = new Instr(instruction.Op, value, instruction.B, instruction.C);
+            }
+
+            private int AddDivision(long divisor)
+            {
+                if (_divisionIndex.TryGetValue(divisor, out var index))
+                {
+                    return index;
+                }
+
+                index = _divisions.Count;
+                _divisions.Add(DivisionMagic.TryFor(divisor, out var magic) ? magic : default);
+                _divisionIndex[divisor] = index;
+                return index;
             }
 
             private int AddConstant(in Value value)
@@ -1812,6 +1828,15 @@ namespace TERN.Compiler
                 if (TryEvaluateConstant(binary.Right, out var constant) &&
                     IsConstantArithmeticOperand(constant))
                 {
+                    // `x % k` for a positive constant k uses a precomputed reciprocal
+                    // instead of the (very slow) 64-bit hardware divide.
+                    if (op == Op.Mod && constant.Kind == ValueKind.Int &&
+                        DivisionMagic.TryFor(constant.AsInt(), out _))
+                    {
+                        Emit(Op.ModLocalConstMagic, local.Slot, AddDivision(constant.AsInt()), 0, pop: 0, push: 1);
+                        return true;
+                    }
+
                     Emit(OpFusedLocalConst(op), local.Slot, AddConstant(constant), 0, pop: 0, push: 1);
                     return true;
                 }

@@ -76,6 +76,9 @@ namespace TERN.Compiler
         AddLocalLocal, SubLocalLocal, MulLocalLocal, DivLocalLocal, ModLocalLocal,
         AddLocalConst, SubLocalConst, MulLocalConst, DivLocalConst, ModLocalConst,
 
+        // `local % constant` with a precomputed reciprocal: A = slot, B = division index.
+        ModLocalConstMagic,
+
         // control flow
         Jump,
         JumpIfFalse,      // pops
@@ -172,6 +175,60 @@ namespace TERN.Compiler
         }
     }
 
+    /// <summary>
+    /// A precomputed reciprocal for `x % divisor` where divisor is a positive
+    /// compile-time constant. The VM still range-checks the result against the
+    /// divisor and falls back to the hardware divide when the reciprocal is
+    /// imprecise, so this is an optimisation only - never a semantic change.
+    /// </summary>
+    public readonly struct DivMagic
+    {
+        public readonly long Divisor;
+        public readonly ulong Magic;
+        public readonly int Shift;
+
+        public DivMagic(long divisor, ulong magic, int shift)
+        {
+            Divisor = divisor;
+            Magic = magic;
+            Shift = shift;
+        }
+    }
+
+    /// <summary>Builds the reciprocals used by <see cref="Op.ModLocalConstMagic"/>.</summary>
+    public static class DivisionMagic
+    {
+        /// <summary>
+        /// Finds an unsigned 64-bit reciprocal for <paramref name="divisor"/> (which
+        /// must be at least 2) such that <c>hi64(|x| * Magic) >> Shift</c> is the
+        /// quotient <c>|x| / divisor</c> for every value the VM cares about.
+        /// </summary>
+        public static bool TryFor(long divisor, out DivMagic magic)
+        {
+            for (var shift = 0; shift < 64; shift++)
+            {
+                var pow = new UInt128(1UL << shift, 0);
+                var d = (UInt128)(ulong)divisor;
+                var quotient = (pow + d - 1) / d;
+
+                if (quotient > ulong.MaxValue)
+                {
+                    continue;
+                }
+
+                var remainder = pow % d;
+                if (remainder == 0 || remainder <= (UInt128)(1UL << shift))
+                {
+                    magic = new DivMagic(divisor, (ulong)quotient, shift);
+                    return true;
+                }
+            }
+
+            magic = default;
+            return false;
+        }
+    }
+
     /// <summary>A compiled function or module body.</summary>
     public sealed class FunctionProto
     {
@@ -186,6 +243,7 @@ namespace TERN.Compiler
         public required int LocalCount { get; init; }
         public required int MaxStack { get; init; }
         public required int[] Lines { get; init; }
+        public DivMagic[] Divisions { get; init; } = Array.Empty<DivMagic>();
         public string? SourceName { get; init; }
         public bool IsMethod { get; init; }
         public ModuleScope? Scope { get; init; }
@@ -262,13 +320,21 @@ namespace TERN.Compiler
     /// <summary>A loaded module: its compiled body plus its runtime global array.</summary>
     public sealed class TernModule
     {
+        /// <summary>Zero-filled as nil (a default <see cref="Value"/> is integer zero).</summary>
+        private static Value[] CreateValues(int length)
+        {
+            var values = new Value[length];
+            Array.Fill(values, Value.Nil);
+            return values;
+        }
+
         public TernModule(string name, string? path, FunctionProto entry, ModuleScope scope)
         {
             Name = name;
             Path = path;
             Entry = entry;
             Scope = scope;
-            Globals = new Value[Math.Max(scope.Count, 8)];
+            Globals = CreateValues(Math.Max(scope.Count, 8));
             SeedHostValues(0);
         }
 
@@ -293,7 +359,7 @@ namespace TERN.Compiler
         {
             if (Globals.Length < count)
             {
-                var replacement = new Value[Math.Max(count, Globals.Length * 2)];
+                var replacement = CreateValues(Math.Max(count, Globals.Length * 2));
                 Array.Copy(Globals, replacement, Globals.Length);
                 Globals = replacement;
             }
