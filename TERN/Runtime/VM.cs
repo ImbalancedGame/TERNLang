@@ -1085,6 +1085,17 @@ namespace TERN.Runtime
                             break;
                         }
 
+                        case Op.JumpIfNotMap:
+                        {
+                            locals = _locals;
+                            if (locals[frameBase + instruction.A].Kind != ValueKind.Map)
+                            {
+                                ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
                         // Range patterns only match numbers: any other subject simply
                         // fails the arm instead of raising a comparison error.
                         case Op.JumpIfNotNumber:

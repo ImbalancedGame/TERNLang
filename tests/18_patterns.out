@@ -20,3 +20,13 @@ high or not a number
 high or not a number
 low
 A B C
+click 1,2
+key 27
+key 27
+kind scroll
+untyped map
+not a map
+3 -1 0
+a is nil a is set no a
+grid 10 rows 5,6 +2 triple 6
+negative digit digit big negative out of range digit negative digit

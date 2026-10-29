@@ -1462,6 +1462,20 @@ namespace TERN.Syntax
                         _ => 0L,
                     };
 
+                    // `-10..-1` is a range arm, not a bare negative literal.
+                    if (Match(TokenKind.DotDot) || Match(TokenKind.DotDotLess))
+                    {
+                        var inclusive = Previous.Kind == TokenKind.DotDot;
+                        var end = ParseNumberOrIdentifier();
+                        return new RangePattern
+                        {
+                            Start = new LiteralExpr { Value = value, Offset = token.Offset, Line = token.Line },
+                            End = end,
+                            Inclusive = inclusive,
+                            Offset = token.Offset,
+                        };
+                    }
+
                     return new LiteralPattern { Value = value, Offset = token.Offset };
                 }
 
@@ -1478,6 +1492,58 @@ namespace TERN.Syntax
 
                 default:
                     break;
+            }
+
+            if (token.Kind == TokenKind.LeftBrace)
+            {
+                Advance();
+                var entries = new List<MapPatternEntry>();
+
+                while (!Check(TokenKind.RightBrace) && !Check(TokenKind.EndOfFile))
+                {
+                    var keyToken = Current;
+                    string key;
+
+                    if (keyToken.Kind == TokenKind.Identifier)
+                    {
+                        Advance();
+                        key = keyToken.Text;
+                    }
+                    else if (keyToken.Kind == TokenKind.String && keyToken.Parts is { Count: 1 } parts && !parts[0].IsExpression)
+                    {
+                        Advance();
+                        key = parts[0].Text;
+                    }
+                    else
+                    {
+                        Error($"expected a key in the map pattern, found '{Describe(keyToken)}'", keyToken, "TRN0120");
+                        Advance();
+                        break;
+                    }
+
+                    // `{ name }` is shorthand for `{ name: name }`.
+                    Pattern value;
+                    if (Match(TokenKind.Colon))
+                    {
+                        value = ParsePattern();
+                    }
+                    else
+                    {
+                        value = key == "_"
+                            ? new WildcardPattern { Offset = keyToken.Offset }
+                            : new BindingPattern { Name = key, Offset = keyToken.Offset };
+                    }
+
+                    entries.Add(new MapPatternEntry { Key = key, Pattern = value });
+
+                    if (!Match(TokenKind.Comma))
+                    {
+                        break;
+                    }
+                }
+
+                Expect(TokenKind.RightBrace, "'}'");
+                return new MapPattern { Entries = entries, Offset = token.Offset };
             }
 
             if (token.Kind == TokenKind.LeftBracket)
@@ -1525,6 +1591,20 @@ namespace TERN.Syntax
             {
                 Advance();
                 return new IdentifierExpr { Name = token.Text, Offset = token.Offset, Line = token.Line };
+            }
+
+            // A negative upper bound: `-10..-1`, `0..-5`.
+            if (token.Kind == TokenKind.Minus)
+            {
+                Advance();
+                var number = Expect(TokenKind.Number, "a number");
+                var literal = number.Literal switch
+                {
+                    long l => (object)(-l),
+                    double d => -d,
+                    _ => 0L,
+                };
+                return new LiteralExpr { Value = literal, Offset = token.Offset, Line = token.Line };
             }
 
             Error("expected a number or identifier", token, "TRN0119");

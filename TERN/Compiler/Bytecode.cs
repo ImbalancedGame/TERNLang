@@ -93,6 +93,7 @@ namespace TERN.Compiler
         JumpIfNotNullKeep,// peeks
         JumpIfNotList,    // A = slot, B = target (no pop)
         JumpIfNotNumber,  // A = slot, B = target (no pop)
+        JumpIfNotMap,     // A = slot, B = target (no pop)
         JumpCmp,          // A = comparison op code, B = target, C = 1 when jumping on true
 
         // calls

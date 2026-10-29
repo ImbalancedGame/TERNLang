@@ -226,6 +226,22 @@ namespace TERN.Syntax
         public required string? RestName { get; init; }
     }
 
+    /// <summary>One `key: pattern` entry of a map pattern.</summary>
+    public sealed class MapPatternEntry
+    {
+        public required string Key { get; init; }
+        public required Pattern Pattern { get; init; }
+    }
+
+    /// <summary>
+    /// A `{ "key": pattern, ... }` arm. Matching is a subset test: the named keys
+    /// must be present and their values must match; other keys are ignored.
+    /// </summary>
+    public sealed class MapPattern : Pattern
+    {
+        public required List<MapPatternEntry> Entries { get; init; }
+    }
+
     // ----------------------------------------------------------------- functions
 
     public sealed class Parameter

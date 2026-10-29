@@ -39,8 +39,9 @@ match tickets.length {
   arrow lambdas, block scoping, string interpolation, ternaries.
 * **Real data structures** — lists, insertion-ordered maps, lazy ranges, and
   user-defined structs with methods and defaults.
-* **Pattern matching** — literals, ranges, or-patterns, guards, and list
-  patterns with `...rest`, usable as an expression.
+* **Pattern matching** — literals, ranges (including negative ones),
+  or-patterns, guards, list patterns with `...rest` and map patterns that
+  destructure by key, nestable and usable as an expression.
 * **Errors as values** — `try` / `catch` / `finally` with `throw`, plus
   catchable runtime errors and stack traces with exact line numbers, on both
   the interpreter and the compiled backend.

@@ -453,6 +453,18 @@ namespace TERN.Compiler
                 }
             }
 
+            /// <summary>Reserves an anonymous slot for compiler temporaries.</summary>
+            private int ReserveSlot()
+            {
+                var slot = _nextSlot++;
+                if (_nextSlot > _maxSlots)
+                {
+                    _maxSlots = _nextSlot;
+                }
+
+                return slot;
+            }
+
             private int DeclareLocal(string name, bool isConst)
             {
                 var slot = _nextSlot++;
@@ -2937,6 +2949,34 @@ namespace TERN.Compiler
                         return;
                     }
 
+                    case MapPattern mapPattern:
+                    {
+                        // Subset match: the subject must be a map, every named key must
+                        // be present, and its value must match the entry's pattern.
+                        failJumps.Add(Emit(Op.JumpIfNotMap, subjectSlot, 0, 0, pop: 0, push: 0));
+
+                        foreach (var entry in mapPattern.Entries)
+                        {
+                            var keyConstant = AddStringConstant(entry.Key);
+
+                            // `key in map` pushes the item first, then the container.
+                            Emit(Op.LoadConst, keyConstant, 0, 0, pop: 0, push: 1);
+                            EmitLoadLocal(subjectSlot);
+                            Emit(Op.In, 0, 0, 0, pop: 2, push: 1);
+                            failJumps.Add(Emit(Op.JumpIfFalse, 0, 0, 0, pop: 1, push: 0));
+
+                            var valueSlot = ReserveSlot();
+                            EmitLoadLocal(subjectSlot);
+                            Emit(Op.LoadConst, keyConstant, 0, 0, pop: 0, push: 1);
+                            Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
+                            EmitStoreLocal(valueSlot);
+
+                            EmitPatternTest(entry.Pattern, valueSlot, failJumps);
+                        }
+
+                        return;
+                    }
+
                     case ListPattern listPattern:
                     {
                         // Subject must be a list of the right length, then each element is tested.
@@ -2990,19 +3030,64 @@ namespace TERN.Compiler
 
                         return;
 
-                    case ListPattern listPattern:
-                        for (var i = 0; i < listPattern.Elements.Count; i++)
+                    case MapPattern mapPattern:
+                        foreach (var entry in mapPattern.Entries)
                         {
-                            if (listPattern.Elements[i] is not BindingPattern elementBinding)
+                            var keyConstant = AddStringConstant(entry.Key);
+
+                            if (entry.Pattern is BindingPattern mapBinding)
+                            {
+                                var slot = DeclareLocal(mapBinding.Name, isConst: true);
+                                EmitLoadLocal(subjectSlot);
+                                Emit(Op.LoadConst, keyConstant, 0, 0, pop: 0, push: 1);
+                                Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
+                                EmitStoreLocal(slot);
+                                continue;
+                            }
+
+                            if (entry.Pattern is not (ListPattern or MapPattern or OrPattern))
                             {
                                 continue;
                             }
 
-                            var slot = DeclareLocal(elementBinding.Name, isConst: true);
+                            var nested = ReserveSlot();
+                            EmitLoadLocal(subjectSlot);
+                            Emit(Op.LoadConst, keyConstant, 0, 0, pop: 0, push: 1);
+                            Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
+                            EmitStoreLocal(nested);
+                            BindPatternVariables(entry.Pattern, nested);
+                        }
+
+                        return;
+
+                    case ListPattern listPattern:
+                        for (var i = 0; i < listPattern.Elements.Count; i++)
+                        {
+                            var element = listPattern.Elements[i];
+                            if (element is BindingPattern elementBinding)
+                            {
+                                var slot = DeclareLocal(elementBinding.Name, isConst: true);
+                                EmitLoadLocal(subjectSlot);
+                                Emit(Op.LoadInt, i, 0, 0, pop: 0, push: 1);
+                                Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
+                                EmitStoreLocal(slot);
+                                continue;
+                            }
+
+                            // Nested patterns bind too: pull the element into a
+                            // temporary and recurse, so `[[a, b], [c, d]]` declares
+                            // all four names instead of only matching structurally.
+                            if (element is not (ListPattern or OrPattern))
+                            {
+                                continue;
+                            }
+
+                            var nested = ReserveSlot();
                             EmitLoadLocal(subjectSlot);
                             Emit(Op.LoadInt, i, 0, 0, pop: 0, push: 1);
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                            EmitStoreLocal(slot);
+                            EmitStoreLocal(nested);
+                            BindPatternVariables(element, nested);
                         }
 
                         if (listPattern.RestName is not null)

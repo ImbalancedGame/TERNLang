@@ -618,6 +618,8 @@ class Generator:
             line("if (!v_is_list(%s)) goto L%d;" % (self.loc(a, captured), b))
         elif op == "JumpIfNotNumber":
             line("if (!v_is_num(%s)) goto L%d;" % (self.loc(a, captured), b))
+        elif op == "JumpIfNotMap":
+            line("if (!v_is_map(%s)) goto L%d;" % (self.loc(a, captured), b))
 
         elif op == "JumpCmp":
             condition = {0: "cmp < 0", 1: "cmp <= 0", 2: "cmp > 0", 3: "cmp >= 0"}.get(a)

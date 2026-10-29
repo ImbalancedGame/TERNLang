@@ -1,0 +1,141 @@
+// Pattern-matching sweep: every arm form, as an expression and as a statement,
+// including range arms on mixed subjects and nested list patterns.
+
+fn describe(value) {
+    return match value {
+        1 | 2 | 3 => "small",
+        4..9 => "medium",
+        10..<100 if value % 2 == 0 => "even medium",
+        10..<100 => "odd medium",
+        "hi" => "greeting",
+        nil => "nothing",
+        true => "yes",
+        false => "no",
+        [] => "empty list",
+        [x] => "one: " + x,
+        [a, b] => "pair: " + a + "," + b,
+        [first, ...rest] => "head " + first + " + " + len(rest),
+        {"kind": k} => "map kind " + k,
+        _ => "other: " + type(value),
+    };
+}
+
+let subjects = [1, 3, 4, 9, 10, 12, 11, 99, 100, "hi", "other", nil, true, false, 7.5];
+for v in subjects {
+    println(repr(v), "->", describe(v));
+}
+
+let lists = [[], [1], [1, 2], [1, 2, 3], [[1, 2]], ["a", "b", "c", "d"]];
+for l in lists {
+    println(repr(l), "->", describe(l));
+}
+
+
+// Range arms never raise on non-numbers, even first in the list.
+fn numeric(value) {
+    return match value {
+        2..9 => "in range",
+        _ => "not a number or out of range",
+    };
+}
+println(numeric(5), numeric(1), numeric("abc"), numeric(nil), numeric(5.5), numeric(true));
+
+// Exclusive ranges and negative steps.
+fn band(n) {
+    return match n {
+        0..<10 => "low",
+        10..<20 => "mid",
+        _ => "high",
+    };
+}
+println(band(0), band(9), band(10), band(19), band(20));
+
+// Guards only run when the pattern matched, and see outer scope.
+let limit = 3;
+fn guarded(n) {
+    return match n {
+        x if x > limit => "above",
+        x if x == limit => "at",
+        _ => "below",
+    };
+}
+println(guarded(1), guarded(3), guarded(9));
+
+// Blocks as arms, and match used as a statement.
+let total = 0;
+for v in [1, 2, 3] {
+    match v {
+        1 => { total += 10; },
+        2 => { total += 20; },
+        _ => { total += 100; },
+    }
+}
+println(total);
+
+// Nested list patterns bind inner values.
+fn shape(value) {
+    return match value {
+        [[a, b], [c, d]] => a + b + c + d,
+        [x, [y, z]] => x + y + z,
+        _ => -1,
+    };
+}
+println(shape([[1, 2], [3, 4]]), shape([1, [2, 3]]), shape([1, 2]));
+
+// Match on a struct field and on the result of a call.
+struct Wrapper { value = 0 }
+let w = Wrapper(5);
+println(match w.value { 5 => "five", _ => "other" });
+
+// Map patterns: subset matching, shorthand entries, nil values, nesting.
+fn route(event) {
+    return match event {
+        {"kind": "click", "x": x, "y": y} => "click " + x + "," + y,
+        {"kind": "key", "code": code} => "key " + code,
+        {"kind": kind} => "kind " + kind,
+        {} => "untyped map",
+        _ => "not a map",
+    };
+}
+for probe in [{"kind": "click", "x": 1, "y": 2}, {"kind": "key", "code": 27},
+              {"kind": "key", "code": 27, "shift": true}, {"kind": "scroll"}, {},
+              {"anything": 1}, [1], nil] {
+    println(repr(probe), "->", route(probe));
+}
+
+fn pair(value) { return match value { {left, right} => left + right, _ => -1 }; }
+println(pair({"left": 1, "right": 2}), pair({"left": 1}), pair({"left": 0, "right": 0}));
+
+fn nilKey(value) {
+    return match value { {"a": nil} => "nil", {"a": _} => "set", _ => "absent" };
+}
+println(nilKey({"a": nil}), nilKey({"a": 1}), nilKey({}));
+
+fn nested(value) {
+    return match value {
+        {"rows": [[a, b], ...rest]} => a + b + len(rest),
+        {"meta": {"tag": t}, "n": n} => t + ":" + n,
+        [[x, y], [z]] => x + y + z,
+        _ => "?",
+    };
+}
+println(nested({"rows": [[1, 2], [3], [4]]}), nested({"meta": {"tag": "t"}, "n": 5}),
+        nested([[1, 2], [3]]));
+
+// Map patterns work on maps built at runtime.
+let built = {};
+built["kind"] = "click";
+built["x"] = 7;
+built["y"] = 8;
+println(route(built));
+
+// Negative range arms.
+fn sign(n) {
+    return match n {
+        -9..-1 => "negative digit",
+        -100..-10 => "big negative",
+        0..9 => "digit",
+        _ => "out of range",
+    };
+}
+println(sign(-5), sign(-50), sign(5), sign(-500), sign(-0.5));

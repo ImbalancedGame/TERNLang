@@ -428,13 +428,24 @@ let describe = match value {
     [x]                  => "one item: ${x}",
     [a, b]               => "pair",
     [first, ...rest]     => "list starting with ${first}",
+    {"kind": "click", "x": x, "y": y} => "click at ${x},${y}",
+    {"kind": kind}       => "a ${kind} event",
+    {name}               => "something called ${name}",
     _                    => "anything else",
 };
 ```
 
-Supported patterns: literals, `nil`, booleans, or-patterns (`a | b`), integer
-ranges (`2..9` inclusive, `2..<10` exclusive), list patterns with `...rest`,
-binding names (`n` binds), and guards (`pattern if condition`).
+Supported patterns: literals, `nil`, booleans, or-patterns (`a | b`), numeric
+ranges (`2..9` inclusive, `2..<10` exclusive, negatives like `-9..-1`), list
+patterns with `...rest`, map patterns, binding names (`n` binds), and guards
+(`pattern if condition`). Patterns nest, so `[[a, b], [c, d]]` and
+`{"rows": [[x, y], ...rest]}` bind every name they mention.
+
+A map pattern is a **subset test**: each named key must be present and its
+value must match, and any other keys in the subject are ignored. `{name}` is
+shorthand for `{name: name}`, and `{}` matches any map at all (it is the map
+equivalent of `_`), so put the more specific map arms first. A key whose value
+is `nil` still counts as present: `{"a": nil}` does not match `{}`.
 
 A range arm is a numeric test: it matches numbers and simply fails for anything
 else, so a mixed set of arms never raises "cannot compare". Guards are ordinary
@@ -595,6 +606,12 @@ doWhileStmt    = "do" block "while" expression ";"? ;
 tryStmt        = "try" block ("catch" ("(" IDENT ")")? block)? ("finally" block)? ;
 throwStmt      = "throw" expression ";"? ;
 block          = "{" statement* "}" ;
+pattern        = alternative ("|" alternative)* ;
+alternative    = literal | range | "_" | IDENT | listPattern | mapPattern ;
+range          = number (".." | "..<") number ;
+listPattern    = "[" (pattern ("," pattern)*)? "..." IDENT? "]" ;
+mapPattern     = "{" (entry ("," entry)*)? "}" ;
+entry          = (IDENT | STRING) (":" pattern)? ;
 ```
 
 Expressions follow the precedence table in §4 and include: literals, list/map

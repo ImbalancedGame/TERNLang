@@ -50,3 +50,49 @@ fn rated(value) {
     };
 }
 println(rated(95), rated(85), rated(10));
+
+// Map patterns are subset tests: the named keys must be present and match,
+// any other keys are ignored.
+fn route(event) {
+    return match event {
+        {"kind": "click", "x": x, "y": y} => "click ${x},${y}",
+        {"kind": "key", "code": code} => "key ${code}",
+        {"kind": kind} => "kind ${kind}",
+        {} => "untyped map",
+        _ => "not a map",
+    };
+}
+for probe in [{"kind": "click", "x": 1, "y": 2}, {"kind": "key", "code": 27},
+              {"kind": "key", "code": 27, "shift": true}, {"kind": "scroll"}, {}, [1]] {
+    println(route(probe));
+}
+
+// `{name}` is shorthand for `{name: name}`; a present-but-nil key still counts.
+fn pair(value) { return match value { {left, right} => left + right, _ => -1 }; }
+println(pair({"left": 1, "right": 2}), pair({"left": 1}), pair({"left": 0, "right": 0}));
+fn nilKey(value) {
+    return match value { {"a": nil} => "a is nil", {"a": _} => "a is set", _ => "no a" };
+}
+println(nilKey({"a": nil}), nilKey({"a": 1}), nilKey({}));
+
+// Nested structural patterns bind all the way down.
+fn deep(value) {
+    return match value {
+        [[a, b], [c, d]] => "grid ${a + b + c + d}",
+        {"rows": [[x, y], ...rest]} => "rows ${x},${y} +${len(rest)}",
+        [x, [y, z]] => "triple ${x + y + z}",
+        _ => "?",
+    };
+}
+println(deep([[1, 2], [3, 4]]), deep({"rows": [[5, 6], [7, 8], [9, 10]]}), deep([1, [2, 3]]));
+
+// Negative range arms.
+fn sign(n) {
+    return match n {
+        -9..-1 => "negative digit",
+        0..9 => "digit",
+        -100..-10 => "big negative",
+        _ => "out of range",
+    };
+}
+println(sign(-5), sign(5), sign(-50), sign(-500), sign(0), sign(-1.5));
