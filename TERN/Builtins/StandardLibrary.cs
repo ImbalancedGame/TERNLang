@@ -161,7 +161,8 @@ namespace TERN.Builtins
                 return Value.Nil;
             }, 1, 2, "Throws unless the condition is truthy.");
 
-            engine.RegisterFunction("error", (vm, a) => throw new TernError("Error", a[0].ToDisplayString()), 1, 1,
+            // `vm.Error` attaches a trace, so `error(...)` reports like `throw`.
+            engine.RegisterFunction("error", (vm, a) => throw vm.Error("Error", a[0].ToDisplayString()), 1, 1,
                 "Raises an error.");
 
             engine.RegisterFunction("panic", (vm, a) => throw new TernError("Panic", a.Length > 0 ? a[0].ToDisplayString() : "panic"), 0, 1,

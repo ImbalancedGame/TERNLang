@@ -8,10 +8,44 @@
 
 // ------------------------------------------------------------------ errors
 
+// Recursion is bounded by the C stack rather than by a bytecode budget. The
+// limit is high enough for real programs (about 3 MB of stack) and low enough
+// that hitting it raises a catchable error instead of a SIGSEGV.
+#define TERN_MAX_CALL_DEPTH 10000
+
 TernTry *tern_try_top = NULL;
 Value tern_thrown;
 int tern_call_depth = 0;
 static const char *tern_thrown_kind = "Error";
+
+// ------------------------------------------------------------------ traces
+//
+// The frame table itself; the push/pop helpers are inline in the header so that
+// tern_call and every generated call site stay cheap.
+
+TernFrame *tern_frame_cur = NULL;
+int tern_current_line = 0;
+const char *tern_program_file = "<program>";
+
+void tern_trace_frames(void *output, const char *file) {
+    FILE *out = (FILE *)output;
+    // Innermost first, matching the interpreter: each frame reports the line it
+    // had reached, which for the innermost one is where the error was raised.
+    int printed = 0;
+    TernFrame *child = NULL;
+    for (TernFrame *frame = tern_frame_cur; frame && printed < 32; frame = frame->prev) {
+        const char *name = frame->proto && frame->proto->name ? frame->proto->name : "<anonymous>";
+        // A frame's own line is the call site the frame it called recorded.
+        int line = child ? child->caller_line : tern_current_line;
+        fprintf(out, "  at %s (%s:%d)\n", name, file, line);
+        child = frame;
+        printed++;
+    }
+    if (child == NULL && tern_current_line > 0) {
+        // Built with --no-traces, or an error outside any TERN frame.
+        fprintf(out, "  at <module> (%s:%d)\n", file, tern_current_line);
+    }
+}
 
 // Reports an uncaught error the way the interpreter does and stops the program.
 static void report_uncaught(const char *kind, Value payload) {
@@ -21,6 +55,7 @@ static void report_uncaught(const char *kind, Value payload) {
     Str *str = (Str *)text.as.o;
     fwrite(str->chars, 1, str->len, stderr);
     fputc('\n', stderr);
+    tern_trace_frames(stderr, tern_program_file);
     exit(1);
 }
 
@@ -1498,11 +1533,6 @@ Value tern_new_instance(TypeObj *type, int argc, Value *argv) {
     return v_obj((Obj *)instance);
 }
 
-// Recursion is bounded by the C stack rather than by a bytecode budget. The
-// limit is high enough for real programs (about 3 MB of stack) and low enough
-// that hitting it raises a catchable error instead of a SIGSEGV.
-static const int TERN_MAX_CALL_DEPTH = 10000;
-
 Value tern_call(Value callee, int argc, Value *argv) {
     if (callee.tag == T_OBJ) {
         switch (callee.as.o->type) {
@@ -1512,7 +1542,10 @@ Value tern_call(Value callee, int argc, Value *argv) {
                     tern_call_depth--;
                     tern_panic("StackOverflow", "call depth exceeded %d", TERN_MAX_CALL_DEPTH);
                 }
+                TernFrame frame;
+                tern_frame_enter(&frame, closure->proto);
                 Value result = closure->proto->fn(closure, argc, argv);
+                tern_frame_leave(&frame);
                 tern_call_depth--;
                 return result;
             }

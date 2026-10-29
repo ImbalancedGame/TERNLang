@@ -251,11 +251,14 @@ typedef struct Proto {
 // panic) unwinds to the innermost one with longjmp. Generated functions that
 // contain a try block keep their frame in memory so a longjmp cannot lose it.
 
+struct TernFrame;
+
 typedef struct TernTry {
     jmp_buf env;
     struct TernTry *prev;
     int sp;
     int depth;      // call depth when the handler was installed
+    struct TernFrame *frames;  // innermost frame when the handler was installed
 } TernTry;
 
 extern TernTry *tern_try_top;
@@ -269,6 +272,59 @@ extern int tern_call_depth;
 // C stack and registers, which are scanned conservatively, so generated code
 // never has to describe its frame.
 void tern_gc_set_stack_bottom(void *anchor);
+
+// ------------------------------------------------------------------- traces
+//
+// Uncaught errors print the call stack, the same way the interpreter does. Each
+// `tern_call` of a closure puts a frame on its own C stack and links it into a
+// thread of frames: pushing costs three stack stores plus one global, and the
+// frame dies with the call, so nothing needs cleaning up when a `try` handler
+// unwinds. `tern_set_line` is emitted wherever the source line changes, so the
+// innermost frame always knows the line it is executing.
+void tern_trace_frames(void *output, const char *file);
+
+// Name shown in traces (the script's module name).
+extern const char *tern_program_file;
+
+extern int tern_current_line;
+
+typedef struct TernFrame {
+    const Proto *proto;
+    int caller_line;            // line of the call site in the caller
+    struct TernFrame *prev;
+} TernFrame;
+
+// Innermost live frame, NULL at module level outside any call.
+extern TernFrame *tern_frame_cur;
+
+static inline void tern_set_line(int line) { tern_current_line = line; }
+
+// Starts a frame for `proto`; `frame` must outlive the call (it is the caller's
+// local). Ending it restores the caller's line so a later error in the caller
+// still reports the call site it had reached.
+#ifdef TERN_NO_TRACES
+// Compiled without traces: keep the call sites but do no bookkeeping, so the
+// line stores still identify where an uncaught error happened.
+static inline void tern_frame_enter(TernFrame *frame, const Proto *proto) {
+    (void)frame;
+    (void)proto;
+}
+
+static inline void tern_frame_leave(TernFrame *frame) { (void)frame; }
+#else
+static inline void tern_frame_enter(TernFrame *frame, const Proto *proto) {
+    frame->proto = proto;
+    frame->caller_line = tern_current_line;
+    frame->prev = tern_frame_cur;
+    tern_frame_cur = frame;
+}
+
+static inline void tern_frame_leave(TernFrame *frame) {
+    tern_frame_cur = frame->prev;
+    tern_current_line = frame->caller_line;
+}
+#endif
+
 void tern_set_args(int count, char **values);
 void tern_gc_register_values(Value *base, int count);
 void tern_gc_register_ptrs(void **base, int count);

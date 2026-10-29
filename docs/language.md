@@ -318,7 +318,9 @@ println(c());  // 2
 ```
 
 * TERN does not have tail-call optimisation; deep recursion grows the stack and
-  reports `StackOverflowError` rather than crashing the process.
+  reports a catchable `StackOverflow` error at 10 000 frames rather than
+  crashing the process. `tern run` and compiled binaries share the limit, so a
+  script recursing to a given depth behaves the same on both.
 * Calling a non-function is a runtime `TypeError`.
 
 ---

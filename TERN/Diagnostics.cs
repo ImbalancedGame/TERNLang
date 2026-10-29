@@ -99,19 +99,47 @@ namespace TERN
     /// <summary>Thrown by the host when a script makes an uncaught error.</summary>
     public sealed class TernError : Exception
     {
+        private readonly List<string> _trace;
+
         public string ErrorType { get; }
-        public IReadOnlyList<string> Trace { get; }
+
+        public IReadOnlyList<string> Trace => _trace;
+
         public Runtime.Value Payload { get; }
+
+        /// <summary>
+        /// True once the innermost frame has been pinned to the instruction that
+        /// raised the error. <see cref="CaptureTrace"/> can only see the call site
+        /// the frame had reached, so the frame that catches the error corrects its
+        /// own entry before the exception leaves it.
+        /// </summary>
+        public bool TraceLocated { get; internal set; }
 
         public TernError(string errorType, string message, IReadOnlyList<string>? trace = null,
             Runtime.Value? payload = null)
             : base(message)
         {
             ErrorType = errorType;
-            Trace = trace ?? Array.Empty<string>();
+            _trace = trace as List<string> ?? new List<string>(trace ?? Array.Empty<string>());
             Payload = payload is { Kind: not (Runtime.ValueKind.Missing or Runtime.ValueKind.Nil) } given
                 ? given
                 : Runtime.Value.Str(message);
+        }
+
+        /// <summary>Fills in a trace for an error that was created without one.</summary>
+        internal void SetTrace(List<string> trace)
+        {
+            _trace.Clear();
+            _trace.AddRange(trace);
+        }
+
+        /// <summary>Rewrites the innermost trace entry with an exact source line.</summary>
+        internal void LocateTopFrame(string frame)
+        {
+            if (_trace.Count > 0)
+            {
+                _trace[0] = frame;
+            }
         }
 
         public string Describe()

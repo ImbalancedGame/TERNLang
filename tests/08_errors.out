@@ -9,3 +9,4 @@ outer caught: deep
 ok
 assert: math is broken
 Error: custom failure
+  at <module> (08_errors:59)

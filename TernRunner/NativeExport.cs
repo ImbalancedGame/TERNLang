@@ -259,8 +259,24 @@ namespace TernRunner
 
                 json.Append(']');
 
-                json.Append(",\"code\":[");
                 var instructions = proto.Instructions;
+
+                // Line per instruction, so compiled binaries can report where an
+                // uncaught error happened instead of only a function name.
+                json.Append(",\"lines\":[");
+                for (var i = 0; i < instructions.Length; i++)
+                {
+                    if (i > 0)
+                    {
+                        json.Append(',');
+                    }
+
+                    json.Append(i < proto.Lines.Length ? proto.Lines[i] : 0);
+                }
+
+                json.Append(']');
+
+                json.Append(",\"code\":[");
                 for (var i = 0; i < instructions.Length; i++)
                 {
                     if (i > 0)

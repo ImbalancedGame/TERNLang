@@ -42,7 +42,8 @@ match tickets.length {
 * **Pattern matching** — literals, ranges, or-patterns, guards, and list
   patterns with `...rest`, usable as an expression.
 * **Errors as values** — `try` / `catch` / `finally` with `throw`, plus
-  catchable runtime errors and stack traces with line numbers.
+  catchable runtime errors and stack traces with exact line numbers, on both
+  the interpreter and the compiled backend.
 * **Batteries included** — `math`, `json`, `fs`, `os`, `time`, `random`,
   `text`, `lists` namespaces and rich methods on every built-in type.
 * **Modules** — `import "lib/util.tern"` for files, `import "std:json"` for
@@ -254,16 +255,18 @@ nine runs, whole process including start-up:
 
 | Workload   | TERN native | TERN VM | Lua 5.4 | LuaJIT | Node 22 | C#    |
 | ---------- | ----------: | ------: | ------: | -----: | ------: | ----: |
-| `fib`      |          18 |     134 |      57 |      8 |      10 |     5 |
+| `fib`      |          20 |     134 |      57 |      8 |      10 |     5 |
 | `loop`     |          56 |     113 |      37 |     14 |      10 |     6 |
-| `maps`     |         118 |     192 |     200 |    60 |     100 |    68 |
+| `maps`     |         122 |     192 |     200 |    60 |     100 |    68 |
 | `bintree`  |           8 |      51 |      45 |      8 |       5 |    30 |
 | `strings`  |           7 |      20 |      14 |      6 |       3 |     4 |
 
 The VM column is in-process (start-up excluded); the native column includes
-about a millisecond of process start, so it is 7.3x ahead of the interpreter on
-`fib`, 3.4x on `strings` and 6.6x on `bintree`, ahead on `maps`, and within 2x
-of LuaJIT on `fib` and `bintree`. The Lua/LuaJIT/Node/C# columns are from an
+about a millisecond of process start, so it is about 6.7x ahead of the
+interpreter on `fib`, 2.9x on `strings` and 6.4x on `bintree`, ahead on `maps`,
+and within 2.5x of LuaJIT on `fib` and `bintree`. Compiled binaries keep the
+interpreter's stack traces, which costs about two cycles per call (`fib` would
+be 10% faster without them). The Lua/LuaJIT/Node/C# columns are from an
 earlier session on the same machine; timings move by up to 20% with host load.
 Building one binary takes ~1.9 s, almost all of it `cc -O2` over the runtime.
 

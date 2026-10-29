@@ -1,0 +1,17 @@
+// Recursion depth is the same in the interpreter and in compiled binaries:
+// deep-but-reasonable recursion works, and going too deep is catchable.
+
+fn down(n) {
+    if (n <= 0) { return 0; }
+    return 1 + down(n - 1);
+}
+
+println(down(9000));
+
+let caught = "no";
+try {
+    down(20000);
+} catch (e) {
+    caught = "yes";
+}
+println("overflow caught: " + caught);

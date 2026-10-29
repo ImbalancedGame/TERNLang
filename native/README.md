@@ -14,9 +14,10 @@ cc -O2 -I native/runtime app.c -o app -lm  # 3. C -> ELF
 Step 2 and 3 are wrapped by `ternc.py` itself:
 
 ```bash
-python3 native/ternc.py app.tern -o app          # whole pipeline
-python3 native/ternc.py app.tern -o app --keep-c # keep app.c next to the binary
-native/build.sh app.tern -o app                  # same thing, shell wrapper
+python3 native/ternc.py app.tern -o app           # whole pipeline
+python3 native/ternc.py app.tern -o app --keep-c  # keep app.c next to the binary
+python3 native/ternc.py app.tern -o app --no-traces  # ~10% faster, one-line errors
+native/build.sh app.tern -o app                   # same thing, shell wrapper
 ```
 
 ## How it works
@@ -52,7 +53,17 @@ Other notable points:
   stack; `Throw` (and every runtime error) `longjmp`s to the innermost one.
   Functions that contain a `try` block keep their frame in memory (`volatile`)
   so a resume cannot lose it, and `return` inside `try` restores the handler
-  stack. Uncaught errors print `Kind: message` and exit non-zero.
+  stack.
+* **Stack traces** — the export carries a line per instruction (`lines`), and
+  `ternc.py` stores the current line wherever it changes, so a binary can say
+  where an error happened. Each closure call pushes a `TernFrame` on its own C
+  stack and links it into a thread (`tern_frame_cur`); the trace is walked
+  innermost first and capped at 32 entries, exactly like the interpreter, so an
+  uncaught error prints the same `at fn (file:line)` list on both back ends.
+  `try` handlers remember the frame pointer they were installed under and
+  restore it, so a caught error never leaves a stale frame behind. Compiling
+  with `--no-traces` turns the push into a no-op (and leaves the line table
+  alone, so errors still name their line).
 * **Modules** — each imported file gets its own `G_N` globals array and a
   `load_module_N()` that runs its body once and returns a map of its exports.
   `import "std:x"` constants are resolved against the runtime's namespaces.
@@ -100,6 +111,7 @@ runtime behaviour) is compiled and run, and its output compared with
 01_basics       ok     06_structs      ok     11_operators    ok     17_stdlib       ok
 02_strings      ok     07_match        ok     13_loops        ok     18_patterns     ok
 03_control      ok     08_errors       ok     14_modulo       ok     19_unicode      ok
+20_traces       ok
 04_functions    ok     09_builtins     ok     15_stores       ok
 05_collections  ok     10_modules_main ok     16_gc           ok
 ```
@@ -116,19 +128,19 @@ because that is what a user pays to run the script:
 
 | Workload   | native | `tern run` | speed-up |
 | ---------- | -----: | ---------: | -------: |
-| `fib`      |   18 ms |     255 ms |   14.6x |
-| `loop`     |   56 ms |     276 ms |    4.9x |
-| `maps`     |  118 ms |     282 ms |    2.4x |
-| `strings`  |    7 ms |     134 ms |   19.2x |
-| `bintree`  |    8 ms |     157 ms |   20.7x |
+| `fib`      |   20 ms |     257 ms |   13.0x |
+| `loop`     |   56 ms |     264 ms |    4.7x |
+| `maps`     |  122 ms |     312 ms |    2.6x |
+| `strings`  |    7 ms |     141 ms |   20.6x |
+| `bintree`  |    8 ms |     158 ms |   19.3x |
 
 (Timings move by up to 20% with host load; these were taken on an otherwise
 idle 2 vCPU machine.)
 
 Measured in-process instead (start-up excluded, best of nine), the interpreter
 needs 134 / 113 / 192 / 20 / 51 ms for the same five workloads, so the compiled
-code is **7.3x** ahead on `fib`, 2.0x on `loop`, 1.5x on `maps`, 3.4x on
-`strings` and 6.6x on `bintree` — and within 2x of LuaJIT on `fib` and
+code is **6.7x** ahead on `fib`, 2.0x on `loop`, 1.6x on `maps`, 2.9x on
+`strings` and 6.4x on `bintree` — and within 2.5x of LuaJIT on `fib` and
 `bintree`, while staying a plain C compiler back end.
 
 Collecting costs nothing here: `bintree`, `fib` and `loop` stay under the 16 MiB
@@ -154,11 +166,13 @@ the whole single-translation-unit program.
   Greek, Cyrillic, CJK — behaves identically.
 * Compiler diagnostics (the `12_lint` warnings) are not emitted by binaries;
   use `./tools/tern check` for that.
-* Uncaught errors print the message without a stack trace (the interpreter
-  prints a trace as well).
-* Recursion is limited to 10 000 frames (the interpreter stops at 1 024). The
-  limit is high enough to stay inside the C stack and raises a catchable
-  `StackOverflow` error rather than crashing.
+* Stack traces cost about two cycles per call: `fib(30)`, which makes 2.7 M
+  calls, runs ~8% slower than it would without them (19.5 ms instead of 18 ms).
+  Build with `--no-traces` to skip the bookkeeping; errors then print a single
+  `at <module> (file:line)` line, which still points at the failing instruction.
+* Recursion is limited to 10 000 frames, the same as the interpreter. The limit
+  is high enough to stay inside the C stack (~3 MB per thread) and raises a
+  catchable `StackOverflow` error rather than crashing.
 
 ## Relationship to the interpreter
 

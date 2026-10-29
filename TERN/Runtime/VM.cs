@@ -13,7 +13,9 @@ namespace TERN.Runtime
     public sealed class VmOptions
     {
         public long MaxInstructions { get; set; } = 2_000_000_000;
-        public int MaxCallDepth { get; set; } = 1024;
+        // Matches the native backend's limit, so a script that recurses to a
+        // given depth behaves the same in the VM and in a compiled binary.
+        public int MaxCallDepth { get; set; } = 10000;
         public int MaxCollectionSize { get; set; } = 8_000_000;
         public long MaxStringLength { get; set; } = 16_000_000;
     }
@@ -1474,6 +1476,7 @@ namespace TERN.Runtime
                     // Runtime errors use the same handler stack as `throw`, so scripts
                     // can catch arity/index/type failures alongside their own errors.
                     frame.Ip = ip;
+                    LocateTopFrame(error, frame, ip);
                     if (!DispatchThrow(error.Payload, frame, ip))
                     {
                         throw;
@@ -2102,6 +2105,38 @@ namespace TERN.Runtime
             }
 
             return new TernError("Error", value.ToDisplayString(), trace, value);
+        }
+
+        /// <summary>
+        /// Pins the innermost trace entry of <paramref name="error"/> to the
+        /// instruction that raised it. <see cref="CaptureTrace"/> runs inside the
+        /// raising operation, where the frame's <c>Ip</c> still points at the last
+        /// call it made, so without this the first entry would name a stale line.
+        /// </summary>
+        private void LocateTopFrame(TernError error, Frame frame, int ip)
+        {
+            if (error.TraceLocated)
+            {
+                return;
+            }
+
+            var proto = frame.Closure?.Proto;
+            if (proto is null)
+            {
+                return;
+            }
+
+            if (error.Trace.Count == 0)
+            {
+                // Builtins and the runtime's own value types construct TernError
+                // without a trace; the frame is still live here, so build one.
+                error.SetTrace(CaptureTrace());
+            }
+
+            var index = Math.Max(0, ip - 1);
+            var line = index < proto.Lines.Length ? proto.Lines[index] : 0;
+            error.TraceLocated = true;
+            error.LocateTopFrame($"{proto.Name ?? "<anonymous>"} ({proto.SourceName ?? "<script>"}:{line})");
         }
 
         public List<string> CaptureTrace()
