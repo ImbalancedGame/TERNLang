@@ -186,10 +186,18 @@ the whole single-translation-unit program.
   binary with the operating system (user, container, `chroot`) instead.
 * `fs` errors name the path as the script wrote it, while the interpreter
   reports the resolved absolute path.
-* Stack traces cost about two cycles per call: `fib(30)`, which makes 2.7 M
-  calls, runs ~8% slower than it would without them (19.5 ms instead of 18 ms).
-  Build with `--no-traces` to skip the bookkeeping; errors then print a single
-  `at <module> (file:line)` line, which still points at the failing instruction.
+* Stack traces cost about a cycle per call: pushing and popping a frame is
+  three stores, and `fib(30)` — 2.7 M calls — runs 2-3% slower than with
+  `--no-traces`, which also drops the per-line stores. Errors then still print
+  a single `at <module> (file:line)` line, pointing at the failing instruction.
+* The 25 global builtins check their argument count and raise the interpreter's
+  `ArgumentError` ("len() expects 1 argument(s) but got 2"). Methods and
+  namespace members do not check yet: a wrong-arity method call reads the
+  missing arguments as `nil` instead of failing.
+* Error text matches the interpreter except for JSON syntax errors, where the
+  interpreter forwards the .NET parser's wording ("expected a string key at
+  offset 1") and the native runtime says "invalid JSON at offset N" with the
+  same offset.
 * Recursion is limited to 10 000 frames, the same as the interpreter. The limit
   is high enough to stay inside the C stack (~3 MB per thread) and raises a
   catchable `StackOverflow` error rather than crashing.

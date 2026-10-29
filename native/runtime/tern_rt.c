@@ -1273,9 +1273,42 @@ static void debug_into(Buf *buf, Value v) {
 
 // ------------------------------------------------------------------ arithmetic
 
-static int64_t require_int(Value v, const char *what) {
+// Bitwise operators report the operator, not the operand: "operator '&'
+// requires integers but got string".
+static int64_t require_int_op(Value v, const char *op) {
     if (v.tag != T_INT) {
-        tern_panic("TypeError", "%s expects an integer, not %s", what, tern_type_name(v));
+        tern_panic("TypeError", "operator '%s' requires integers but got %s", op, tern_type_name(v));
+    }
+    return v.as.i;
+}
+
+// Math builtins coerce: the interpreter reads a non-number as 0.0 (it goes
+// through a defaulting numeric accessor), so compiled code must not read a
+// numeric union field out of a string or nil, which yields garbage.
+static double v_as_number(Value v) { return v_is_num(v) ? v_as_double(v) : 0.0; }
+
+// Integer requirement for builtin arguments. Like the interpreter's
+// RequireInt it accepts an integral float, and it names the function and the
+// 1-based argument position, counting a method's receiver as argument 1.
+static int64_t need_int(Value v, const char *fn, int index) {
+    if (v.tag == T_INT) {
+        return v.as.i;
+    }
+    if (v.tag == T_FLOAT) {
+        double number = v.as.f;
+        if (floor(number) == number && fabs(number) < 9.2e18) {
+            return (int64_t)number;
+        }
+    }
+    tern_panic("TypeError", "%s() argument %d must be an integer, got %s",
+               fn, index, ((Str *)tern_to_debug(v))->chars);
+    return 0;
+}
+
+// Indexing reports the container: "list index must be an integer, not string".
+static int64_t require_index(Value v, const char *kind) {
+    if (v.tag != T_INT) {
+        tern_panic("TypeError", "%s index must be an integer, not %s", kind, tern_type_name(v));
     }
     return v.as.i;
 }
@@ -1339,11 +1372,12 @@ Value tern_add(Value a, Value b) {
     return v_nil();
 }
 
-static double numeric(Value v, const char *op) {
-    if (!v_is_num(v)) {
-        tern_panic("TypeError", "operator '%s' expects numbers, got %s", op, tern_type_name(v));
+// Arithmetic type errors name both operands, like the interpreter.
+static void require_numbers(Value a, Value b, const char *op) {
+    if (!v_is_num(a) || !v_is_num(b)) {
+        tern_panic("TypeError", "operator '%s' is not defined for %s and %s",
+                   op, tern_type_name(a), tern_type_name(b));
     }
-    return v_as_double(v);
 }
 
 Value tern_sub(Value a, Value b) {
@@ -1354,7 +1388,8 @@ Value tern_sub(Value a, Value b) {
         }
         return v_int(result);
     }
-    return v_float(numeric(a, "-") - numeric(b, "-"));
+    require_numbers(a, b, "-");
+    return v_float(v_as_double(a) - v_as_double(b));
 }
 
 Value tern_mul(Value a, Value b) {
@@ -1365,7 +1400,8 @@ Value tern_mul(Value a, Value b) {
         }
         return v_int(result);
     }
-    return v_float(numeric(a, "*") * numeric(b, "*"));
+    require_numbers(a, b, "*");
+    return v_float(v_as_double(a) * v_as_double(b));
 }
 
 Value tern_div(Value a, Value b) {
@@ -1381,11 +1417,12 @@ Value tern_div(Value a, Value b) {
         }
         return v_float((double)a.as.i / (double)b.as.i);
     }
-    double divisor = numeric(b, "/");
+    require_numbers(a, b, "/");
+    double divisor = v_as_double(b);
     if (divisor == 0) {
         tern_panic("DivisionByZero", "division by zero");
     }
-    return v_float(numeric(a, "/") / divisor);
+    return v_float(v_as_double(a) / divisor);
 }
 
 Value tern_mod(Value a, Value b) {
@@ -1395,11 +1432,12 @@ Value tern_mod(Value a, Value b) {
         }
         return v_int(b.as.i == -1 ? 0 : a.as.i % b.as.i);
     }
-    double divisor = numeric(b, "%");
+    require_numbers(a, b, "%");
+    double divisor = v_as_double(b);
     if (divisor == 0) {
         tern_panic("DivisionByZero", "modulo by zero");
     }
-    return v_float(fmod(numeric(a, "%"), divisor));
+    return v_float(fmod(v_as_double(a), divisor));
 }
 
 Value tern_pow(Value a, Value b) {
@@ -1416,21 +1454,22 @@ Value tern_pow(Value a, Value b) {
         }
         return v_int(result);
     }
-    return v_float(pow(numeric(a, "**"), numeric(b, "**")));
+    require_numbers(a, b, "**");
+    return v_float(pow(v_as_double(a), v_as_double(b)));
 }
 
-Value tern_band(Value a, Value b) { return v_int(require_int(a, "'&'") & require_int(b, "'&'")); }
-Value tern_bor(Value a, Value b) { return v_int(require_int(a, "'|'") | require_int(b, "'|'")); }
-Value tern_bxor(Value a, Value b) { return v_int(require_int(a, "'^'") ^ require_int(b, "'^'")); }
+Value tern_band(Value a, Value b) { return v_int(require_int_op(a, "&") & require_int_op(b, "&")); }
+Value tern_bor(Value a, Value b) { return v_int(require_int_op(a, "|") | require_int_op(b, "|")); }
+Value tern_bxor(Value a, Value b) { return v_int(require_int_op(a, "^") ^ require_int_op(b, "^")); }
 
 Value tern_shl(Value a, Value b) {
-    int64_t shift = require_int(b, "'<<'");
-    return v_int((int64_t)((uint64_t)require_int(a, "'<<'") << (shift & 63)));
+    int64_t shift = require_int_op(b, "<<");
+    return v_int((int64_t)((uint64_t)require_int_op(a, "<<") << (shift & 63)));
 }
 
 Value tern_shr(Value a, Value b) {
-    int64_t shift = require_int(b, "'>>'");
-    return v_int(require_int(a, "'>>'") >> (shift & 63));
+    int64_t shift = require_int_op(b, ">>");
+    return v_int(require_int_op(a, ">>") >> (shift & 63));
 }
 
 Value tern_neg(Value a) {
@@ -1444,7 +1483,12 @@ Value tern_neg(Value a) {
     return v_nil();
 }
 
-Value tern_bnot(Value a) { return v_int(~require_int(a, "'~'")); }
+Value tern_bnot(Value a) {
+    if (a.tag != T_INT) {
+        tern_panic("TypeError", "bitwise not requires an integer");
+    }
+    return v_int(~a.as.i);
+}
 
 Value tern_compare(Value a, Value b) {
     if (v_is_num(a) && v_is_num(b)) {
@@ -1487,7 +1531,7 @@ int64_t tern_length(Value v) {
     if (v.tag == T_OBJ && v.as.o->type == O_RANGE) {
         return (int32_t)range_length((Range *)v.as.o);
     }
-    tern_panic("TypeError", "%s has no length", tern_type_name(v));
+    tern_panic("TypeError", "%s has no member 'length'", tern_type_name(v));
     return 0;
 }
 
@@ -1548,6 +1592,9 @@ Value tern_new_instance(TypeObj *type, int argc, Value *argv) {
     return v_obj((Obj *)instance);
 }
 
+// Defined with the globals table below; calls check it before entering.
+static void check_arity(const Native *native, int argc);
+
 Value tern_call(Value callee, int argc, Value *argv) {
     if (callee.tag == T_OBJ) {
         switch (callee.as.o->type) {
@@ -1566,6 +1613,7 @@ Value tern_call(Value callee, int argc, Value *argv) {
             }
             case O_NATIVE: {
                 Native *native = (Native *)callee.as.o;
+                check_arity(native, argc);
                 return native->fn(argc, argv);
             }
             case O_TYPE:
@@ -1682,7 +1730,7 @@ Value tern_get_index(Value target, Value index) {
                                       v_int(((Range *)index.as.o)->end),
                                       ((Range *)index.as.o)->inclusive);
                 }
-                return list_get((List *)target.as.o, require_int(index, "list index"));
+                return list_get((List *)target.as.o, require_index(index, "list"));
             }
             case O_MAP: {
                 Value found;
@@ -1698,7 +1746,7 @@ Value tern_get_index(Value target, Value index) {
                                       v_int(((Range *)index.as.o)->end),
                                       ((Range *)index.as.o)->inclusive);
                 }
-                int64_t position = require_int(index, "string index");
+                int64_t position = require_index(index, "string");
                 int64_t units = str_units(s);
                 if (position < 0) {
                     position += units;
@@ -1714,7 +1762,10 @@ Value tern_get_index(Value target, Value index) {
             }
             case O_RANGE: {
                 Range *range = (Range *)target.as.o;
-                int64_t offset = require_int(index, "range index");
+                if (index.tag != T_INT) {
+                    tern_panic("TypeError", "range index must be an integer");
+                }
+                int64_t offset = index.as.i;
                 int64_t length = range_length(range);
                 if (offset < 0) {
                     offset += length;
@@ -1749,7 +1800,7 @@ Value tern_set_index(Value target, Value index, Value value) {
     if (target.tag == T_OBJ) {
         switch (target.as.o->type) {
             case O_LIST:
-                list_set((List *)target.as.o, require_int(index, "list index"), value);
+                list_set((List *)target.as.o, require_index(index, "list"), value);
                 return value;
             case O_MAP:
                 map_set((Map *)target.as.o, index, value);
@@ -1902,8 +1953,8 @@ Value tern_concat(Value *parts, int count) {
 Value tern_slice(Value target, Value start, Value end, bool inclusive) {
     if (v_is_list(target)) {
         List *list = (List *)target.as.o;
-        int64_t from = start.tag == T_NIL ? 0 : require_int(start, "slice");
-        int64_t to = end.tag == T_NIL ? list->count : require_int(end, "slice") + (inclusive ? 1 : 0);
+        int64_t from = start.tag == T_NIL ? 0 : need_int(start, "slice", 1);
+        int64_t to = end.tag == T_NIL ? list->count : need_int(end, "slice", 2) + (inclusive ? 1 : 0);
         if (from < 0) from += list->count;
         if (to < 0) to += list->count;
         if (from < 0) from = 0;
@@ -1919,8 +1970,8 @@ Value tern_slice(Value target, Value start, Value end, bool inclusive) {
     if (v_is_str(target)) {
         Str *s = (Str *)target.as.o;
         int64_t units = str_units(s);
-        int64_t from = start.tag == T_NIL ? 0 : require_int(start, "slice");
-        int64_t to = end.tag == T_NIL ? units : require_int(end, "slice") + (inclusive ? 1 : 0);
+        int64_t from = start.tag == T_NIL ? 0 : need_int(start, "slice", 1);
+        int64_t to = end.tag == T_NIL ? units : need_int(end, "slice", 2) + (inclusive ? 1 : 0);
         if (from < 0) from += units;
         if (to < 0) to += units;
         if (from < 0) from = 0;
@@ -1974,6 +2025,12 @@ bool tern_contains(Value container, Value item) {
 
 static Value native_string(Value v) { return tern_to_string(v); }
 
+// Builtins that cast an argument report it the way the interpreter's wrapped
+// InvalidCastException does: "keys(): argument is not of the expected type".
+static void bad_argument(const char *name) {
+    tern_panic("TypeError", "%s(): argument is not of the expected type", name);
+}
+
 static Str *as_str(Value v, const char *what) {
     if (!v_is_str(v)) {
         tern_panic("TypeError", "%s expects a string, not %s", what, tern_type_name(v));
@@ -1986,7 +2043,7 @@ static Value arg(int argc, Value *argv, int index) {
 }
 
 static int64_t iarg(int argc, Value *argv, int index, const char *what) {
-    return require_int(arg(argc, argv, index), what);
+    return need_int(arg(argc, argv, index), what, index + 1);
 }
 
 // --- globals ---------------------------------------------------------------
@@ -2017,7 +2074,21 @@ static Value n_eprint(int argc, Value *argv) {
     return v_nil();
 }
 
-static Value n_len(int argc, Value *argv) { return v_int(tern_length(arg(argc, argv, 0))); }
+static Value n_len(int argc, Value *argv) {
+    Value v = arg(argc, argv, 0);
+    switch (v.tag) {
+        case T_OBJ:
+            if (v.as.o->type == O_STR || v.as.o->type == O_LIST || v.as.o->type == O_MAP ||
+                v.as.o->type == O_RANGE) {
+                return v_int(tern_length(v));
+            }
+            break;
+        default:
+            break;
+    }
+    tern_panic("TypeError", "len() is not defined for %s", ((Str *)tern_to_debug(v))->chars);
+    return v_int(0);
+}
 
 static Value n_type(int argc, Value *argv) {
     return str_from_cstr(tern_type_name(arg(argc, argv, 0)));
@@ -2113,7 +2184,11 @@ static Value n_chr(int argc, Value *argv) {
 }
 
 static Value n_ord(int argc, Value *argv) {
-    Str *s = as_str(arg(argc, argv, 0), "ord");
+    Value arg0 = arg(argc, argv, 0);
+    if (!v_is_str(arg0)) {
+        bad_argument("ord");
+    }
+    Str *s = (Str *)arg0.as.o;
     if (s->len == 0) {
         tern_panic("ArgumentError", "ord() requires a non-empty string");
     }
@@ -2147,7 +2222,7 @@ static Value n_range(int argc, Value *argv) {
 static Value n_keys(int argc, Value *argv) {
     Value v = arg(argc, argv, 0);
     if (!v_is_map(v)) {
-        tern_panic("TypeError", "keys expects a map");
+        bad_argument("keys");
     }
     Map *map = (Map *)v.as.o;
     List *keys = list_new(map->count);
@@ -2160,7 +2235,7 @@ static Value n_keys(int argc, Value *argv) {
 static Value n_values(int argc, Value *argv) {
     Value v = arg(argc, argv, 0);
     if (!v_is_map(v)) {
-        tern_panic("TypeError", "values expects a map");
+        bad_argument("values");
     }
     Map *map = (Map *)v.as.o;
     List *values = list_new(map->count);
@@ -2176,7 +2251,7 @@ static Value n_has(int argc, Value *argv) {
     Value container = arg(argc, argv, 0);
     Value item = arg(argc, argv, 1);
     if (!v_is_map(container)) {
-        tern_panic("TypeError", "has expects a map");
+        bad_argument("has");
     }
     return v_bool(map_has((Map *)container.as.o, item));
 }
@@ -2209,7 +2284,7 @@ static Value n_abs(int argc, Value *argv) {
     if (v.tag == T_INT) {
         return v_int(v.as.i < 0 ? -v.as.i : v.as.i);
     }
-    return v_float(fabs(v_as_double(v)));
+    return v_float(fabs(v_as_number(v)));
 }
 
 static Value n_min(int argc, Value *argv) {
@@ -2277,27 +2352,27 @@ static Value n_input(int argc, Value *argv) {
 
 // --- math / time namespaces ------------------------------------------------
 
-static Value m_floor(int argc, Value *argv) { return v_float(floor(v_as_double(arg(argc, argv, 0)))); }
-static Value m_ceil(int argc, Value *argv) { return v_float(ceil(v_as_double(arg(argc, argv, 0)))); }
-static Value m_round(int argc, Value *argv) { return v_float(round(v_as_double(arg(argc, argv, 0)))); }
-static Value m_sqrt(int argc, Value *argv) { return v_float(sqrt(v_as_double(arg(argc, argv, 0)))); }
-static Value m_trunc(int argc, Value *argv) { return v_float(trunc(v_as_double(arg(argc, argv, 0)))); }
+static Value m_floor(int argc, Value *argv) { return v_float(floor(v_as_number(arg(argc, argv, 0)))); }
+static Value m_ceil(int argc, Value *argv) { return v_float(ceil(v_as_number(arg(argc, argv, 0)))); }
+static Value m_round(int argc, Value *argv) { return v_float(round(v_as_number(arg(argc, argv, 0)))); }
+static Value m_sqrt(int argc, Value *argv) { return v_float(sqrt(v_as_number(arg(argc, argv, 0)))); }
+static Value m_trunc(int argc, Value *argv) { return v_float(trunc(v_as_number(arg(argc, argv, 0)))); }
 static Value m_pow(int argc, Value *argv) {
-    return v_float(pow(v_as_double(arg(argc, argv, 0)), v_as_double(arg(argc, argv, 1))));
+    return v_float(pow(v_as_number(arg(argc, argv, 0)), v_as_number(arg(argc, argv, 1))));
 }
 static Value m_abs(int argc, Value *argv) { return n_abs(argc, argv); }
 static Value m_min(int argc, Value *argv) { return n_min(argc, argv); }
 static Value m_max(int argc, Value *argv) { return n_max(argc, argv); }
 static Value m_sign(int argc, Value *argv) {
-    double v = v_as_double(arg(argc, argv, 0));
+    double v = v_as_number(arg(argc, argv, 0));
     return v_int(v < 0 ? -1 : (v > 0 ? 1 : 0));
 }
 static Value m_clamp(int argc, Value *argv) {
     Value value = arg(argc, argv, 0);
-    double low = v_as_double(arg(argc, argv, 1));
-    double high = v_as_double(arg(argc, argv, 2));
-    double clamped = v_as_double(value) < low ? low
-                    : (v_as_double(value) > high ? high : v_as_double(value));
+    double low = v_as_number(arg(argc, argv, 1));
+    double high = v_as_number(arg(argc, argv, 2));
+    double clamped = v_as_number(value) < low ? low
+                    : (v_as_number(value) > high ? high : v_as_number(value));
     if (value.tag == T_INT) return v_int((int64_t)clamped);
     return v_float(clamped);
 }
@@ -3141,16 +3216,16 @@ typedef struct MethodSlot {
 
 static Value num_abs(Value v) {
     if (v.tag == T_INT) return v.as.i < 0 ? v_int(-v.as.i) : v;
-    return v_float(fabs(v.as.f));
+    return v_float(fabs(v_as_number(v)));
 }
 
 static Value n_abs_self(int argc, Value *argv) { (void)argc; return num_abs(argv[0]); }
 
 static Value n_clamp_self(int argc, Value *argv) {
     Value v = argv[0];
-    double low = v_as_double(arg(argc, argv, 1));
-    double high = v_as_double(arg(argc, argv, 2));
-    double value = v_as_double(v);
+    double low = v_as_number(arg(argc, argv, 1));
+    double high = v_as_number(arg(argc, argv, 2));
+    double value = v_as_number(v);
     if (value < low) value = low;
     if (value > high) value = high;
     if (v.tag == T_INT && arg(argc, argv, 1).tag == T_INT && arg(argc, argv, 2).tag == T_INT) {
@@ -3163,7 +3238,7 @@ static Value n_round_self(int argc, Value *argv) {
     // The interpreter rounds half away from zero and returns a float, so a
     // compiled program must not disagree about either.
     Value v = argv[0];
-    int digits = argc > 1 ? (int)require_int(argv[1], "round") : 0;
+    int digits = argc > 1 ? (int)need_int(argv[1], "round", 2) : 0;
     double value = v_as_double(v);
     if (digits <= 0) return v_float(round(value));
     double scale = pow(10.0, digits);
@@ -3187,7 +3262,7 @@ static Value n_tostring_self(int argc, Value *argv) {
 }
 
 static Value n_times_self(int argc, Value *argv) {
-    int64_t count = require_int(argv[0], "times");
+    int64_t count = need_int(argv[0], "times", 1);
     Value callback = arg(argc, argv, 1);
     Value item;
     for (int64_t i = 0; i < count; i++) {
@@ -3396,7 +3471,7 @@ static void flatten_into(List *out, List *source, int depth) {
 
 static Value l_flatten(int argc, Value *argv) {
     List *list = require_list(argv[0], "flatten");
-    int depth = argc > 1 ? (int)require_int(argv[1], "flatten") : 1;
+    int depth = argc > 1 ? (int)need_int(argv[1], "flatten", 2) : 1;
     List *out = list_new(list->count);
     flatten_into(out, list, depth);
     return v_obj((Obj *)out);
@@ -3418,7 +3493,7 @@ static Value l_unique(int argc, Value *argv) {
 
 static Value l_take(int argc, Value *argv) {
     List *list = require_list(argv[0], "take");
-    int64_t count = require_int(arg(argc, argv, 1), "take");
+    int64_t count = need_int(arg(argc, argv, 1), "take", 2);
     if (count < 0) count = 0;
     if (count > list->count) count = list->count;
     List *out = list_new((int)count);
@@ -3428,7 +3503,7 @@ static Value l_take(int argc, Value *argv) {
 
 static Value l_drop(int argc, Value *argv) {
     List *list = require_list(argv[0], "drop");
-    int64_t count = require_int(arg(argc, argv, 1), "drop");
+    int64_t count = need_int(arg(argc, argv, 1), "drop", 2);
     if (count < 0) count = 0;
     List *out = list_new(list->count);
     for (int64_t i = count; i < list->count; i++) list_push(out, list->items[i]);
@@ -3515,10 +3590,10 @@ static Value m_merge(int argc, Value *argv) {
 static Value ln_range(int argc, Value *argv) {
     int64_t start = 0, end;
     if (argc >= 2) {
-        start = require_int(argv[0], "range");
-        end = require_int(argv[1], "range");
+        start = need_int(argv[0], "range", 1);
+        end = need_int(argv[1], "range", 2);
     } else {
-        end = require_int(arg(argc, argv, 0), "range");
+        end = need_int(arg(argc, argv, 0), "range", 1);
     }
     List *out = list_new((int)(end > start ? end - start : 0));
     for (int64_t i = start; i < end; i++) list_push(out, v_int(i));
@@ -3556,7 +3631,7 @@ static Value ln_enumerate(int argc, Value *argv) {
 
 static Value ln_chunk(int argc, Value *argv) {
     List *list = require_list(arg(argc, argv, 0), "chunk");
-    int64_t size = require_int(arg(argc, argv, 1), "chunk");
+    int64_t size = need_int(arg(argc, argv, 1), "chunk", 2);
     if (size < 1) size = 1;
     List *out = list_new((int)((list->count + size - 1) / size));
     for (int32_t i = 0; i < list->count; i += (int32_t)size) {
@@ -3582,7 +3657,7 @@ static Value ln_sort(int argc, Value *argv) { return l_sort(argc, argv); }
 
 // `lists.repeat(value, count)`: the value repeated n times.
 static Value ln_repeat(int argc, Value *argv) {
-    int count = (int)require_int(arg(argc, argv, 1), "repeat");
+    int count = (int)need_int(arg(argc, argv, 1), "repeat", 2);
     if (count < 0) count = 0;
     List *list = list_new(count);
     Value value = arg(argc, argv, 0);
@@ -3595,7 +3670,7 @@ static Value ln_repeat(int argc, Value *argv) {
 // `text.pad(s, width[, fill])` appends fill characters on the right.
 static Value tx_pad(int argc, Value *argv) {
     Str *text = (Str *)tern_to_string(argv[0]).as.o;
-    int width = (int)require_int(arg(argc, argv, 1), "pad");
+    int width = (int)need_int(arg(argc, argv, 1), "pad", 2);
     Value fill_value = argc > 2 ? tern_to_string(argv[2]) : str_from_cstr(" ");
     Str *fill = (Str *)fill_value.as.o;
     if ((int)text->len >= width || fill->len == 0) {
@@ -3628,21 +3703,21 @@ static uint64_t rng_next(void) {
 }
 
 static Value rnd_seed(int argc, Value *argv) {
-    rng_state = (uint64_t)require_int(arg(argc, argv, 0), "seed") * 2685821657736338717ULL + 1;
+    rng_state = (uint64_t)need_int(arg(argc, argv, 0), "seed", 1) * 2685821657736338717ULL + 1;
     return v_nil();
 }
 
 // `random.float([low, high])`: a value in [low, high), defaulting to [0, 1).
 static Value rnd_float(int argc, Value *argv) {
-    double low = argc > 0 ? v_as_double(arg(argc, argv, 0)) : 0.0;
-    double high = argc > 1 ? v_as_double(argv[1]) : 1.0;
+    double low = argc > 0 ? v_as_number(arg(argc, argv, 0)) : 0.0;
+    double high = argc > 1 ? v_as_number(argv[1]) : 1.0;
     double unit = (double)(rng_next() >> 11) / 9007199254740992.0;
     return v_float(low + unit * (high - low));
 }
 
 static Value rnd_int(int argc, Value *argv) {
-    int64_t low = require_int(arg(argc, argv, 0), "int");
-    int64_t high = argc > 1 ? require_int(argv[1], "int") : low;
+    int64_t low = need_int(arg(argc, argv, 0), "int", 1);
+    int64_t high = argc > 1 ? need_int(argv[1], "int", 2) : low;
     if (argc <= 1) { low = 0; }
     int64_t span = high - low;
     if (span <= 0) return v_int(low);
@@ -3676,12 +3751,12 @@ static Value rnd_shuffle(int argc, Value *argv) {
 // --- math extras ----------------------------------------------------------
 
 static double darg(int argc, Value *argv, int index) {
-    return v_as_double(arg(argc, argv, index));
+    return v_as_number(arg(argc, argv, index));
 }
 
 static Value m_lcm(int argc, Value *argv) {
-    int64_t a = require_int(arg(argc, argv, 0), "lcm");
-    int64_t b = require_int(arg(argc, argv, 1), "lcm");
+    int64_t a = need_int(arg(argc, argv, 0), "lcm", 1);
+    int64_t b = need_int(arg(argc, argv, 1), "lcm", 2);
     int64_t x = a < 0 ? -a : a, y = b < 0 ? -b : b;
     while (y) { int64_t t = x % y; x = y; y = t; }
     return v_int(x == 0 ? 0 : a / x * b);
@@ -4038,7 +4113,7 @@ static Value json_parse_value(JsonParser *p) {
 static Value js_parse(int argc, Value *argv) {
     Value text = arg(argc, argv, 0);
     if (!v_is_str(text)) {
-        tern_panic("TypeError", "json.parse expects a string, not %s", tern_type_name(text));
+        bad_argument("parse");
     }
     Str *str = (Str *)text.as.o;
     JsonParser parser = { str->chars, (int)str->len, 0, 0 };
@@ -4473,23 +4548,57 @@ Value tern_invoke(Value receiver, const char *name, int argc, Value *argv) {
 typedef struct GlobalSlot {
     const char *name;
     NativeFn fn;
+    int16_t min_args;
+    int16_t max_args;
 } GlobalSlot;
 
+// The same argument-count contract the interpreter registers for each global,
+// so a wrong-arity call fails in compiled code too instead of silently
+// reading missing arguments as nil.
 static const GlobalSlot global_natives[] = {
-    {"print", n_print}, {"println", n_println}, {"eprint", n_eprint}, {"input", n_input},
-    {"len", n_len}, {"type", n_type}, {"str", n_str}, {"repr", n_repr},
-    {"int", n_int}, {"float", n_float}, {"bool", n_bool}, {"chr", n_chr},
-    {"ord", n_ord}, {"range", n_range}, {"keys", n_keys}, {"values", n_values},
-    {"has", n_has}, {"assert", n_assert}, {"error", n_error}, {"panic", n_panic},
-    {"abs", n_abs}, {"min", n_min}, {"max", n_max}, {"copy", n_copy},
-    {"sleep", n_sleep}, {NULL, NULL},
+    {"print", n_print, 0, -1}, {"println", n_println, 0, -1},
+    {"eprint", n_eprint, 0, -1}, {"input", n_input, 0, 1},
+    {"len", n_len, 1, 1}, {"type", n_type, 1, 1}, {"str", n_str, 1, 1},
+    {"repr", n_repr, 1, 1}, {"int", n_int, 1, 2}, {"float", n_float, 1, 1},
+    {"bool", n_bool, 1, 1}, {"chr", n_chr, 1, 1}, {"ord", n_ord, 1, 1},
+    {"range", n_range, 1, 3}, {"keys", n_keys, 1, 1}, {"values", n_values, 1, 1},
+    {"has", n_has, 2, 2}, {"assert", n_assert, 1, 2}, {"error", n_error, 1, 1},
+    {"panic", n_panic, 0, 1}, {"abs", n_abs, 1, 1}, {"min", n_min, 1, -1},
+    {"max", n_max, 1, -1}, {"copy", n_copy, 1, 1}, {"sleep", n_sleep, 1, 1},
+    {NULL, NULL, 0, 0},
 };
 
-static Value make_native(const char *name, NativeFn fn) {
+static Value make_native_arity(const char *name, NativeFn fn, int min_args, int max_args) {
     Native *native = (Native *)tern_alloc(sizeof(Native), O_NATIVE);
     native->name = name;
     native->fn = fn;
+    native->min_args = (int16_t)min_args;
+    native->max_args = (int16_t)max_args;
     return v_obj((Obj *)native);
+}
+
+// Unchecked by default: only the globals table states its contract so far.
+static Value make_native(const char *name, NativeFn fn) {
+    return make_native_arity(name, fn, -1, -1);
+}
+
+static void check_arity(const Native *native, int argc) {
+    if (native->min_args < 0) {
+        return;
+    }
+    if (argc >= native->min_args && (native->max_args < 0 || argc <= native->max_args)) {
+        return;
+    }
+    char expected[32];
+    if (native->max_args < 0) {
+        snprintf(expected, sizeof expected, "at least %d", native->min_args);
+    } else if (native->min_args == native->max_args) {
+        snprintf(expected, sizeof expected, "%d", native->min_args);
+    } else {
+        snprintf(expected, sizeof expected, "%d to %d", native->min_args, native->max_args);
+    }
+    tern_panic("ArgumentError", "%s() expects %s argument(s) but got %d",
+               native->name, expected, argc);
 }
 
 static Value namespace_map(const char *ns) {
@@ -4630,7 +4739,8 @@ Value tern_lookup_std_member(const char *name) {
 Value tern_lookup_global(const char *name) {
     for (int i = 0; global_natives[i].name; i++) {
         if (strcmp(global_natives[i].name, name) == 0) {
-            return make_native(global_natives[i].name, global_natives[i].fn);
+            return make_native_arity(global_natives[i].name, global_natives[i].fn,
+                                     global_natives[i].min_args, global_natives[i].max_args);
         }
     }
 

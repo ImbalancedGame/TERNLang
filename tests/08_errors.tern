@@ -56,4 +56,32 @@ try {
     println("assert: " + e);
 }
 
+// Runtime errors are catchable strings, and argument-count mistakes name the
+// function (C# and native back ends agree on all of these).
+fn kind(block) {
+    try {
+        block();
+        return "no error";
+    } catch (e) {
+        return str(e);
+    }
+}
+println(kind(fn() { len(); }));
+println(kind(fn() { len([1], 2); }));
+println(kind(fn() { str(); }));
+println(kind(fn() { type(1, 2); }));
+println(kind(fn() { input("a", "b"); }));
+println(kind(fn() { assert(true, "m", 3); }));
+println(kind(fn() { range("x"); }));
+println(kind(fn() { "ab".repeat("x"); }));
+println(kind(fn() { [1].insert("x", 2); }));
+println(kind(fn() { [1, 2].take(1.7); }));
+println(kind(fn() { len(1); }));
+println(kind(fn() { "a" - 1; }));
+println(kind(fn() { 1 & "x"; }));
+println(kind(fn() { ~"x"; }));
+println(kind(fn() { [1]["k"]; }));
+println(kind(fn() { keys([1]); }));
+
+// The script ends with an uncaught error so the trace report is part of the golden.
 error("custom failure");

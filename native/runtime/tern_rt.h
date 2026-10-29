@@ -201,6 +201,11 @@ typedef struct Native {
     Obj h;
     const char *name;
     NativeFn fn;
+    // Argument-count contract, checked before the call. `min_args < 0` means
+    // unchecked (namespaces and methods, for now); `max_args < 0` means
+    // variadic. Counts exclude the receiver of a method.
+    int16_t min_args;
+    int16_t max_args;
 } Native;
 
 typedef struct Bound {
