@@ -569,6 +569,8 @@ class Generator:
             line("if (st[sp - 1].tag != T_NIL) goto L%d;" % a)
         elif op == "JumpIfNotList":
             line("if (!v_is_list(%s)) goto L%d;" % (self.loc(a, captured), b))
+        elif op == "JumpIfNotNumber":
+            line("if (!v_is_num(%s)) goto L%d;" % (self.loc(a, captured), b))
 
         elif op == "JumpCmp":
             condition = {0: "cmp < 0", 1: "cmp <= 0", 2: "cmp > 0", 3: "cmp >= 0"}.get(a)
@@ -834,6 +836,7 @@ class Generator:
         self.emit("}")
         self.emit()
         self.emit("int main(int argc, char **argv) {")
+        self.emit("    tern_set_args(argc - 1, argv + 1);")
         self.emit("    char tern_stack_anchor = 0;")
         self.emit("    tern_gc_set_stack_bottom(&tern_stack_anchor);")
         self.emit("    return program_main(argc, argv);")

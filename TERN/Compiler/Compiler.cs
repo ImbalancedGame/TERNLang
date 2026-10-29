@@ -2848,6 +2848,10 @@ namespace TERN.Compiler
 
                     case RangePattern range:
                     {
+                        // A range arm is a numeric test, so a non-number subject must
+                        // fail the arm rather than raise "cannot compare ...".
+                        failJumps.Add(Emit(Op.JumpIfNotNumber, subjectSlot, 0, 0, pop: 0, push: 0));
+
                         EmitLoadLocal(subjectSlot);
                         CompileExpression(range.Start);
                         failJumps.Add(Emit(Op.JumpCmp, (int)CompareCode.Ge, 0, 0, pop: 2, push: 0));
@@ -2959,10 +2963,16 @@ namespace TERN.Compiler
 
                         if (listPattern.RestName is not null)
                         {
+                            // `...rest` is a slice from the first unbound index to the
+                            // end: indexing needs a single range value, not two integers.
                             var slot = DeclareLocal(listPattern.RestName, isConst: true);
                             EmitLoadLocal(subjectSlot);
                             Emit(Op.LoadInt, listPattern.Elements.Count, 0, 0, pop: 0, push: 1);
-                            EmitLoadConstant(new Value(1000000));
+                            EmitLoadLocal(subjectSlot);
+                            Emit(Op.Length, AddStringConstant("length"), 0, 0, pop: 1, push: 1);
+                            Emit(Op.LoadInt, 1, 0, 0, pop: 0, push: 1);
+                            Emit(Op.Sub, 0, 0, 0, pop: 2, push: 1);
+                            Emit(Op.NewRange, 1, 0, 0, pop: 2, push: 1);
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
                             EmitStoreLocal(slot);
                         }

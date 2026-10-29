@@ -267,6 +267,7 @@ extern int tern_call_depth;
 // C stack and registers, which are scanned conservatively, so generated code
 // never has to describe its frame.
 void tern_gc_set_stack_bottom(void *anchor);
+void tern_set_args(int count, char **values);
 void tern_gc_register_values(Value *base, int count);
 void tern_gc_register_ptrs(void **base, int count);
 void tern_gc_collect(void);

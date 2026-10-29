@@ -254,17 +254,18 @@ nine runs, whole process including start-up:
 
 | Workload   | TERN native | TERN VM | Lua 5.4 | LuaJIT | Node 22 | C#    |
 | ---------- | ----------: | ------: | ------: | -----: | ------: | ----: |
-| `fib`      |          21 |     157 |      57 |      8 |      10 |     5 |
-| `loop`     |          73 |     104 |      37 |     14 |      10 |     6 |
-| `maps`     |         146 |     148 |     200 |    60 |     100 |    68 |
-| `bintree`  |           9 |      45 |      45 |      8 |       5 |    30 |
-| `strings`  |           6 |      18 |      14 |      6 |       3 |     4 |
+| `fib`      |          18 |     134 |      57 |      8 |      10 |     5 |
+| `loop`     |          56 |     113 |      37 |     14 |      10 |     6 |
+| `maps`     |         128 |     192 |     200 |    60 |     100 |    68 |
+| `bintree`  |           8 |      51 |      45 |      8 |       5 |    30 |
+| `strings`  |           6 |      20 |      14 |      6 |       3 |     4 |
 
 The VM column is in-process (start-up excluded); the native column includes
-about a millisecond of process start, so it is 7.5x ahead of the interpreter on
-`fib`, 3.0x on `strings` and 5.0x on `bintree`, level on `maps`, and within 2-3x
-of LuaJIT on `fib` (level on `bintree`). Building one binary takes ~1.9 s,
-almost all of it `cc -O2` over the runtime.
+about a millisecond of process start, so it is 7.3x ahead of the interpreter on
+`fib`, 3.4x on `strings` and 6.6x on `bintree`, ahead on `maps`, and within 2x
+of LuaJIT on `fib` and `bintree`. The Lua/LuaJIT/Node/C# columns are from an
+earlier session on the same machine; timings move by up to 20% with host load.
+Building one binary takes ~1.9 s, almost all of it `cc -O2` over the runtime.
 
 Objects are allocated from per-size-class free lists and reclaimed by a
 mark-sweep collector whose roots are the registered global/constant arrays plus

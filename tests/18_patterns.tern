@@ -1,0 +1,52 @@
+// Pattern matching edge cases: non-numeric subjects against range arms, rest
+// bindings, and guards that assume a type.
+fn classify(value) {
+    return match value {
+        1 | 2 | 3 => "small",
+        4..9 => "digit",
+        10..<100 => "two digits",
+        "hi" => "greeting",
+        nil => "nothing",
+        true => "yes",
+        [x] => "one:${x}",
+        [a, b] => "pair:${a},${b}",
+        [first, ...rest] => "first:${first}, rest:${len(rest)}",
+        n if type(n) == "int" and n > 100 => "big",
+        _ => "other",
+    };
+}
+
+for probe in [2, 5, 42, "hi", nil, true, 3.5, [7], [1, 2], [1, 2, 3, 4], 500, {"k": 1}] {
+    println("${repr(probe)} -> ${classify(probe)}");
+}
+
+// Rest binding keeps everything after the fixed prefix.
+let values = [10, 20, 30, 40, 50];
+match values {
+    [head, ...tail] => {
+        println(head);
+        println(tail);
+        println(len(tail));
+    },
+    _ => println("no match"),
+}
+
+// A range arm only matches numbers, so mixed arms keep working.
+fn describe(value) {
+    return match value {
+        0..<10 => "low",
+        10..<20 => "mid",
+        _ => "high or not a number",
+    };
+}
+for probe in [3, 15, 30, "text", nil, 3.5] { println(describe(probe)); }
+
+// Guards see the bound name.
+fn rated(value) {
+    return match value {
+        n if n >= 90 => "A",
+        n if n >= 80 => "B",
+        _ => "C",
+    };
+}
+println(rated(95), rated(85), rated(10));

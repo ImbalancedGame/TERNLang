@@ -1,0 +1,348 @@
+// Standard library coverage: every namespace, method and conversion,
+// asserted through printed output so the native backend can be diffed against
+// the interpreter.
+fn show(label, value) { println("${label}=${repr(value)}"); }
+
+// ---- strings
+let s = "  Hello, World  ";
+show("upper", s.upper());
+show("lower", "ABC".lower());
+show("trim", s.trim());
+show("trimStart", s.trimStart());
+show("trimEnd", s.trimEnd());
+show("split", "a,b,,c".split(","));
+show("lines", "a\nb\nc".lines());
+show("replace", "aaa".replace("a", "b"));
+show("replaceFirst", "aaa".replaceFirst("a", "b"));
+show("startsWith", "abc".startsWith("ab"));
+show("endsWith", "abc".endsWith("bc"));
+show("contains", "abc".contains("b"));
+show("indexOf", "abcabc".indexOf("c"));
+show("lastIndexOf", "abcabc".lastIndexOf("c"));
+show("substring", "abcdef".substring(1, 3));
+show("slice", "abcdef".slice(1, 3));
+show("chars", "hey".chars());
+show("words", " a  b ".words());
+show("repeat", "ab".repeat(3));
+show("padStart", "7".padStart(3, "0"));
+show("padEnd", "7".padEnd(3, "."));
+show("reversed", "abc".reversed());
+show("toInt", "42".toInt());
+show("toFloat", "1.5".toFloat());
+show("count", "banana".count("a"));
+show("isEmpty", "".isEmpty());
+show("index", "abc"[1]);
+show("negindex", "abc"[-1]);
+show("strslice", "abcdef"[1..3]);
+show("strslice2", "abcdef"[1..<3]);
+show("strslice3", "abcdef"[..2]);
+show("strslice4", "abcdef"[2..]);
+show("strslice5", "abcdef"[..]);
+show("iter", "hey".chars());
+
+// ---- lists
+let xs = [3, 1, 2];
+xs.push(4);
+show("push", xs);
+show("pop", xs.pop());
+show("shift", xs.shift());
+xs.unshift(9);
+show("unshift", xs);
+xs.insert(1, 7);
+show("insert", xs);
+xs.remove(0);
+show("remove", xs);
+let ys = [1, 2, 2, 3];
+ys.removeValue(2);
+show("removeValue", ys);
+show("indexOf", [1, 2, 3].indexOf(2));
+show("contains", [1, 2].contains(2));
+show("join", [1, 2, 3].join("-"));
+show("reverse", [1, 2, 3].reverse());
+show("sort", [3, 1, 2].sort());
+show("sortcmp", [3, 1, 2].sort(fn(a, b) => b - a));
+show("slice", [1, 2, 3, 4].slice(1, 2));
+show("map", [1, 2, 3].map(fn(x) => x * 2));
+show("filter", [1, 2, 3, 4].filter(fn(x) => x % 2 == 0));
+show("reduce", [1, 2, 3].reduce(fn(acc, x) => acc + x, 10));
+show("any", [1, 2].any(fn(x) => x > 1));
+show("all", [1, 2].all(fn(x) => x > 0));
+show("find", [1, 2, 3].find(fn(x) => x > 1));
+show("findIndex", [1, 2, 3].findIndex(fn(x) => x > 1));
+show("sum", [1, 2, 3].sum());
+show("min", [4, 2, 8].min());
+show("max", [4, 2, 8].max());
+show("first", [1, 2].first());
+show("last", [1, 2].last());
+show("take", [1, 2, 3].take(2));
+show("drop", [1, 2, 3].drop(1));
+show("flatten", [1, [2, [3]]].flatten());
+show("unique", [1, 1, 2].unique());
+show("clone", [1, 2].clone());
+show("concat", [1].concat([2, 3]));
+show("isEmpty-list", [].isEmpty());
+let grown = [0];
+grown.push(1);
+show("grow", grown);
+
+// ---- maps
+let m = {"b": 2, "a": 1};
+m.c = 3;
+m["d"] = 4;
+show("map", m);
+show("has", m.has("a"));
+show("get", m.get("zz", 0));
+show("keys", m.keys());
+show("values", m.values());
+show("entries", m.entries());
+show("merge", m + {"e": 5});
+show("len-map", len(m));
+let ordered = {};
+for k in ["z", "y", "x"] { ordered[k] = k; }
+show("order", ordered);
+show("delete", ordered.remove("y"));
+
+// ---- ranges
+show("range", (0..<5).toList());
+show("range-incl", range(2, 4).toList());
+show("range-in", 3 in 0..<5);
+show("range-len", len(0..<5));
+show("range-tostring", 0..<5);
+show("range-map", (0..<3).toList().map(fn(x) => x * x));
+
+// ---- numbers
+show("abs", math.abs(-3));
+show("ceil", math.ceil(1.2));
+show("floor", math.floor(1.8));
+show("round", math.round(1.5));
+show("trunc", math.trunc(1.9));
+show("sqrt", math.sqrt(16));
+show("cbrt", math.cbrt(27));
+show("pow", math.pow(2, 10));
+show("log", math.round(math.log(math.e)));
+show("log2", math.log2(8));
+show("log10", math.log10(1000));
+show("sin", math.round(math.sin(0)));
+show("atan2", math.round(math.atan2(0, 1)));
+show("clamp", math.clamp(5, 1, 3));
+show("sign", math.sign(-4));
+show("hypot", math.hypot(3, 4));
+show("gcd", math.gcd(12, 18));
+show("lcm", math.lcm(4, 6));
+show("isInteger", math.isInteger(3.0));
+show("isNaN", math.isNaN(math.nan));
+show("toRadians", math.round(math.toRadians(180)));
+show("toDegrees", math.round(math.toDegrees(math.pi)));
+show("pi", math.round(math.pi));
+show("num-abs", (-3).abs());
+show("num-clamp", (5).clamp(1, 3));
+show("num-round", (1.567).round(2));
+show("num-toInt", (1.9).toInt());
+show("num-times", (3).times(fn(i) => i));
+
+// ---- text / json / lists / os / time / random
+show("text.upper", text.upper("ab"));
+show("text.format", text.format("{} and {0}", "x", "y"));
+show("text.split", text.split("a b", " "));
+show("join-method", ["a", "b"].join("-"));
+show("text.join", text.join(["a", "b"], "-"));
+show("text.pad", text.pad("7", 3, "0"));
+show("json.parse", json.parse("{\"n\": 3, \"l\": [1, 2]}"));
+show("json.stringify", json.stringify({"a": [1, {"b": nil}]}));
+show("json.tryParse", json.tryParse("{bad"));
+show("json.roundtrip", json.parse(json.stringify({"x": 1})));
+show("lists.range", lists.range(3));
+show("lists.repeat", lists.repeat("a", 3));
+show("lists.zip", lists.zip([1, 2], ["a", "b"]));
+show("lists.enumerate", lists.enumerate(["a", "b"]));
+show("lists.chunk", lists.chunk([1, 2, 3, 4, 5], 2));
+show("lists.sort", lists.sort([3, 1, 2]));
+show("os.platform", os.platform() == "linux" || os.platform() == "macos" || os.platform() == "windows");
+show("os.joinPath", os.joinPath("a", "b"));
+show("os.lineSeparator", len(os.lineSeparator()) > 0);
+show("os.env", os.env("TERN_PROBE_ENV", "fallback"));
+show("os.setEnv", (fn() { os.setEnv("TERN_PROBE_SET", "yes"); return os.env("TERN_PROBE_SET"); })());
+
+// ---- control flow
+let acc = 0;
+let i = 0;
+while (i < 3) { acc += i; i += 1; }
+show("while", acc);
+acc = 0;
+do { acc += 1; } while (acc < 3);
+show("do", acc);
+acc = 0;
+loop {
+    acc += 1;
+    if (acc == 2) { continue; }
+    if (acc >= 4) { break; }
+}
+show("loop", acc);
+acc = 0;
+for (let j = 0; j < 5; j += 1) {
+    if (j == 1) { continue; }
+    if (j == 4) { break; }
+    acc += j;
+}
+show("for", acc);
+acc = 0;
+for x in [1, 2, 3] { acc += x; }
+show("forin", acc);
+acc = 0;
+for k, v in {"a": 1, "b": 2} { acc += v; }
+show("forkv", acc);
+acc = 0;
+for c in "abc" { acc += 1; }
+show("forstr", acc);
+
+// ---- operators
+show("add", 1 + 2);
+show("concat", "a" + "1");
+show("div", 7.0 / 2);
+show("intdiv", 7 / 2);
+show("mod", 7 % 3);
+show("pow-op", 2 ** 10);
+show("band", 6 & 3);
+show("bor", 6 | 3);
+show("bxor", 6 ^ 3);
+show("shl", 1 << 4);
+show("shr", 16 >> 2);
+show("neg", -5);
+show("not", !true);
+show("and", true and false);
+show("or", false or true);
+show("ternary", true ? "y" : "n");
+show("eq", 1 == 1.0);
+show("cmp", 1 < 2);
+show("streq", "a" == "a");
+show("in", 2 in [1, 2]);
+show("inc", (fn() { let n = 1; n += 2; return n; })());
+show("appendop", (fn() { let l = [1]; l = l.concat([2]); return l; })());
+show("mulstr", 3 * 2);
+show("nullish", nil ?? "dflt");
+show("nullish2", "v" ?? "dflt");
+show("isnil", nil == nil);
+
+// ---- match
+fn classify(value) {
+    return match value {
+        1 | 2 | 3 => "small",
+        4..9 => "medium",
+        "hi" => "greeting",
+        nil => "nothing",
+        true => "yes",
+        [] => "empty",
+        [x] => "one:${x}",
+        [a, b] => "pair:${a},${b}",
+        [first, ...rest] => "first:${first} rest:${len(rest)}",
+        n if type(n) == "int" && n > 100 => "big",
+        _ => "other",
+    };
+}
+for probe in [2, 5, "hi", nil, true, [], [7], [1, 2], [1, 2, 3], 500, 3.5] {
+    show("match", classify(probe));
+}
+
+// ---- functions and closures
+fn add3(a, b, c) { return a + b + c; }
+show("fn", add3(1, 2, 3));
+fn defaults(a, b = 10) { return a + b; }
+show("default", defaults(1));
+show("default2", defaults(1, 2));
+fn variadic(a, ...rest) { return "${a}:${len(rest)}"; }
+show("variadic", variadic(1, 2, 3, 4));
+let arrow = fn(x) => x * 3;
+show("arrow", arrow(4));
+fn outer() {
+    let count = 0;
+    let inc = fn() { count += 1; return count; };
+    inc(); inc();
+    return count;
+}
+show("closure", outer());
+let make = fn(n) => fn(x) => x + n;
+show("curry", make(10)(5));
+let fns = [];
+for (let k = 0; k < 3; k += 1) { fns.push(fn() => k); }
+show("capture-loop", [fns[0](), fns[1](), fns[2]()]);
+fn rec(n) { return n <= 1 ? 1 : n * rec(n - 1); }
+show("rec", rec(5));
+
+// ---- structs
+struct Point {
+    x, y
+    fn sum() { return this.x + this.y; }
+    fn moved(dx) { return Point(this.x + dx, this.y); }
+}
+let p = Point(1, 2);
+show("struct", p);
+show("method", p.sum());
+show("method2", p.moved(3));
+show("field", p.x);
+p.x = 10;
+show("setfield", p.x);
+struct Config { name = "dflt", retries = 3, tags = [] }
+show("defaults", Config());
+show("defaults2", Config("x"));
+show("type", type(p));
+show("structeq", Point(1, 2) == Point(1, 2));
+show("structnil", p == nil);
+
+// ---- errors
+fn boom(n) { if (n > 0) { throw "bang${n}"; } return "ok"; }
+try { show("throw", boom(1)); } catch (e) { show("caught", e); }
+try { show("nothrow", boom(0)); } catch (e) { show("no", e); }
+let order = [];
+try {
+    order.push("try");
+    throw "x";
+} catch (e) {
+    order.push("catch");
+} finally {
+    order.push("finally");
+}
+show("finally", order);
+show("error", (fn() { try { error("boom"); } catch (e) { return e; } })());
+show("panic", (fn() { try { panic("urgent"); } catch (e) { return e; } })());
+show("assert", (fn() { try { assert(false, "nope"); } catch (e) { return e; } })());
+show("runtime", (fn() { try { return [1][5]; } catch (e) { return type(e); } })());
+show("divzero", (fn() { try { return 1 / 0; } catch (e) { return type(e); } })());
+show("rethrow", (fn() {
+    try {
+        try { throw "inner"; } catch (e) { throw "outer:${e}"; }
+    } catch (e2) { return e2; }
+})());
+show("finally-return", (fn() {
+    let log = [];
+    fn inner() {
+        try { return "a"; } finally { log.push("f"); }
+    }
+    let r = inner();
+    return "${r}${len(log)}";
+})());
+show("uncaught-boundary", (fn() { try { return int("nope"); } catch (e) { return type(e); } })());
+
+// ---- builtins
+show("len", len("abc"));
+show("type", type(1));
+show("type2", type("s"));
+show("type3", type([]));
+show("type4", type({}));
+show("str", str(1.5));
+show("int", int("12"));
+show("float", float("1.5"));
+show("bool", bool(""));
+show("chr", chr(65));
+show("ord", ord("A"));
+show("abs", abs(-1));
+show("min", min(3, 1, 2));
+show("max", max(3, 1, 2));
+show("copy", copy([1, 2]));
+show("keys", keys({"a": 1}));
+show("values", values({"a": 1}));
+show("has", has({"a": 1}, "a"));
+show("range-builtin", range(3));
+show("repr-str", repr("a\nb"));
+show("str-interp", "v=${1 + 1}");
+show("format-spec", "pi=${1.5}");
+println("DONE");

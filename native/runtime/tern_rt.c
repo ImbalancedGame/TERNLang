@@ -1147,16 +1147,20 @@ Value tern_add(Value a, Value b) {
         return v_obj((Obj *)joined);
     }
     if (v_is_map(a) && v_is_map(b)) {
+        // Merging walks the insertion-order arrays, not the hash slots: the
+        // result must keep both maps' order, left map first.
         Map *x = (Map *)a.as.o, *y = (Map *)b.as.o;
         Map *merged = map_new();
-        for (int32_t i = 0; i < x->cap; i++) {
-            if (x->entries[i].used && !x->entries[i].dead) {
-                map_set(merged, x->entries[i].key, x->entries[i].value);
+        for (int32_t i = 0; i < x->order_count; i++) {
+            Value value;
+            if (map_get(x, x->order[i], &value)) {
+                map_set(merged, x->order[i], value);
             }
         }
-        for (int32_t i = 0; i < y->cap; i++) {
-            if (y->entries[i].used && !y->entries[i].dead) {
-                map_set(merged, y->entries[i].key, y->entries[i].value);
+        for (int32_t i = 0; i < y->order_count; i++) {
+            Value value;
+            if (map_get(y, y->order[i], &value)) {
+                map_set(merged, y->order[i], value);
             }
         }
         return v_obj((Obj *)merged);
@@ -1845,10 +1849,26 @@ static Value n_int(int argc, Value *argv) {
     }
     if (v_is_str(v)) {
         Str *s = (Str *)v.as.o;
+        char *end = NULL;
+        int64_t value;
         if (argc > 1) {
-            return v_int(strtoll(s->chars, NULL, (int)iarg(argc, argv, 1, "int")));
+            value = strtoll(s->chars, &end, (int)iarg(argc, argv, 1, "int"));
+        } else {
+            // Same order as the interpreter: a whole number first, then a float
+            // truncated towards zero. Anything else is a catchable error.
+            value = strtoll(s->chars, &end, 10);
+            if (s->len == 0 || (end && *end != '\0')) {
+                double as_double = strtod(s->chars, &end);
+                if (s->len == 0 || (end && *end != '\0')) {
+                    tern_panic("ArgumentError", "cannot convert '%s' to an integer", s->chars);
+                }
+                value = (int64_t)as_double;
+            }
         }
-        return v_int((int64_t)strtod(s->chars, NULL));
+        if (end && end == s->chars && s->len > 0) {
+            tern_panic("ArgumentError", "cannot convert '%s' to an integer", s->chars);
+        }
+        return v_int(value);
     }
     tern_panic("TypeError", "cannot convert %s to int", tern_type_name(v));
     return v_nil();
@@ -1863,7 +1883,13 @@ static Value n_float(int argc, Value *argv) {
         return v_float((double)v.as.i);
     }
     if (v_is_str(v)) {
-        return v_float(strtod(((Str *)v.as.o)->chars, NULL));
+        Str *s = (Str *)v.as.o;
+        char *end = NULL;
+        double value = strtod(s->chars, &end);
+        if (s->len == 0 || (end && *end != '\0')) {
+            tern_panic("ArgumentError", "cannot convert '%s' to a number", s->chars);
+        }
+        return v_float(value);
     }
     tern_panic("TypeError", "cannot convert %s to float", tern_type_name(v));
     return v_nil();
@@ -2106,6 +2132,21 @@ static Value t_millis(int argc, Value *argv) {
     return v_int((int64_t)now_millis());
 }
 
+// `time.iso(seconds)`: Unix seconds as an ISO 8601 UTC string, matching the
+// interpreter's "yyyy-MM-ddTHH:mm:ssZ".
+static Value t_iso(int argc, Value *argv) {
+    Value seconds = arg(argc, argv, 0);
+    long long millis = v_is_num(seconds)
+        ? (long long)(v_as_double(seconds) * 1000.0)
+        : (long long)seconds.as.i;
+    time_t stamp = (time_t)(millis / 1000);
+    struct tm broken;
+    gmtime_r(&stamp, &broken);
+    char buffer[32];
+    strftime(buffer, sizeof buffer, "%Y-%m-%dT%H:%M:%SZ", &broken);
+    return str_from_cstr(buffer);
+}
+
 static Value t_now(int argc, Value *argv) {
     (void)argc;
     (void)argv;
@@ -2114,8 +2155,14 @@ static Value t_now(int argc, Value *argv) {
 
 // --- string methods --------------------------------------------------------
 
+// Receiver accessors. The method tables are only reached for the matching type,
+// but namespace functions such as `text.upper` call these directly, so each one
+// checks its receiver: a wrong type must raise, never dereference a non-object.
 static Str *self_str(int argc, Value *argv) {
     (void)argc;
+    if (!v_is_str(argv[0])) {
+        tern_panic("TypeError", "expected a string, not %s", tern_type_name(argv[0]));
+    }
     return (Str *)argv[0].as.o;
 }
 
@@ -2155,6 +2202,20 @@ static Value s_trim(int argc, Value *argv) {
     return str_value(s->chars + from, to - from);
 }
 
+static Value s_trimstart(int argc, Value *argv) {
+    Str *s = self_str(argc, argv);
+    uint32_t from = 0;
+    while (from < s->len && is_space(s->chars[from])) from++;
+    return str_value(s->chars + from, s->len - from);
+}
+
+static Value s_trimend(int argc, Value *argv) {
+    Str *s = self_str(argc, argv);
+    uint32_t to = s->len;
+    while (to > 0 && is_space(s->chars[to - 1])) to--;
+    return str_value(s->chars, to);
+}
+
 static Value s_contains(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
     Str *needle = as_str(arg(argc, argv, 1), "contains");
@@ -2180,11 +2241,45 @@ static Value s_ends(int argc, Value *argv) {
                   memcmp(s->chars + s->len - suffix->len, suffix->chars, suffix->len) == 0);
 }
 
+// `count(needle)`: how many non-overlapping occurrences.
+static Value s_count(int argc, Value *argv) {
+    Str *s = self_str(argc, argv);
+    Str *needle = as_str(arg(argc, argv, 1), "count");
+    if (needle->len == 0 || needle->len > s->len) {
+        return v_int(0);
+    }
+    int64_t total = 0;
+    uint32_t at = 0;
+    while (at + needle->len <= s->len) {
+        char *found = memmem(s->chars + at, s->len - at, needle->chars, needle->len);
+        if (!found) {
+            break;
+        }
+        total++;
+        at = (uint32_t)(found - s->chars) + needle->len;
+    }
+    return v_int(total);
+}
+
 static Value s_indexof(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
     Str *needle = as_str(arg(argc, argv, 1), "indexOf");
     char *found = memmem(s->chars, s->len, needle->chars, needle->len);
     return v_int(found ? (int64_t)(found - s->chars) : -1);
+}
+
+static Value s_lastindexof(int argc, Value *argv) {
+    Str *s = self_str(argc, argv);
+    Str *needle = as_str(arg(argc, argv, 1), "lastIndexOf");
+    if (needle->len > s->len) {
+        return v_int(-1);
+    }
+    for (int64_t at = (int64_t)s->len - (int64_t)needle->len; at >= 0; at--) {
+        if (memcmp(s->chars + at, needle->chars, needle->len) == 0) {
+            return v_int(at);
+        }
+    }
+    return v_int(-1);
 }
 
 static Value s_substring(int argc, Value *argv) {
@@ -2271,6 +2366,28 @@ static Value s_replace(int argc, Value *argv) {
         buf_add(&buf, replacement->chars, replacement->len);
         start = (uint32_t)(at + needle->len);
     }
+    return buf_finish(&buf);
+}
+
+// Same as `replace` but stops after the first occurrence.
+static Value s_replacefirst(int argc, Value *argv) {
+    Str *s = self_str(argc, argv);
+    Str *needle = as_str(arg(argc, argv, 1), "replaceFirst");
+    Str *replacement = as_str(arg(argc, argv, 2), "replaceFirst");
+    if (needle->len == 0) {
+        return v_obj((Obj *)s);
+    }
+    char *found = memmem(s->chars, s->len, needle->chars, needle->len);
+    if (!found) {
+        return v_obj((Obj *)s);
+    }
+
+    size_t at = (size_t)(found - s->chars);
+    Buf buf;
+    buf_init(&buf);
+    buf_add(&buf, s->chars, at);
+    buf_add(&buf, replacement->chars, replacement->len);
+    buf_add(&buf, s->chars + at + needle->len, s->len - at - needle->len);
     return buf_finish(&buf);
 }
 
@@ -2382,6 +2499,9 @@ static Value s_reversed(int argc, Value *argv) {
 
 static List *self_list(int argc, Value *argv) {
     (void)argc;
+    if (!v_is_list(argv[0])) {
+        tern_panic("TypeError", "expected a list, not %s", tern_type_name(argv[0]));
+    }
     return (List *)argv[0].as.o;
 }
 
@@ -2654,6 +2774,9 @@ static Value l_tostring(int argc, Value *argv) {
 
 static Map *self_map(int argc, Value *argv) {
     (void)argc;
+    if (!v_is_map(argv[0])) {
+        tern_panic("TypeError", "expected a map, not %s", tern_type_name(argv[0]));
+    }
     return (Map *)argv[0].as.o;
 }
 
@@ -2671,9 +2794,9 @@ static Value m_set(int argc, Value *argv) {
     map_set(self_map(argc, argv), arg(argc, argv, 1), arg(argc, argv, 2));
     return argv[0];
 }
+// `map.remove(key)` reports whether the key was there, like the interpreter.
 static Value m_remove(int argc, Value *argv) {
-    map_remove(self_map(argc, argv), arg(argc, argv, 1));
-    return argv[0];
+    return v_bool(map_remove(self_map(argc, argv), arg(argc, argv, 1)));
 }
 static Value m_isempty(int argc, Value *argv) { return v_bool(self_map(argc, argv)->count == 0); }
 static Value m_clear(int argc, Value *argv) {
@@ -3120,6 +3243,18 @@ static Value ln_join(int argc, Value *argv) {
 
 static Value ln_sort(int argc, Value *argv) { return l_sort(argc, argv); }
 
+// `lists.repeat(value, count)`: the value repeated n times.
+static Value ln_repeat(int argc, Value *argv) {
+    int count = (int)require_int(arg(argc, argv, 1), "repeat");
+    if (count < 0) count = 0;
+    List *list = list_new(count);
+    Value value = arg(argc, argv, 0);
+    for (int i = 0; i < count; i++) {
+        list_push(list, value);
+    }
+    return v_obj((Obj *)list);
+}
+
 // `text.pad(s, width[, fill])` appends fill characters on the right.
 static Value tx_pad(int argc, Value *argv) {
     Str *text = (Str *)tern_to_string(argv[0]).as.o;
@@ -3160,9 +3295,12 @@ static Value rnd_seed(int argc, Value *argv) {
     return v_nil();
 }
 
+// `random.float([low, high])`: a value in [low, high), defaulting to [0, 1).
 static Value rnd_float(int argc, Value *argv) {
-    (void)argc; (void)argv;
-    return v_float((double)(rng_next() >> 11) / 9007199254740992.0);
+    double low = argc > 0 ? v_as_double(arg(argc, argv, 0)) : 0.0;
+    double high = argc > 1 ? v_as_double(argv[1]) : 1.0;
+    double unit = (double)(rng_next() >> 11) / 9007199254740992.0;
+    return v_float(low + unit * (high - low));
 }
 
 static Value rnd_int(int argc, Value *argv) {
@@ -3348,7 +3486,10 @@ typedef struct JsonParser {
     const char *text;
     int length;
     int pos;
+    int failed;     // set on the first syntax error; parsing stops there
 } JsonParser;
+
+static Value json_parse_value(JsonParser *p);
 
 static void json_skip(JsonParser *p) {
     while (p->pos < p->length) {
@@ -3358,17 +3499,43 @@ static void json_skip(JsonParser *p) {
     }
 }
 
-static Value json_parse_value(JsonParser *p);
+/// Records a syntax error and returns nil, so callers can just `return`.
+static Value json_fail(JsonParser *p) {
+    p->failed = 1;
+    p->pos = p->length;
+    return v_nil();
+}
+
+static bool json_expect(JsonParser *p, char wanted) {
+    json_skip(p);
+    if (p->pos < p->length && p->text[p->pos] == wanted) {
+        p->pos++;
+        return true;
+    }
+    json_fail(p);
+    return false;
+}
 
 static Value json_parse_string(JsonParser *p) {
+    if (p->text[p->pos] != '"') {
+        return json_fail(p);
+    }
+
     Buf buf;
     buf_init(&buf);
     p->pos++;   // opening quote
     while (p->pos < p->length) {
         char c = p->text[p->pos++];
-        if (c == '"') break;
-        if (c != '\\') { buf_add_char(&buf, c); continue; }
-        if (p->pos >= p->length) break;
+        if (c == '"') {
+            return buf_finish(&buf);
+        }
+        if (c != '\\') {
+            buf_add_char(&buf, c);
+            continue;
+        }
+        if (p->pos >= p->length) {
+            break;
+        }
         char esc = p->text[p->pos++];
         switch (esc) {
             case 'n': buf_add_char(&buf, '\n'); break;
@@ -3376,98 +3543,192 @@ static Value json_parse_string(JsonParser *p) {
             case 'r': buf_add_char(&buf, '\r'); break;
             case 'b': buf_add_char(&buf, '\b'); break;
             case 'f': buf_add_char(&buf, '\f'); break;
+            case '"': buf_add_char(&buf, '"'); break;
+            case '\\': buf_add_char(&buf, '\\'); break;
+            case '/': buf_add_char(&buf, '/'); break;
             case 'u': {
-                if (p->pos + 4 <= p->length) {
-                    char hex[5];
-                    memcpy(hex, p->text + p->pos, 4);
-                    hex[4] = 0;
-                    p->pos += 4;
-                    long code = strtol(hex, NULL, 16);
-                    if (code < 0x80) {
-                        buf_add_char(&buf, (char)code);
-                    } else if (code < 0x800) {
-                        buf_add_char(&buf, (char)(0xC0 | (code >> 6)));
-                        buf_add_char(&buf, (char)(0x80 | (code & 0x3F)));
-                    } else {
-                        buf_add_char(&buf, (char)(0xE0 | (code >> 12)));
-                        buf_add_char(&buf, (char)(0x80 | ((code >> 6) & 0x3F)));
-                        buf_add_char(&buf, (char)(0x80 | (code & 0x3F)));
-                    }
+                if (p->pos + 4 > p->length) {
+                    return json_fail(p);
+                }
+                char hex[5];
+                memcpy(hex, p->text + p->pos, 4);
+                hex[4] = 0;
+                char *hex_end = NULL;
+                long code = strtol(hex, &hex_end, 16);
+                if (!hex_end || hex_end != hex + 4) {
+                    return json_fail(p);
+                }
+                p->pos += 4;
+                if (code < 0x80) {
+                    buf_add_char(&buf, (char)code);
+                } else if (code < 0x800) {
+                    buf_add_char(&buf, (char)(0xC0 | (code >> 6)));
+                    buf_add_char(&buf, (char)(0x80 | (code & 0x3F)));
+                } else {
+                    buf_add_char(&buf, (char)(0xE0 | (code >> 12)));
+                    buf_add_char(&buf, (char)(0x80 | ((code >> 6) & 0x3F)));
+                    buf_add_char(&buf, (char)(0x80 | (code & 0x3F)));
                 }
                 break;
             }
-            default: buf_add_char(&buf, esc); break;
+            default:
+                return json_fail(p);
         }
     }
-    return buf_finish(&buf);
+    return json_fail(p);   // unterminated string
+}
+
+static Value json_parse_object(JsonParser *p) {
+    Map *map = map_new();
+    p->pos++;   // {
+    json_skip(p);
+    if (p->pos < p->length && p->text[p->pos] == '}') {
+        p->pos++;
+        return v_obj((Obj *)map);
+    }
+
+    while (!p->failed) {
+        json_skip(p);
+        if (p->pos >= p->length || p->text[p->pos] != '"') {
+            return json_fail(p);
+        }
+        Value key = json_parse_string(p);
+        if (p->failed) {
+            return v_nil();
+        }
+        if (!json_expect(p, ':')) {
+            return v_nil();
+        }
+        Value value = json_parse_value(p);
+        if (p->failed) {
+            return v_nil();
+        }
+        map_set(map, key, value);
+
+        json_skip(p);
+        if (p->pos < p->length && p->text[p->pos] == ',') {
+            p->pos++;
+            continue;
+        }
+        if (json_expect(p, '}')) {
+            return v_obj((Obj *)map);
+        }
+        return v_nil();
+    }
+    return v_nil();
+}
+
+static Value json_parse_array(JsonParser *p) {
+    List *list = list_new(4);
+    p->pos++;   // [
+    json_skip(p);
+    if (p->pos < p->length && p->text[p->pos] == ']') {
+        p->pos++;
+        return v_obj((Obj *)list);
+    }
+
+    while (!p->failed) {
+        Value item = json_parse_value(p);
+        if (p->failed) {
+            return v_nil();
+        }
+        list_push(list, item);
+
+        json_skip(p);
+        if (p->pos < p->length && p->text[p->pos] == ',') {
+            p->pos++;
+            continue;
+        }
+        if (json_expect(p, ']')) {
+            return v_obj((Obj *)list);
+        }
+        return v_nil();
+    }
+    return v_nil();
 }
 
 static Value json_parse_value(JsonParser *p) {
     json_skip(p);
-    if (p->pos >= p->length) return v_nil();
+    if (p->pos >= p->length) {
+        return json_fail(p);
+    }
+
     char c = p->text[p->pos];
-
     if (c == '{') {
-        p->pos++;
-        Map *map = map_new();
-        while (true) {
-            json_skip(p);
-            if (p->pos >= p->length) break;
-            if (p->text[p->pos] == '}') { p->pos++; break; }
-            if (p->text[p->pos] == ',') { p->pos++; continue; }
-            Value key = json_parse_string(p);
-            json_skip(p);
-            if (p->pos < p->length && p->text[p->pos] == ':') p->pos++;
-            Value value = json_parse_value(p);
-            map_set(map, key, value);
-        }
-        return v_obj((Obj *)map);
+        return json_parse_object(p);
     }
-
     if (c == '[') {
-        p->pos++;
-        List *list = list_new(4);
-        while (true) {
-            json_skip(p);
-            if (p->pos >= p->length) break;
-            if (p->text[p->pos] == ']') { p->pos++; break; }
-            if (p->text[p->pos] == ',') { p->pos++; continue; }
-            list_push(list, json_parse_value(p));
-        }
-        return v_obj((Obj *)list);
+        return json_parse_array(p);
+    }
+    if (c == '"') {
+        return json_parse_string(p);
     }
 
-    if (c == '"') return json_parse_string(p);
+    if (p->pos + 4 <= p->length && memcmp(p->text + p->pos, "true", 4) == 0) {
+        p->pos += 4;
+        return v_bool(true);
+    }
+    if (p->pos + 5 <= p->length && memcmp(p->text + p->pos, "false", 5) == 0) {
+        p->pos += 5;
+        return v_bool(false);
+    }
+    if (p->pos + 4 <= p->length && memcmp(p->text + p->pos, "null", 4) == 0) {
+        p->pos += 4;
+        return v_nil();
+    }
 
-    if (strncmp(p->text + p->pos, "true", 4) == 0) { p->pos += 4; return v_bool(true); }
-    if (strncmp(p->text + p->pos, "false", 5) == 0) { p->pos += 5; return v_bool(false); }
-    if (strncmp(p->text + p->pos, "null", 4) == 0) { p->pos += 4; return v_nil(); }
-
-    {
+    if (c == '-' || (c >= '0' && c <= '9')) {
         char *end = NULL;
         const char *start = p->text + p->pos;
-        long long as_int = strtoll(start, &end, 10);
-        if (end && *end == '.') {
-            double as_double = strtod(start, &end);
-            p->pos = (int)(end - p->text);
-            return v_float(as_double);
+        double as_double = strtod(start, &end);
+        if (!end || end == start) {
+            return json_fail(p);
         }
-        if (end && end != start) {
-            p->pos = (int)(end - p->text);
-            return v_int(as_int);
+        bool whole = true;
+        for (const char *cursor = start; cursor < end; cursor++) {
+            if (*cursor == '.' || *cursor == 'e' || *cursor == 'E') {
+                whole = false;
+                break;
+            }
         }
+        p->pos = (int)(end - p->text);
+        return whole ? v_int((int64_t)as_double) : v_float(as_double);
     }
 
-    p->pos++;
-    return v_nil();
+    return json_fail(p);
 }
 
 static Value js_parse(int argc, Value *argv) {
     Value text = arg(argc, argv, 0);
-    if (!v_is_str(text)) return v_nil();
+    if (!v_is_str(text)) {
+        tern_panic("TypeError", "json.parse expects a string, not %s", tern_type_name(text));
+    }
     Str *str = (Str *)text.as.o;
-    JsonParser parser = { str->chars, (int)str->len, 0 };
-    return json_parse_value(&parser);
+    JsonParser parser = { str->chars, (int)str->len, 0, 0 };
+    Value value = json_parse_value(&parser);
+    json_skip(&parser);
+    if (parser.failed || parser.pos != parser.length) {
+        tern_panic("JsonError", "invalid JSON at offset %d", parser.pos);
+    }
+    return value;
+}
+
+/// `json.tryParse(text[, fallback])`: parses without raising; bad input or a
+/// non-string argument yields the fallback (nil when omitted).
+static Value js_tryparse(int argc, Value *argv) {
+    Value fallback = argc > 1 ? argv[1] : v_nil();
+    Value text = arg(argc, argv, 0);
+    if (!v_is_str(text)) {
+        return fallback;
+    }
+    Str *str = (Str *)text.as.o;
+    JsonParser parser = { str->chars, (int)str->len, 0, 0 };
+    Value value = json_parse_value(&parser);
+    json_skip(&parser);
+    if (parser.failed || parser.pos != parser.length) {
+        return fallback;
+    }
+    return value;
 }
 
 // --- os -------------------------------------------------------------------
@@ -3555,9 +3816,56 @@ static Value os_env(int argc, Value *argv) {
     return value ? str_from_cstr(value) : arg(argc, argv, 1);
 }
 
+// The binary's own arguments, minus argv[0]: set once by `main` before the
+// program body runs.
+static int tern_arg_count = 0;
+static char **tern_arg_values = NULL;
+
+void tern_set_args(int count, char **values) {
+    tern_arg_count = count > 0 ? count : 0;
+    tern_arg_values = values;
+}
+
+static Value os_setenv(int argc, Value *argv) {
+    Value name = arg(argc, argv, 0);
+    if (!v_is_str(name)) return v_nil();
+    Str *key = (Str *)name.as.o;
+    Value value = tern_to_string(arg(argc, argv, 1));
+    Str *text = (Str *)value.as.o;
+    setenv(key->chars, text->chars, 1);
+    return v_nil();
+}
+
+// `os.joinPath(a, b, ...)`: segments joined with '/' unless a later one is
+// absolute, in which case it replaces what came before.
+static Value os_joinpath(int argc, Value *argv) {
+    Buf buf;
+    buf_init(&buf);
+    for (int i = 0; i < argc; i++) {
+        Value part = tern_to_string(argv[i]);
+        Str *text = (Str *)part.as.o;
+        if (text->len == 0) {
+            continue;
+        }
+        if (text->chars[0] == '/' && buf.len > 0) {
+            buf.len = 0;
+        } else if (buf.len > 0 && buf.data[buf.len - 1] != '/') {
+            buf_add(&buf, "/", 1);
+        }
+        while (buf.len > 0 && text->chars[0] == '/' && buf.data[buf.len - 1] == '/') {
+            buf.len--;   // no doubled separator
+        }
+        buf_add(&buf, text->chars, text->len);
+    }
+    return buf_finish(&buf);
+}
+
 static Value os_args(int argc, Value *argv) {
     (void)argc; (void)argv;
-    List *list = list_new(0);
+    List *list = list_new(tern_arg_count);
+    for (int i = 0; i < tern_arg_count; i++) {
+        list_push(list, str_from_cstr(tern_arg_values[i]));
+    }
     return v_obj((Obj *)list);
 }
 
@@ -3579,11 +3887,12 @@ static const MethodSlot map_methods[] = {
     {"merge", m_merge}, {"toString", m_tostring_self}, {NULL, NULL},
 };
 static const MethodSlot string_methods[] = {
-    {"upper", s_upper}, {"lower", s_lower}, {"trim", s_trim}, {"trimStart", s_trim},
-    {"trimEnd", s_trim}, {"contains", s_contains}, {"startsWith", s_starts},
-    {"endsWith", s_ends}, {"indexOf", s_indexof}, {"lastIndexOf", s_indexof},
+    {"upper", s_upper}, {"lower", s_lower}, {"trim", s_trim}, {"trimStart", s_trimstart},
+    {"trimEnd", s_trimend}, {"contains", s_contains}, {"startsWith", s_starts},
+    {"endsWith", s_ends}, {"indexOf", s_indexof}, {"lastIndexOf", s_lastindexof},
+    {"count", s_count},
     {"substring", s_substring}, {"slice", s_slice}, {"split", s_split},
-    {"replace", s_replace}, {"replaceFirst", s_replace}, {"repeat", s_repeat},
+    {"replace", s_replace}, {"replaceFirst", s_replacefirst}, {"repeat", s_repeat},
     {"chars", s_chars}, {"lines", s_lines}, {"words", s_split},
     {"isEmpty", s_isempty}, {"toInt", s_toint}, {"toFloat", s_tofloat},
     {"toString", s_tostring}, {"padStart", s_padstart}, {"padEnd", s_padend},
@@ -3759,6 +4068,7 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("enumerate"), make_native("enumerate", ln_enumerate));
         map_set(map, str_from_cstr("chunk"), make_native("chunk", ln_chunk));
         map_set(map, str_from_cstr("join"), make_native("join", ln_join));
+        map_set(map, str_from_cstr("repeat"), make_native("repeat", ln_repeat));
         map_set(map, str_from_cstr("sort"), make_native("sort", ln_sort));
         map_set(map, str_from_cstr("unique"), make_native("unique", l_unique));
         map_set(map, str_from_cstr("flatten"), make_native("flatten", l_flatten));
@@ -3791,8 +4101,10 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("format"), make_native("format", s_format));
         map_set(map, str_from_cstr("pad"), make_native("pad", tx_pad));
         map_set(map, str_from_cstr("trim"), make_native("trim", s_trim));
-        map_set(map, str_from_cstr("trimStart"), make_native("trimStart", s_trim));
-        map_set(map, str_from_cstr("trimEnd"), make_native("trimEnd", s_trim));
+        map_set(map, str_from_cstr("trimStart"), make_native("trimStart", s_trimstart));
+        map_set(map, str_from_cstr("trimEnd"), make_native("trimEnd", s_trimend));
+        map_set(map, str_from_cstr("join"), make_native("join", ln_join));
+        map_set(map, str_from_cstr("repeat"), make_native("repeat", ln_repeat));
         map_set(map, str_from_cstr("upper"), make_native("upper", s_upper));
         map_set(map, str_from_cstr("lower"), make_native("lower", s_lower));
         map_set(map, str_from_cstr("split"), make_native("split", s_split));
@@ -3816,6 +4128,7 @@ static Value namespace_map(const char *ns) {
     if (strcmp(ns, "json") == 0) {
         map_set(map, str_from_cstr("stringify"), make_native("stringify", js_stringify));
         map_set(map, str_from_cstr("parse"), make_native("parse", js_parse));
+        map_set(map, str_from_cstr("tryParse"), make_native("tryParse", js_tryparse));
         return v_obj((Obj *)map);
     }
 
@@ -3825,6 +4138,8 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("cwd"), make_native("cwd", os_cwd));
         map_set(map, str_from_cstr("args"), make_native("args", os_args));
         map_set(map, str_from_cstr("env"), make_native("env", os_env));
+        map_set(map, str_from_cstr("setEnv"), make_native("setEnv", os_setenv));
+        map_set(map, str_from_cstr("joinPath"), make_native("joinPath", os_joinpath));
         map_set(map, str_from_cstr("exists"), make_native("exists", os_exists));
         map_set(map, str_from_cstr("isFile"), make_native("isFile", os_exists));
         map_set(map, str_from_cstr("isDir"), make_native("isDir", os_isdir));
@@ -3845,6 +4160,7 @@ static Value namespace_map(const char *ns) {
 
     if (strcmp(ns, "time") == 0) {
         map_set(map, str_from_cstr("millis"), make_native("millis", t_millis));
+        map_set(map, str_from_cstr("iso"), make_native("iso", t_iso));
         map_set(map, str_from_cstr("now"), make_native("now", t_now));
         map_set(map, str_from_cstr("sleep"), make_native("sleep", n_sleep));
         return v_obj((Obj *)map);

@@ -430,6 +430,13 @@ Supported patterns: literals, `nil`, booleans, or-patterns (`a | b`), integer
 ranges (`2..9` inclusive, `2..<10` exclusive), list patterns with `...rest`,
 binding names (`n` binds), and guards (`pattern if condition`).
 
+A range arm is a numeric test: it matches numbers and simply fails for anything
+else, so a mixed set of arms never raises "cannot compare". Guards are ordinary
+expressions and are only reached when the arm's pattern matched, so
+`n if n > 100` after a `_`-free prefix still runs for non-numbers - check the
+type in the guard (`n if type(n) == "int" and n > 100`) when the subject can be
+mixed.
+
 `_` is a wildcard. Arms may be blocks:
 
 ```tern

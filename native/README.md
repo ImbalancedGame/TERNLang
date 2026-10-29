@@ -68,7 +68,13 @@ Other notable points:
   collector is stress-tested.
 * **Standard library** — the whole standard library lives in the runtime: the
   globals, `math`/`time`/`json`/`os`/`random`/`text`/`lists`, the string, list,
-  map, range and number methods, and map insertion order.
+  map, range and number methods, and map insertion order. `tests/17_stdlib`
+  exercises every namespace, method and conversion and its output must match
+  the interpreter byte for byte, so a builtin that exists on one side and not
+  the other shows up as a failing test rather than a surprise at run time.
+* **Arguments** — `main` records `argv` minus the program name, which is what
+  `os.args()` returns; passing arguments works exactly as it does under
+  `tern run script.tern`.
 
 ## Tests
 
@@ -79,13 +85,15 @@ python3 native/run_tests.py 05 14  # a subset
 
 Every golden test except `12_lint` (which checks compiler *diagnostics*, not
 runtime behaviour) is compiled and run, and its output compared with
-`tests/NN_name.out`:
+`tests/NN_name.out`. Each one then runs a second time with
+`TERN_GC_THRESHOLD=4096` so the collector is under constant pressure:
 
 ```
-01_basics       ok     05_collections  ok     09_builtins     ok     13_loops        ok
-02_strings      ok     06_structs      ok     10_modules_main ok     14_modulo       ok
-03_control      ok     07_match        ok     11_operators    ok     15_stores       ok
-04_functions    ok     08_errors       ok
+01_basics       ok     06_structs      ok     11_operators    ok     16_gc           ok
+02_strings      ok     07_match        ok     13_loops        ok     17_stdlib       ok
+03_control      ok     08_errors       ok     14_modulo       ok     18_patterns     ok
+04_functions    ok     09_builtins     ok     15_stores       ok
+05_collections  ok     10_modules_main ok
 ```
 
 The four `examples/*.tern` scripts and the five `bench/*.tern` workloads also
@@ -100,18 +108,20 @@ because that is what a user pays to run the script:
 
 | Workload   | native | `tern run` | speed-up |
 | ---------- | -----: | ---------: | -------: |
-| `fib`      |   21 ms |     273 ms |   12.8x |
-| `loop`     |   73 ms |     284 ms |    3.9x |
-| `maps`     |  145 ms |     278 ms |    1.9x |
-| `strings`  |    6 ms |     140 ms |   23.0x |
-| `bintree`  |    9 ms |     163 ms |   18.2x |
+| `fib`      |   18 ms |     253 ms |   13.7x |
+| `loop`     |   56 ms |     269 ms |    4.8x |
+| `maps`     |  128 ms |     326 ms |    2.6x |
+| `strings`  |    6 ms |     134 ms |   22.7x |
+| `bintree`  |    8 ms |     153 ms |   19.9x |
 
-Measured in-process instead (start-up excluded, best of nine, from
-`tools/compare.sh`), the interpreter needs 157 / 104 / 148 / 18 / 45 ms for the
-same five workloads, so the compiled code is **7.5x** ahead on `fib`, 1.4x on
-`loop`, level on `maps`, 3.0x on `strings` and 5.0x on `bintree` — and within
-2-3x of LuaJIT and Node on `fib`, level with LuaJIT on `bintree`, while staying
-a plain C compiler back end.
+(Timings move by up to 20% with host load; these were taken on an otherwise
+idle 2 vCPU machine.)
+
+Measured in-process instead (start-up excluded, best of nine), the interpreter
+needs 134 / 113 / 192 / 20 / 51 ms for the same five workloads, so the compiled
+code is **7.3x** ahead on `fib`, 2.0x on `loop`, 1.5x on `maps`, 3.4x on
+`strings` and 6.6x on `bintree` — and within 2x of LuaJIT on `fib` and
+`bintree`, while staying a plain C compiler back end.
 
 Collecting costs nothing here: `bintree`, `fib` and `loop` stay under the 16 MiB
 allocation budget and never collect at all, and `maps` (the only workload that
@@ -131,11 +141,11 @@ the whole single-translation-unit program.
   allocator.
 * Compiler diagnostics (the `12_lint` warnings) are not emitted by binaries;
   use `./tools/tern check` for that.
-* Uncaught errors print the message without a stack trace.
+* Uncaught errors print the message without a stack trace (the interpreter
+  prints a trace as well).
 * Recursion is limited to 10 000 frames (the interpreter stops at 1 024). The
   limit is high enough to stay inside the C stack and raises a catchable
   `StackOverflow` error rather than crashing.
-* `os.args()` returns an empty list (the CLI does not pass script arguments yet).
 
 ## Relationship to the interpreter
 

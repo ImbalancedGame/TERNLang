@@ -1,0 +1,22 @@
+2 -> small
+5 -> digit
+42 -> two digits
+"hi" -> greeting
+nil -> nothing
+true -> yes
+3.5 -> other
+[7] -> one:7
+[1, 2] -> pair:1,2
+[1, 2, 3, 4] -> first:1, rest:3
+500 -> big
+{"k": 1} -> other
+10
+[20, 30, 40, 50]
+4
+low
+mid
+high or not a number
+high or not a number
+high or not a number
+low
+A B C

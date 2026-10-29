@@ -139,7 +139,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | Name | Signature | Notes |
 | ---- | --------- | ----- |
 | `format` | `format(arg, ...)` | Formats {} and {0} placeholders with arguments. |
-| `join` | `join(arg, arg)` | Joins a list with a separator. |
+| `join` | `join(arg, [arg])` | Joins a list with a separator. |
 | `lower` | `lower(arg)` | Lowercased copy. |
 | `pad` | `pad(arg, arg, [arg])` | Pads a string to a width on the right. |
 | `split` | `split(arg, arg)` | Splits on a separator. |

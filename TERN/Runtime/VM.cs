@@ -1083,6 +1083,20 @@ namespace TERN.Runtime
                             break;
                         }
 
+                        // Range patterns only match numbers: any other subject simply
+                        // fails the arm instead of raising a comparison error.
+                        case Op.JumpIfNotNumber:
+                        {
+                            locals = _locals;
+                            var kind = locals[frameBase + instruction.A].Kind;
+                            if (kind != ValueKind.Int && kind != ValueKind.Float)
+                            {
+                                ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
                         // Fused numeric compare and branch: one dispatch instead of three.
                         case Op.JumpLtLocalInt:
                         case Op.JumpLeLocalInt:
@@ -1989,7 +2003,17 @@ namespace TERN.Runtime
                 throw Error("ArgumentError", $"{native.Name}() expects {expected} argument(s) but got {argc}");
             }
 
-            return native.Function(this, args);
+            try
+            {
+                return native.Function(this, args);
+            }
+            catch (Exception error) when (error is InvalidCastException or NullReferenceException)
+            {
+                // A builtin that assumed the wrong argument type must surface as a
+                // catchable TypeError: an unhandled cast or dereference here would
+                // abort the whole process instead.
+                throw Error("TypeError", $"{native.Name}(): argument is not of the expected type");
+            }
         }
 
         private bool ReturnFrame(in Value result, int frameFloor)

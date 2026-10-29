@@ -796,10 +796,17 @@ namespace TERN.Builtins
 
                 return Value.Of(list);
             }, "Splits on a separator.");
-            Add(map, "join", 2, 2, (vm, a) =>
+            // Same shape as the list method and the native runtime:
+            // text.join(list, [separator]).
+            Add(map, "join", 1, 2, (vm, a) =>
             {
-                var list = a[1].AsList();
-                var separator = a[0].AsString();
+                if (a[0].Kind != ValueKind.List)
+                {
+                    throw vm.Error("TypeError", $"join() expects a list, not {vm.TypeName(a[0])}");
+                }
+
+                var list = a[0].AsList();
+                var separator = a.Length > 1 && a[1].Kind == ValueKind.Str ? a[1].AsString() : "";
                 var builder = new StringBuilder();
                 for (var i = 0; i < list.Count; i++)
                 {
