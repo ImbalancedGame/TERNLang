@@ -36,6 +36,7 @@ namespace TERN.Compiler
 
         // members
         LoadField,      // A = name constant
+        Length,         // A = name constant; fast path for length/count/size reads
         StoreField,     // A = name constant
         LoadIndex,
         StoreIndex,

@@ -2199,6 +2199,22 @@ namespace TERN.Compiler
                 Emit(Op.NewRange, range.Inclusive ? 1 : 0, 0, 0, pop: 2, push: 1);
             }
 
+            /// <summary>
+            /// Emits a member read. <c>length</c>, <c>count</c> and <c>size</c> become a
+            /// dedicated opcode so strings, lists and maps never enter the general
+            /// member resolution path.
+            /// </summary>
+            private void EmitLoadField(string name)
+            {
+                if (name is "length" or "count" or "size")
+                {
+                    Emit(Op.Length, AddStringConstant(name), 0, 0, pop: 1, push: 1);
+                    return;
+                }
+
+                Emit(Op.LoadField, AddStringConstant(name), 0, 0, pop: 1, push: 1);
+            }
+
             /// <summary>Loads a member, short-circuiting to nil for the optional form <c>a?.b</c>.</summary>
             private void CompileMember(MemberExpr member)
             {
@@ -2206,7 +2222,7 @@ namespace TERN.Compiler
 
                 if (!member.Safe)
                 {
-                    Emit(Op.LoadField, AddStringConstant(member.Name), 0, 0, pop: 1, push: 1);
+                    EmitLoadField(member.Name);
                     return;
                 }
 
@@ -2215,7 +2231,7 @@ namespace TERN.Compiler
                 EmitLoadConstant(Value.Nil);
                 var done = Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0);
                 PatchTo(present, _code.Count);
-                Emit(Op.LoadField, AddStringConstant(member.Name), 0, 0, pop: 1, push: 1);
+                EmitLoadField(member.Name);
                 PatchTo(done, _code.Count);
             }
 

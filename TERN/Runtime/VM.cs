@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -34,6 +35,13 @@ namespace TERN.Runtime
     /// </summary>
     public sealed class VM
     {
+        private struct NativeLookup
+        {
+            public ValueKind Kind;
+            public string? Name;
+            public TernNative? Native;
+        }
+
         private sealed class Frame
         {
             public TernClosure? Closure;
@@ -68,6 +76,18 @@ namespace TERN.Runtime
 
         private Value[] _stack = CreateValues(256);
         private int _sp;
+
+        /// <summary>
+        /// Direct-mapped cache for builtin method lookups. Scripts call the same
+        /// handful of methods on the same handful of receiver kinds, so a single
+        /// probe replaces the two dictionary lookups in <c>BuiltinMethods.Tables</c>.
+        /// </summary>
+        private readonly NativeLookup[] _nativeCache = new NativeLookup[256];
+
+        /// <summary>Reusable argument buffers, indexed by native-call nesting depth.</summary>
+        private Value[][] _nativeArgs = new Value[4][];
+
+        private int _nativeDepth;
         private Value[] _locals = CreateValues(256);
         private int _localsTop;
         private Frame[] _frames = CreateFrames(64);
@@ -552,6 +572,40 @@ namespace TERN.Runtime
                             break;
                         }
 
+                        case Op.Length:
+                        {
+                            // `x.length` for the three container kinds, without the
+                            // general member lookup (which calls into the builtins).
+                            ref var target = ref _stack[_sp - 1];
+                            switch (target.Kind)
+                            {
+                                case ValueKind.Str:
+                                    target = new Value(target.AsString().Length);
+                                    break;
+                                case ValueKind.List:
+                                    target = new Value(target.AsList().Count);
+                                    break;
+                                case ValueKind.Map:
+                                {
+                                    var map = target.AsMap();
+                                    var name = constants[instruction.A].AsString();
+                                    if (map.ContainsKey(Value.Str(name)))
+                                    {
+                                        target = LoadMember(target, name);
+                                        break;
+                                    }
+
+                                    target = new Value(map.Count);
+                                    break;
+                                }
+                                default:
+                                    target = LoadMember(target, constants[instruction.A].AsString());
+                                    break;
+                            }
+
+                            break;
+                        }
+
                         case Op.LoadIndex:
                         {
                             var index = _stack[--_sp];
@@ -695,19 +749,14 @@ namespace TERN.Runtime
                             var start = _sp - count;
                             if (count == 1)
                             {
-                                _stack[start] = Value.Str(_stack[start].ToDisplayString());
+                                ref var only = ref _stack[start];
+                                only = Value.Str(only.ToDisplayString());
                                 _sp = start + 1;
                                 break;
                             }
 
-                            var builder = new StringBuilder(32);
-                            for (var i = 0; i < count; i++)
-                            {
-                                builder.Append(_stack[start + i].ToDisplayString());
-                            }
-
                             _sp = start;
-                            Push(Value.Str(builder.ToString()));
+                            Push(ConcatValues(start, count));
                             break;
                         }
 
@@ -1149,7 +1198,6 @@ namespace TERN.Runtime
                             var argsBase = _sp - argc;
                             var callee = _stack[argsBase - 1];
                             frame.Ip = ip;
-
                             if (!TryEnterCall(callee, argc, argsBase, argsBase - 1))
                             {
                                 throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
@@ -1160,13 +1208,11 @@ namespace TERN.Runtime
 
                         case Op.CallLocal:
                         {
-                            locals = _locals;
                             var argc = instruction.A;
                             var slot = frameBase + instruction.B;
-                            var callee = locals[slot];
+                            var callee = _locals[slot];
                             var argsBase = _sp - argc;
                             frame.Ip = ip;
-
                             if (!TryEnterCall(callee, argc, argsBase, argsBase))
                             {
                                 throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
@@ -1181,7 +1227,6 @@ namespace TERN.Runtime
                             var callee = module.Globals[instruction.B];
                             var argsBase = _sp - argc;
                             frame.Ip = ip;
-
                             if (!TryEnterCall(callee, argc, argsBase, argsBase))
                             {
                                 throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
@@ -1196,11 +1241,17 @@ namespace TERN.Runtime
                             var receiverIndex = _sp - argc - 1;
                             var receiver = _stack[receiverIndex];
                             frame.Ip = ip;
+                            var depth = _frameCount;
 
                             if (!TryInvoke(receiver, constants[instruction.A].AsString(), argc, receiverIndex))
                             {
                                 throw Error("TypeError",
                                     $"{TypeName(receiver)} has no method '{constants[instruction.A].AsString()}'", frame, ip);
+                            }
+
+                            if (_frameCount == depth)
+                            {
+                                break;
                             }
 
                             goto nextFrame;
@@ -2032,6 +2083,118 @@ namespace TERN.Runtime
             Ne = 5,
         }
 
+        /// <summary>
+        /// Concatenates the <paramref name="count"/> values starting at
+        /// <paramref name="start"/>. Interpolations of ints, bools and strings make
+        /// up the overwhelming majority, and those are written straight into a
+        /// stack buffer: one allocation and no <see cref="StringBuilder"/>.
+        /// Anything else falls back to the general path.
+        /// </summary>
+        private Value ConcatValues(int start, int count)
+        {
+            var size = 0;
+            for (var i = 0; i < count; i++)
+            {
+                var part = _stack[start + i];
+                switch (part.Kind)
+                {
+                    case ValueKind.Str:
+                        size += part.AsString().Length;
+                        break;
+                    case ValueKind.Int:
+                        size += MaxIntLength;
+                        break;
+                    case ValueKind.Bool:
+                        size += MaxBoolLength;
+                        break;
+                    default:
+                        return ConcatValuesSlow(start, count);
+                }
+
+                if (size > ConcatBufferSize)
+                {
+                    return ConcatValuesSlow(start, count);
+                }
+            }
+
+            Span<char> buffer = stackalloc char[ConcatBufferSize];
+            var written = 0;
+
+            for (var i = 0; i < count; i++)
+            {
+                if (!TryFormatPart(_stack[start + i], buffer[written..], out var length))
+                {
+                    return ConcatValuesSlow(start, count);
+                }
+
+                written += length;
+            }
+
+            return Value.Str(new string(buffer[..written]));
+        }
+
+        private const int ConcatBufferSize = 512;
+        private const int MaxIntLength = 20;
+        private const int MaxBoolLength = 5;
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private Value ConcatValuesSlow(int start, int count)
+        {
+            var builder = new StringBuilder(32);
+            for (var i = 0; i < count; i++)
+            {
+                builder.Append(_stack[start + i].ToDisplayString());
+            }
+
+            return Value.Str(builder.ToString());
+        }
+
+        /// <summary>
+        /// Writes a value in its display form into <paramref name="destination"/>.
+        /// Returns false for kinds that need a heap string (containers, doubles, ...).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryFormatPart(in Value value, Span<char> destination, out int written)
+        {
+            switch (value.Kind)
+            {
+                case ValueKind.Str:
+                {
+                    var text = value.AsString();
+                    if (text.Length > destination.Length)
+                    {
+                        written = 0;
+                        return false;
+                    }
+
+                    text.AsSpan().CopyTo(destination);
+                    written = text.Length;
+                    return true;
+                }
+
+                case ValueKind.Int:
+                    return value.AsInt().TryFormat(destination, out written, default, CultureInfo.InvariantCulture);
+
+                case ValueKind.Bool:
+                {
+                    var word = value.AsBool() ? "true" : "false";
+                    if (word.Length > destination.Length)
+                    {
+                        written = 0;
+                        return false;
+                    }
+
+                    word.AsSpan().CopyTo(destination);
+                    written = word.Length;
+                    return true;
+                }
+
+                default:
+                    written = 0;
+                    return false;
+            }
+        }
+
         private Value BinaryOp(Op op, in Value left, in Value right)
         {
             switch (op)
@@ -2055,17 +2218,17 @@ namespace TERN.Runtime
                 case Op.Shr:
                     return IntegerOp(op, left, right);
                 case Op.Eq:
-                    return Value.Bool(left.Equals(right));
+                    return left.Equals(right) ? Value.True : Value.False;
                 case Op.Ne:
-                    return Value.Bool(!left.Equals(right));
+                    return !left.Equals(right) ? Value.True : Value.False;
                 case Op.Lt:
-                    return Value.Bool(CompareOrThrow(left, right) < 0);
+                    return CompareOrThrow(left, right) < 0 ? Value.True : Value.False;
                 case Op.Le:
-                    return Value.Bool(CompareOrThrow(left, right) <= 0);
+                    return CompareOrThrow(left, right) <= 0 ? Value.True : Value.False;
                 case Op.Gt:
-                    return Value.Bool(CompareOrThrow(left, right) > 0);
+                    return CompareOrThrow(left, right) > 0 ? Value.True : Value.False;
                 case Op.Ge:
-                    return Value.Bool(CompareOrThrow(left, right) >= 0);
+                    return CompareOrThrow(left, right) >= 0 ? Value.True : Value.False;
                 default:
                     throw Error("InternalError", $"unexpected binary opcode {op}");
             }
@@ -2223,6 +2386,24 @@ namespace TERN.Runtime
             _ => op.ToString(),
         };
 
+        /// <summary>`string + value` without the intermediate <c>ToString</c> allocations.</summary>
+        private static Value ConcatPair(in Value left, in Value right)
+        {
+            if (left.Kind == ValueKind.Str && right.Kind == ValueKind.Str)
+            {
+                return Value.Str(string.Concat(left.AsString(), right.AsString()));
+            }
+
+            Span<char> buffer = stackalloc char[64];
+            if (TryFormatPart(left, buffer, out var first) &&
+                TryFormatPart(right, buffer[first..], out var second))
+            {
+                return Value.Str(new string(buffer[..(first + second)]));
+            }
+
+            return Value.Str(left.ToDisplayString() + right.ToDisplayString());
+        }
+
         private Value Add(in Value left, in Value right)
         {
             if (left.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
@@ -2251,7 +2432,7 @@ namespace TERN.Runtime
 
             if (left.Kind == ValueKind.Str || right.Kind == ValueKind.Str)
             {
-                return Value.Str(left.ToDisplayString() + right.ToDisplayString());
+                return ConcatPair(left, right);
             }
 
             if (left.Kind == ValueKind.List && right.Kind == ValueKind.List)
@@ -2460,6 +2641,46 @@ namespace TERN.Runtime
         }
 
         /// <summary>Method dispatch used by the Invoke opcode; avoids allocating bound methods.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool TryResolveNative(ValueKind kind, string name, out TernNative native)
+        {
+            var slot = (int)(((uint)name.GetHashCode() * 31u + (uint)kind) & 0xFFu);
+            ref var entry = ref _nativeCache[slot];
+            if (entry.Kind == kind && ReferenceEquals(entry.Name, name))
+            {
+                native = entry.Native!;
+                return native is not null;
+            }
+
+            if (!BuiltinMethods.TryResolve(kind, name, out native!))
+            {
+                entry = default;
+                return false;
+            }
+
+            entry.Kind = kind;
+            entry.Name = name;
+            entry.Native = native;
+            return true;
+        }
+
+        private Value[] BorrowNativeArguments(int depth, int length)
+        {
+            if (depth >= _nativeArgs.Length)
+            {
+                Array.Resize(ref _nativeArgs, Math.Max(depth + 1, _nativeArgs.Length * 2));
+            }
+
+            var buffer = _nativeArgs[depth];
+            if (buffer is null || buffer.Length < length)
+            {
+                buffer = new Value[Math.Max(length, 8)];
+                _nativeArgs[depth] = buffer;
+            }
+
+            return buffer;
+        }
+
         private bool TryInvoke(in Value receiver, string name, int argc, int receiverIndex)
         {
             switch (receiver.Kind)
@@ -2509,16 +2730,9 @@ namespace TERN.Runtime
                 }
             }
 
-            if (!BuiltinMethods.TryResolve(receiver.Kind, name, out var native))
+            if (!TryResolveNative(receiver.Kind, name, out var native))
             {
                 return false;
-            }
-
-            var scratch = new Value[argc + 1];
-            scratch[0] = receiver;
-            for (var i = 0; i < argc; i++)
-            {
-                scratch[i + 1] = _stack[receiverIndex + 1 + i];
             }
 
             if (argc + 1 < native.MinArguments || (native.MaxArguments >= 0 && argc + 1 > native.MaxArguments))
@@ -2529,7 +2743,30 @@ namespace TERN.Runtime
                 throw Error("ArgumentError", $"{name}() expects {expected} argument(s) but got {argc}");
             }
 
-            var result = native.Function(this, scratch);
+            // The buffer is reused (and re-entrancy safe because each nesting level
+            // gets its own): a fresh Value[] per native call is pure garbage.
+            var depth = _nativeDepth++;
+            var args = BorrowNativeArguments(depth, argc + 1);
+            args[0] = receiver;
+            for (var i = 0; i < argc; i++)
+            {
+                args[i + 1] = _stack[receiverIndex + 1 + i];
+            }
+
+            Value result;
+            try
+            {
+                result = native.Function(this, args.AsSpan(0, argc + 1));
+            }
+            finally
+            {
+                _nativeDepth = depth;
+                if (argc + 1 <= 16)
+                {
+                    args.AsSpan(0, argc + 1).Clear();
+                }
+            }
+
             _sp = receiverIndex;
             Push(result);
             return true;

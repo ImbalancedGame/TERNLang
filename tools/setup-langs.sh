@@ -52,7 +52,9 @@ fi
 
 # ---------------------------------------------------------------- C# baseline
 if [[ ! -f "$HERE/build/csharp-bench/Bench.dll" ]]; then
-  python3 "$HERE/tools/build-csharp.py"
+  PYTHON="${TERN_PYTHON:-${TERN_TOOLCHAIN_DIR:-/tmp/tern-toolchain}/venv/bin/python}"
+  [[ -x "$PYTHON" ]] || PYTHON=python3
+  "$PYTHON" "$HERE/tools/build-csharp.py"
 fi
 
 for tool in "$CACHE/lua/bin/lua" "$CACHE/luajit/bin/luajit"; do
