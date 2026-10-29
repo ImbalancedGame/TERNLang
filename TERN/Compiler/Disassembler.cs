@@ -37,8 +37,9 @@ namespace TERN.Compiler
         {
             var operand = instruction.Op switch
             {
-                Op.LoadConst or Op.LoadGlobal or Op.AddLocalConst or Op.SubLocalConst or Op.MulLocalConst
-                    or Op.DivLocalConst or Op.ModLocalConst or Op.NewInstance or Op.LoadField or Op.StoreField
+                Op.AddLocalConst or Op.SubLocalConst or Op.MulLocalConst or Op.DivLocalConst
+                    or Op.ModLocalConst => $"#A={instruction.A} #B={instruction.B} {Constant(proto, instruction.B)}",
+                Op.LoadConst or Op.LoadGlobal or Op.NewInstance or Op.LoadField or Op.StoreField
                     or Op.Invoke or Op.LoadModule => $"#{instruction.A} {Constant(proto, instruction.A)}",
                 _ => string.Empty,
             };

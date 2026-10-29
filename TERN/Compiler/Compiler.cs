@@ -271,6 +271,14 @@ namespace TERN.Compiler
                         or Op.JumpIfNotNullKeep or Op.IterNext or Op.EnterTry =>
                         new Instr(instruction.Op, target, instruction.B, instruction.C),
 
+                    // target lives in C: fused compare-and-branch instructions
+                    Op.JumpLtLocalInt or Op.JumpLeLocalInt or Op.JumpGtLocalInt
+                        or Op.JumpGeLocalInt or Op.JumpEqLocalInt or Op.JumpNeLocalInt
+                        or Op.JumpLtLocalLocal or Op.JumpLeLocalLocal or Op.JumpGtLocalLocal
+                        or Op.JumpGeLocalLocal or Op.JumpEqLocalLocal or Op.JumpNeLocalLocal
+                        or Op.ForPrepLt or Op.ForPrepLe or Op.ForPrepGt or Op.ForPrepGe =>
+                        new Instr(instruction.Op, instruction.A, instruction.B, target),
+
                     // target lives in B
                     _ => new Instr(instruction.Op, instruction.A, target, instruction.C),
                 };
@@ -322,7 +330,41 @@ namespace TERN.Compiler
             private void EmitLoadLocal(int slot) =>
                 Emit(Op.LoadLocal, slot, 0, 0, pop: 0, push: 1);
 
-            private void EmitStoreLocal(int slot) =>
+            /// <summary>
+            /// Emits a store, fusing it with the arithmetic instruction that produced the
+            /// value. `<arith>; store` becomes one instruction that leaves nothing on the
+            /// stack, which is the shape of every `total = total + x` in a loop.
+            /// </summary>
+            private void EmitStoreLocal(int slot)
+            {
+                if (_code.Count > 0)
+                {
+                    var previous = _code[^1];
+                    var fused = previous.Op switch
+                    {
+                        Op.Add => Op.AddStoreLocal,
+                        Op.Sub => Op.SubStoreLocal,
+                        Op.Mul => Op.MulStoreLocal,
+                        Op.Div => Op.DivStoreLocal,
+                        Op.Mod => Op.ModStoreLocal,
+                        _ => (Op?)null,
+                    };
+
+                    if (fused is not null)
+                    {
+                        _code.RemoveAt(_code.Count - 1);
+                        _lines.RemoveAt(_lines.Count - 1);
+                        _depth--;   // the removed instruction was net +1 on the stack
+
+                        Emit(fused.Value, slot, 0, 0, pop: 2, push: 0);
+                        return;
+                    }
+                }
+
+                Emit(Op.StoreLocal, slot, 0, 0, pop: 1, push: 0);
+            }
+
+            private void EmitStoreLocalPlain(int slot) =>
                 Emit(Op.StoreLocal, slot, 0, 0, pop: 1, push: 0);
 
             // ------------------------------------------------------- scopes & slots
@@ -596,8 +638,7 @@ namespace TERN.Compiler
                         return;
 
                     case ExpressionStmt expression:
-                        CompileExpression(expression.Expression);
-                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                        CompileExpressionStatement(expression.Expression);
                         return;
 
                     case FunctionDeclStmt declaration:
@@ -827,6 +868,126 @@ namespace TERN.Compiler
                 _loops.RemoveAt(_loops.Count - 1);
             }
 
+            /// <summary>
+            /// Compiles `for (let i = a; i &lt; n; i++)` into a counted loop: the bound is a
+            /// constant, so the whole loop needs one dispatch per iteration instead of three.
+            /// </summary>
+            private bool TryCompileCountedLoop(ForStmt statement)
+            {
+                if (statement.Initializer is not LetStmt { Name: { } name, Initializer: { } initializer } ||
+                    statement.Increment is not IncrementExpr
+                    {
+                        Target: IdentifierExpr counter,
+                        Prefix: false,
+                    } increment ||
+                    counter.Name != name ||
+                    statement.Condition is not BinaryExpr condition)
+                {
+                    return false;
+                }
+
+                // Accept `i < n`, `i <= n`, `i > n`, `i >= n` and the mirrored forms.
+                var code = condition.Operator switch
+                {
+                    TokenKind.Less => CompareCode.Lt,
+                    TokenKind.LessEqual => CompareCode.Le,
+                    TokenKind.Greater => CompareCode.Gt,
+                    TokenKind.GreaterEqual => CompareCode.Ge,
+                    _ => (CompareCode?)null,
+                };
+
+                if (code is null)
+                {
+                    return false;
+                }
+
+                Expr bound;
+                if (condition.Left is IdentifierExpr left && left.Name == name)
+                {
+                    bound = condition.Right;
+                }
+                else if (condition.Right is IdentifierExpr right && right.Name == name)
+                {
+                    bound = condition.Left;
+                    code = Mirror(code.Value);
+                }
+                else
+                {
+                    return false;
+                }
+
+                if (bound is not LiteralExpr { Value: long limit } || limit is < int.MinValue or > int.MaxValue)
+                {
+                    return false;
+                }
+
+                var step = increment.Delta;
+                if (code == CompareCode.Lt || code == CompareCode.Le)
+                {
+                    if (step < 0)
+                    {
+                        return false;
+                    }
+                }
+                else if (step > 0)
+                {
+                    return false;
+                }
+
+                // The initialiser must be a plain counter declaration for this shape.
+                if (TryEvaluateConstant(initializer, out _))
+                {
+                    // falls through: constants are ideal, anything else is rejected below
+                }
+
+                CompileExpression(initializer);
+                var slot = DeclareLocal(name, isConst: false);
+                EmitStoreLocalPlain(slot);
+
+                var (prep, next) = code switch
+                {
+                    CompareCode.Lt => (Op.ForPrepLt, Op.ForNextLt),
+                    CompareCode.Le => (Op.ForPrepLe, Op.ForNextLe),
+                    CompareCode.Gt => (Op.ForPrepGt, Op.ForNextGt),
+                    _ => (Op.ForPrepGe, Op.ForNextGe),
+                };
+
+                var loop = new LoopContext
+                {
+                    ContinueTarget = -1,
+                    BreakJumps = new List<int>(),
+                    FinallyDepth = _finally.Count,
+                    ScopeDepth = _scopeDepth,
+                    ContinueJumps = new List<int>(),
+                };
+                _loops.Add(loop);
+
+                var exit = Emit(prep, slot, (int)limit, 0, pop: 0, push: 0);
+
+                var bodyStart = _code.Count;
+                PushScope();
+                CompileStatement(statement.Body);
+                PopScope();
+
+                // `continue` re-enters at the step, which is where ForNext sits.
+                var nextIndex = _code.Count;
+                foreach (var jump in loop.ContinueJumps)
+                {
+                    PatchTo(jump, nextIndex);
+                }
+
+                Emit(next, slot, (int)limit, bodyStart, pop: 0, push: 0);
+
+                PatchTo(exit, _code.Count);
+                foreach (var jump in loop.BreakJumps)
+                {
+                    PatchTo(jump, _code.Count);
+                }
+
+                _loops.RemoveAt(_loops.Count - 1);
+                return true;
+            }
+
             private void CompileFor(ForStmt statement)
             {
                 PushScope();
@@ -834,6 +995,12 @@ namespace TERN.Compiler
                 if (statement.Initializer is not null)
                 {
                     CompileStatement(statement.Initializer);
+                }
+
+                if (TryCompileCountedLoop(statement))
+                {
+                    PopScope();
+                    return;
                 }
 
                 var start = _code.Count;
@@ -861,11 +1028,27 @@ namespace TERN.Compiler
                 var incrementTarget = _code.Count;
                 if (statement.Increment is not null)
                 {
-                    CompileExpression(statement.Increment);
-                    Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                    // The increment's value is always discarded here, so `i++` becomes
+                    // a single IncLocal instead of load/increment/pop.
+                    CompileExpressionStatement(statement.Increment);
                 }
 
-                Emit(Op.Jump, start, 0, 0, pop: 0, push: 0);
+                // Fuse the increment with the back edge: one dispatch per iteration
+                // instead of two for the classic `for (...; i++)` loop.
+                if (statement.Increment is IncrementExpr
+                    {
+                        Target: IdentifierExpr counter,
+                    } increment && TryResolveLocal(counter.Name, out var counterLocal) &&
+                    _code.Count > 0 && _code[^1].Op == Op.IncLocal && _code[^1].A == counterLocal.Slot)
+                {
+                    _code.RemoveAt(_code.Count - 1);
+                    _lines.RemoveAt(_lines.Count - 1);
+                    Emit(Op.IncLocalJump, counterLocal.Slot, increment.Delta, start, pop: 0, push: 0);
+                }
+                else
+                {
+                    Emit(Op.Jump, start, 0, 0, pop: 0, push: 0);
+                }
 
                 if (exit is not null)
                 {
@@ -990,6 +1173,14 @@ namespace TERN.Compiler
                 if (statement.Value is null)
                 {
                     Emit(Op.ReturnNil, 0, 0, 0, pop: 0, push: 0);
+                    return;
+                }
+
+                // `return x;` where x is a local skips the stack entirely.
+                if (statement.Value is IdentifierExpr name && TryResolveLocal(name.Name, out var local) &&
+                    !local.IsConst)
+                {
+                    Emit(Op.ReturnLocal, local.Slot, 0, 0, pop: 0, push: 0);
                     return;
                 }
 
@@ -1210,6 +1401,11 @@ namespace TERN.Compiler
 
                 if (TryGetComparison(condition) is { } comparison)
                 {
+                    if (jumpWhenFalse && TryEmitFusedCompare(comparison))
+                    {
+                        return _lastFusedJump;
+                    }
+
                     CompileExpression(comparison.Left);
                     CompileExpression(comparison.Right);
                     return Emit(Op.JumpCmp, (int)comparison.Code, 0, jumpWhenFalse ? 0 : 1, pop: 2, push: 0);
@@ -1227,6 +1423,83 @@ namespace TERN.Compiler
                     ? Emit(Op.JumpIfFalse, 0, 0, 0, pop: 1, push: 0)
                     : Emit(Op.JumpIfTrue, 0, 0, 0, pop: 1, push: 0);
             }
+
+            private int _lastFusedJump = -1;
+
+            /// <summary>
+            /// Emits a single compare-and-branch instruction when both operands live in
+            /// registers (or one is a small integer). This removes two dispatches from
+            /// every loop iteration and every `if` in a hot path.
+            /// </summary>
+            private bool TryEmitFusedCompare((Expr Left, Expr Right, CompareCode Code) comparison)
+            {
+                var (left, right, code) = comparison;
+
+                if (left is IdentifierExpr leftName && TryResolveLocal(leftName.Name, out var leftLocal) &&
+                    TryGetSmallInt(right, out var constant))
+                {
+                    _lastFusedJump = Emit(FusedLocalIntOpcode(code), leftLocal.Slot, constant, 0, pop: 0, push: 0);
+                    return true;
+                }
+
+                if (right is IdentifierExpr rightName && TryResolveLocal(rightName.Name, out var rightLocal) &&
+                    TryGetSmallInt(left, out var value))
+                {
+                    // `2 <= n` is the same test as `n >= 2`.
+                    _lastFusedJump = Emit(FusedLocalIntOpcode(Mirror(code)), rightLocal.Slot, value, 0, pop: 0, push: 0);
+                    return true;
+                }
+
+                if (left is IdentifierExpr a && right is IdentifierExpr b &&
+                    TryResolveLocal(a.Name, out var slotA) && TryResolveLocal(b.Name, out var slotB))
+                {
+                    _lastFusedJump = Emit(FusedLocalLocalOpcode(code), slotA.Slot, slotB.Slot, 0, pop: 0, push: 0);
+                    return true;
+                }
+
+                return false;
+            }
+
+            private static CompareCode Mirror(CompareCode code) => code switch
+            {
+                CompareCode.Lt => CompareCode.Gt,
+                CompareCode.Le => CompareCode.Ge,
+                CompareCode.Gt => CompareCode.Lt,
+                CompareCode.Ge => CompareCode.Le,
+                _ => code,
+            };
+
+            private static bool TryGetSmallInt(Expr expression, out int value)
+            {
+                if (expression is LiteralExpr { Value: long number } && number is >= int.MinValue and <= int.MaxValue)
+                {
+                    value = (int)number;
+                    return true;
+                }
+
+                value = 0;
+                return false;
+            }
+
+            private static Op FusedLocalIntOpcode(CompareCode code) => code switch
+            {
+                CompareCode.Lt => Op.JumpLtLocalInt,
+                CompareCode.Le => Op.JumpLeLocalInt,
+                CompareCode.Gt => Op.JumpGtLocalInt,
+                CompareCode.Ge => Op.JumpGeLocalInt,
+                CompareCode.Eq => Op.JumpEqLocalInt,
+                _ => Op.JumpNeLocalInt,
+            };
+
+            private static Op FusedLocalLocalOpcode(CompareCode code) => code switch
+            {
+                CompareCode.Lt => Op.JumpLtLocalLocal,
+                CompareCode.Le => Op.JumpLeLocalLocal,
+                CompareCode.Gt => Op.JumpGtLocalLocal,
+                CompareCode.Ge => Op.JumpGeLocalLocal,
+                CompareCode.Eq => Op.JumpEqLocalLocal,
+                _ => Op.JumpNeLocalLocal,
+            };
 
             private enum CompareCode
             {
@@ -1946,7 +2219,127 @@ namespace TERN.Compiler
                 Emit(Op.Slice, slice.Inclusive ? 1 : 0, 0, 0, pop: 3, push: 1);
             }
 
-            private void CompileAssign(AssignExpr assign)
+            /// <summary>
+            /// Compiles an expression whose value is thrown away. Assignments and
+            /// increments to variables skip the trailing reload, which is what keeps
+            /// `total = total + 1;` and `i++` at two dispatches instead of four.
+            /// </summary>
+            private void CompileExpressionStatement(Expr expression)
+            {
+                switch (expression)
+                {
+                    case AssignExpr assign when assign.Target is IdentifierExpr:
+                        CompileAssign(assign, keepValue: false);
+                        return;
+
+                    case IncrementExpr increment when increment.Target is IdentifierExpr:
+                        CompileIncrement(increment, keepValue: false);
+                        return;
+
+                    case IfExpr or MatchExpr:
+                        // Values produced by block-shaped expressions are dropped by the
+                        // branches themselves; compiling them as statements avoids a Pop.
+                        CompileExpression(expression);
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                        return;
+
+                    default:
+                        CompileExpression(expression);
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                        return;
+                }
+            }
+
+            /// <summary>
+            /// Recognises `x = x + 1`, `x = x - y` and `x = x + (pure expression)` on a
+            /// local. These are one dispatch instead of three, and they cannot change
+            /// evaluation order because the right hand side is free of side effects.
+            /// </summary>
+            private bool TryCompileFusedSelfAssignment(AssignExpr assign, int slot, bool keepValue)
+            {
+                if (assign.Value is not BinaryExpr binary)
+                {
+                    return false;
+                }
+
+                var (other, mirrored) = binary.Left is IdentifierExpr left &&
+                                        TryResolveLocal(left.Name, out var leftLocal) && leftLocal.Slot == slot
+                    ? (binary.Right, false)
+                    : binary.Right is IdentifierExpr right &&
+                      TryResolveLocal(right.Name, out var rightLocal) && rightLocal.Slot == slot
+                        ? (binary.Left, true)
+                        : (null, false);
+
+                if (other is null)
+                {
+                    return false;
+                }
+
+                // x = y + x is the same as x = x + y; subtraction and division are not.
+                var op = binary.Operator;
+                if (mirrored && op != TokenKind.Plus && op != TokenKind.Star)
+                {
+                    return false;
+                }
+
+                var fusedStore = op switch
+                {
+                    TokenKind.Plus => (Op.AddLocalConstStore, Op.AddLocalLocalStore, Op.AddLocalStack),
+                    TokenKind.Minus => (Op.SubLocalConstStore, Op.SubLocalLocalStore, Op.SubLocalStack),
+                    _ => ((Op, Op, Op)?)null,
+                };
+
+                // Simple constant or local operands need no stack at all.
+                if (fusedStore is { } store)
+                {
+                    if (other is LiteralExpr { Value: long number } && number is >= int.MinValue and <= int.MaxValue)
+                    {
+                        Emit(store.Item1, slot, (int)number, 0, pop: 0, push: 0);
+                        EmitReloadAfterFusedStore(slot, keepValue);
+                        return true;
+                    }
+
+                    if (other is IdentifierExpr name && TryResolveLocal(name.Name, out var source))
+                    {
+                        Emit(store.Item2, slot, source.Slot, 0, pop: 0, push: 0);
+                        EmitReloadAfterFusedStore(slot, keepValue);
+                        return true;
+                    }
+                }
+
+                // Otherwise fall back to a stack based fusion when the right side is pure.
+                if (fusedStore is { } stackStore && IsPure(other))
+                {
+                    CompileExpression(other);
+                    Emit(stackStore.Item3, slot, 0, 0, pop: 1, push: 0);
+                    EmitReloadAfterFusedStore(slot, keepValue);
+                    return true;
+                }
+
+                return false;
+            }
+
+            private void EmitReloadAfterFusedStore(int slot, bool keepValue)
+            {
+                if (keepValue)
+                {
+                    EmitLoadLocal(slot);
+                }
+            }
+
+            /// <summary>True when evaluating the expression cannot call user code or mutate state.</summary>
+            private bool IsPure(Expr expression) => expression switch
+            {
+                LiteralExpr or IdentifierExpr or ThisExpr => true,
+                UnaryExpr unary => IsPure(unary.Operand),
+                BinaryExpr binary => IsPure(binary.Left) && IsPure(binary.Right),
+                TernaryExpr ternary => IsPure(ternary.Condition) && IsPure(ternary.WhenTrue) && IsPure(ternary.WhenFalse),
+                RangeExpr range => IsPure(range.Start) && (range.End is null || IsPure(range.End)),
+                ListExpr list => list.Items.TrueForAll(IsPure),
+                _ => false,
+            };
+
+            private void CompileAssign(AssignExpr assign, bool keepValue = true)
             {
                 var simple = assign.Operator == TokenKind.Equal;
 
@@ -1969,6 +2362,11 @@ namespace TERN.Compiler
 
                         if (simple)
                         {
+                            if (TryCompileFusedSelfAssignment(assign, local.Slot, keepValue))
+                            {
+                                return;
+                            }
+
                             CompileExpression(assign.Value);
                         }
                         else
@@ -1979,7 +2377,12 @@ namespace TERN.Compiler
                         }
 
                         EmitStoreLocal(local.Slot);
-                        EmitLoadLocal(local.Slot);
+
+                        if (keepValue)
+                        {
+                            EmitLoadLocal(local.Slot);
+                        }
+
                         return;
                     }
 
@@ -1998,7 +2401,12 @@ namespace TERN.Compiler
                         }
 
                         Emit(Op.StoreUpvalue, upvalue, 0, 0, pop: 1, push: 0);
-                        Emit(Op.LoadUpvalue, upvalue, 0, 0, pop: 0, push: 1);
+
+                        if (keepValue)
+                        {
+                            Emit(Op.LoadUpvalue, upvalue, 0, 0, pop: 0, push: 1);
+                        }
+
                         return;
                     }
 
@@ -2021,7 +2429,12 @@ namespace TERN.Compiler
                         }
 
                         Emit(Op.StoreGlobal, globalSlot, 0, 0, pop: 1, push: 0);
-                        Emit(Op.LoadGlobal, globalSlot, 0, 0, pop: 0, push: 1);
+
+                        if (keepValue)
+                        {
+                            Emit(Op.LoadGlobal, globalSlot, 0, 0, pop: 0, push: 1);
+                        }
+
                         return;
                     }
 
@@ -2116,13 +2529,13 @@ namespace TERN.Compiler
                 _ => null,
             };
 
-            private void CompileIncrement(IncrementExpr increment)
+            private void CompileIncrement(IncrementExpr increment, bool keepValue = true)
             {
                 if (increment.Target is IdentifierExpr identifier)
                 {
                     if (TryResolveLocal(identifier.Name, out var local))
                     {
-                        if (!increment.Prefix)
+                        if (!increment.Prefix && keepValue)
                         {
                             EmitLoadLocal(local.Slot);
                         }

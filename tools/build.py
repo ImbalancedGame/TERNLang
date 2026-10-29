@@ -125,7 +125,10 @@ def main() -> int:
     (OUT / f"{ASSEMBLY}.runtimeconfig.json").write_text(
         '{\n  "runtimeOptions": {\n    "tfm": "net10.0",\n'
         '    "framework": { "name": "Microsoft.NETCore.App", "version": "10.0.11" },\n'
-        '    "configProperties": { "System.Runtime.TieredPGO": true }\n  }\n}\n',
+        '    "configProperties": {\n'
+        '      "System.Runtime.TieredPGO": true,\n'
+        '      "System.Runtime.TieredCompilation.QuickJitForLoops": false\n'
+        '    }\n  }\n}\n',
         encoding="utf-8",
     )
     shutil.copyfile(DOTNET / "dotnet", OUT / "dotnet")

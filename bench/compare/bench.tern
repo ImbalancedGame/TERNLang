@@ -1,0 +1,49 @@
+// TERN comparison suite. Mirrors bench.lua / bench.js / BenchCsharp.cs.
+fn fib(n) {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn bench(name, body) {
+    let start = time.millis();
+    let result = body();
+    println("${name} ${result} ${time.millis() - start}");
+}
+
+bench("fib", fn() => fib(30));
+
+bench("loop", fn() {
+    let total = 0;
+    for (let i = 0; i < 5000000; i++) { total = total + i % 7; }
+    return total;
+});
+
+bench("maps", fn() {
+    let m = {};
+    for (let i = 0; i < 200000; i++) { m["key${i}"] = i; }
+    let sum = 0;
+    for (let i = 0; i < 200000; i++) { sum += m["key${i}"]; }
+    return sum;
+});
+
+struct Node { left, right }
+
+fn make(depth) {
+    if (depth == 0) { return nil; }
+    return Node(make(depth - 1), make(depth - 1));
+}
+
+fn count(node) {
+    if (node == nil) { return 0; }
+    return 1 + count(node.left) + count(node.right);
+}
+
+bench("bintree", fn() => count(make(16)));
+
+bench("strings", fn() {
+    let parts = [];
+    for (let i = 0; i < 20000; i++) { parts.push("item-${i}"); }
+    let text = parts.join(",");
+    let split = text.split(",");
+    return split.length + text.upper().length + text.length;
+});

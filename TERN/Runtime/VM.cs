@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Text;
 using TERN.Builtins;
 using TERN.Compiler;
@@ -61,11 +62,14 @@ namespace TERN.Runtime
             }
         }
 
+        private readonly int _maxCallDepth;
+        private readonly long _maxInstructions;
+
         private Value[] _stack = new Value[256];
         private int _sp;
         private Value[] _locals = new Value[256];
         private int _localsTop;
-        private Frame[] _frames = new Frame[64];
+        private Frame[] _frames = CreateFrames(64);
         private int _frameCount;
         private readonly List<Handler> _handlers = new();
         private long _steps;
@@ -75,6 +79,8 @@ namespace TERN.Runtime
         public VM(VmOptions? options = null)
         {
             Options = options ?? new VmOptions();
+            _maxCallDepth = Options.MaxCallDepth;
+            _maxInstructions = Options.MaxInstructions;
         }
 
         public VmOptions Options { get; }
@@ -164,11 +170,6 @@ namespace TERN.Runtime
                 {
                 while (true)
                 {
-                    if ((_steps++ & 0x0FFF) == 0)
-                    {
-                        CheckBudget(frame, ip);
-                    }
-
                     var instruction = code[ip++];
 
                     switch (instruction.Op)
@@ -213,18 +214,12 @@ namespace TERN.Runtime
                             break;
 
                         case Op.LoadLocal:
-                        {
-                            locals = _locals;
-                            Push(locals[frameBase + instruction.A]);
+                            Push(_locals[frameBase + instruction.A]);
                             break;
-                        }
 
                         case Op.StoreLocal:
-                        {
-                            locals = _locals;
-                            locals[frameBase + instruction.A] = _stack[--_sp];
+                            _locals[frameBase + instruction.A] = _stack[--_sp];
                             break;
-                        }
 
                         case Op.LoadGlobal when module is not null:
                             Push(module.Globals[instruction.A]);
@@ -242,10 +237,267 @@ namespace TERN.Runtime
                             frame.Closure!.Upvalues[instruction.A].Set(_stack[--_sp]);
                             break;
 
+                        case Op.AddStoreLocal:
+                        case Op.SubStoreLocal:
+                        case Op.MulStoreLocal:
+                        case Op.ModStoreLocal:
+                        {
+                            var right = _stack[--_sp];
+                            var left = _stack[--_sp];
+                            var op = instruction.Op switch
+                            {
+                                Op.AddStoreLocal => Op.Add,
+                                Op.SubStoreLocal => Op.Sub,
+                                Op.MulStoreLocal => Op.Mul,
+                                _ => Op.Mod,
+                            };
+
+                            var slot = frameBase + instruction.A;
+
+                            if (left.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
+                            {
+                                var a = left.AsInt();
+                                var b = right.AsInt();
+                                _locals[slot] = op switch
+                                {
+                                    Op.Add => new Value(unchecked(a + b)),
+                                    Op.Sub => new Value(unchecked(a - b)),
+                                    Op.Mul => new Value(unchecked(a * b)),
+                                    _ => new Value(a % b),
+                                };
+
+                                break;
+                            }
+
+                            _locals[slot] = BinaryOp(op, left, right);
+                            break;
+                        }
+
+                        case Op.DivStoreLocal:
+                        {
+                            var right = _stack[--_sp];
+                            var left = _stack[--_sp];
+                            _locals[frameBase + instruction.A] = BinaryOp(Op.Div, left, right);
+                            break;
+                        }
+
+                        // `x = x <op> y` fused with the store: no stack traffic at all.
+                        case Op.AddLocalConstStore:
+                        case Op.SubLocalConstStore:
+                        {
+                            ref var cell = ref _locals[frameBase + instruction.A];
+                            var current = cell;
+                            var delta = instruction.B;
+
+                            if (current.Kind == ValueKind.Int)
+                            {
+                                cell = new Value(instruction.Op == Op.AddLocalConstStore
+                                    ? unchecked(current.AsInt() + delta)
+                                    : unchecked(current.AsInt() - delta));
+                                break;
+                            }
+
+                            cell = ArithmeticOp(
+                                instruction.Op == Op.AddLocalConstStore ? Op.Add : Op.Sub,
+                                current,
+                                new Value((long)delta));
+                            break;
+                        }
+
+                        case Op.AddLocalLocalStore:
+                        case Op.SubLocalLocalStore:
+                        {
+                            ref var cell = ref _locals[frameBase + instruction.A];
+                            var current = cell;
+                            var other = _locals[frameBase + instruction.B];
+
+                            if (current.Kind == ValueKind.Int && other.Kind == ValueKind.Int)
+                            {
+                                cell = new Value(instruction.Op == Op.AddLocalLocalStore
+                                    ? unchecked(current.AsInt() + other.AsInt())
+                                    : unchecked(current.AsInt() - other.AsInt()));
+                                break;
+                            }
+
+                            cell = ArithmeticOp(
+                                instruction.Op == Op.AddLocalLocalStore ? Op.Add : Op.Sub,
+                                current,
+                                other);
+                            break;
+                        }
+
+                        case Op.AddLocalStack:
+                        case Op.SubLocalStack:
+                        {
+                            var right = _stack[--_sp];
+                            ref var cell = ref _locals[frameBase + instruction.A];
+                            var current = cell;
+
+                            if (current.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
+                            {
+                                cell = new Value(instruction.Op == Op.AddLocalStack
+                                    ? unchecked(current.AsInt() + right.AsInt())
+                                    : unchecked(current.AsInt() - right.AsInt()));
+                                break;
+                            }
+
+                            cell = ArithmeticOp(
+                                instruction.Op == Op.AddLocalStack ? Op.Add : Op.Sub,
+                                current,
+                                right);
+                            break;
+                        }
+
+                        // Counted loops: one dispatch per iteration for `for (let i = a; i < n; i++)`.
+                        case Op.ForPrepLt:
+                        case Op.ForPrepLe:
+                        case Op.ForPrepGt:
+                        case Op.ForPrepGe:
+                        {
+                            var counter = _locals[frameBase + instruction.A];
+                            if (counter.Kind != ValueKind.Int)
+                            {
+                                throw Error("TypeError",
+                                    $"cannot compare {TypeName(counter)} with an integer loop bound");
+                            }
+
+                            var value = counter.AsInt();
+                            var limit = (long)instruction.B;
+                            var run = instruction.Op switch
+                            {
+                                Op.ForPrepLt => value < limit,
+                                Op.ForPrepLe => value <= limit,
+                                Op.ForPrepGt => value > limit,
+                                _ => value >= limit,
+                            };
+
+                            if (!run)
+                            {
+                                ip = instruction.C;
+                            }
+
+                            break;
+                        }
+
+                        case Op.ForNextLt:
+                        {
+                            ref var counter = ref _locals[frameBase + instruction.A];
+                            if (counter.Kind != ValueKind.Int)
+                            {
+                                LoopCounterNotInt(counter);
+                            }
+
+                            var value = counter.AsInt() + 1;
+                            counter = new Value(value);
+
+                            if (value < (long)instruction.B)
+                            {
+                                if (++_steps > _maxInstructions)
+                                {
+                                    CheckBudget(frame, ip);
+                                }
+
+                                ip = instruction.C;
+                            }
+
+                            break;
+                        }
+
+                        case Op.ForNextLe:
+                        {
+                            ref var counter = ref _locals[frameBase + instruction.A];
+                            if (counter.Kind != ValueKind.Int)
+                            {
+                                LoopCounterNotInt(counter);
+                            }
+
+                            var value = counter.AsInt() + 1;
+                            counter = new Value(value);
+
+                            if (value <= (long)instruction.B)
+                            {
+                                if (++_steps > _maxInstructions)
+                                {
+                                    CheckBudget(frame, ip);
+                                }
+
+                                ip = instruction.C;
+                            }
+
+                            break;
+                        }
+
+                        case Op.ForNextGt:
+                        {
+                            ref var counter = ref _locals[frameBase + instruction.A];
+                            if (counter.Kind != ValueKind.Int)
+                            {
+                                LoopCounterNotInt(counter);
+                            }
+
+                            var value = counter.AsInt() - 1;
+                            counter = new Value(value);
+
+                            if (value > (long)instruction.B)
+                            {
+                                if (++_steps > _maxInstructions)
+                                {
+                                    CheckBudget(frame, ip);
+                                }
+
+                                ip = instruction.C;
+                            }
+
+                            break;
+                        }
+
+                        case Op.ForNextGe:
+                        {
+                            ref var counter = ref _locals[frameBase + instruction.A];
+                            if (counter.Kind != ValueKind.Int)
+                            {
+                                LoopCounterNotInt(counter);
+                            }
+
+                            var value = counter.AsInt() - 1;
+                            counter = new Value(value);
+
+                            if (value >= (long)instruction.B)
+                            {
+                                if (++_steps > _maxInstructions)
+                                {
+                                    CheckBudget(frame, ip);
+                                }
+
+                                ip = instruction.C;
+                            }
+
+                            break;
+                        }
+
+                        case Op.IncLocalJump:
+                        {
+                            ref var cell = ref _locals[frameBase + instruction.A];
+                            var current = cell;
+                            cell = current.Kind switch
+                            {
+                                ValueKind.Int => new Value(unchecked(current.AsInt() + instruction.B)),
+                                ValueKind.Float => new Value(current.AsDouble() + instruction.B),
+                                _ => throw Error("TypeError", $"cannot increment {TypeName(current)}"),
+                            };
+
+                            if (++_steps > _maxInstructions)
+                            {
+                                CheckBudget(frame, ip);
+                            }
+
+                            ip = instruction.C;
+                            break;
+                        }
+
                         case Op.IncLocal:
                         {
-                            locals = _locals;
-                            ref var cell = ref locals[frameBase + instruction.A];
+                            ref var cell = ref _locals[frameBase + instruction.A];
                             var current = cell;
                             if (current.Kind == ValueKind.Int)
                             {
@@ -264,8 +516,7 @@ namespace TERN.Runtime
 
                         case Op.ArgOrJump:
                         {
-                            locals = _locals;
-                            if (locals[frameBase + instruction.A].Kind != ValueKind.Missing)
+                            if (_locals[frameBase + instruction.A].Kind != ValueKind.Missing)
                             {
                                 ip = instruction.B;
                             }
@@ -477,7 +728,67 @@ namespace TERN.Runtime
                         {
                             var right = _stack[--_sp];
                             var left = _stack[--_sp];
+
+                            // Integers dominate real scripts, so they skip the
+                            // generic dispatch in BinaryOp entirely.
+                            if (left.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
+                            {
+                                var a = left.AsInt();
+                                var b = right.AsInt();
+
+                                switch (instruction.Op)
+                                {
+                                    case Op.Add:
+                                        Push(new Value(unchecked(a + b)));
+                                        goto binaryDone;
+                                    case Op.Sub:
+                                        Push(new Value(unchecked(a - b)));
+                                        goto binaryDone;
+                                    case Op.Mul:
+                                        Push(new Value(unchecked(a * b)));
+                                        goto binaryDone;
+                                    case Op.Mod when b != 0:
+                                        Push(new Value(a % b));
+                                        goto binaryDone;
+                                    case Op.BAnd:
+                                        Push(new Value(a & b));
+                                        goto binaryDone;
+                                    case Op.BOr:
+                                        Push(new Value(a | b));
+                                        goto binaryDone;
+                                    case Op.BXor:
+                                        Push(new Value(a ^ b));
+                                        goto binaryDone;
+                                    case Op.Shl:
+                                        Push(new Value(a << (int)(b & 63)));
+                                        goto binaryDone;
+                                    case Op.Shr:
+                                        Push(new Value(a >> (int)(b & 63)));
+                                        goto binaryDone;
+                                    case Op.Lt:
+                                        Push(Value.Bool(a < b));
+                                        goto binaryDone;
+                                    case Op.Le:
+                                        Push(Value.Bool(a <= b));
+                                        goto binaryDone;
+                                    case Op.Gt:
+                                        Push(Value.Bool(a > b));
+                                        goto binaryDone;
+                                    case Op.Ge:
+                                        Push(Value.Bool(a >= b));
+                                        goto binaryDone;
+                                    case Op.Eq:
+                                        Push(Value.Bool(a == b));
+                                        goto binaryDone;
+                                    case Op.Ne:
+                                        Push(Value.Bool(a != b));
+                                        goto binaryDone;
+                                }
+                            }
+
                             Push(BinaryOp(instruction.Op, left, right));
+
+                        binaryDone:
                             break;
                         }
 
@@ -487,9 +798,25 @@ namespace TERN.Runtime
                         case Op.DivLocalLocal:
                         case Op.ModLocalLocal:
                         {
-                            locals = _locals;
-                            var left = locals[frameBase + instruction.A];
-                            var right = locals[frameBase + instruction.B];
+                            var left = _locals[frameBase + instruction.A];
+                            var right = _locals[frameBase + instruction.B];
+
+                            if (left.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
+                            {
+                                var a = left.AsInt();
+                                var b = right.AsInt();
+                                Push(instruction.Op switch
+                                {
+                                    Op.AddLocalLocal => new Value(unchecked(a + b)),
+                                    Op.SubLocalLocal => new Value(unchecked(a - b)),
+                                    Op.MulLocalLocal => new Value(unchecked(a * b)),
+                                    Op.ModLocalLocal when b != 0 => new Value(a % b),
+                                    _ => ArithmeticOp(instruction.Op, left, right),
+                                });
+
+                                break;
+                            }
+
                             Push(ArithmeticOp(instruction.Op, left, right));
                             break;
                         }
@@ -500,9 +827,26 @@ namespace TERN.Runtime
                         case Op.DivLocalConst:
                         case Op.ModLocalConst:
                         {
-                            locals = _locals;
-                            var left = locals[frameBase + instruction.A];
-                            Push(ArithmeticOp(instruction.Op, left, constants[instruction.B]));
+                            var left = _locals[frameBase + instruction.A];
+                            var right = constants[instruction.B];
+
+                            if (left.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
+                            {
+                                var a = left.AsInt();
+                                var b = right.AsInt();
+                                Push(instruction.Op switch
+                                {
+                                    Op.AddLocalConst => new Value(unchecked(a + b)),
+                                    Op.SubLocalConst => new Value(unchecked(a - b)),
+                                    Op.MulLocalConst => new Value(unchecked(a * b)),
+                                    Op.ModLocalConst when b != 0 => new Value(a % b),
+                                    _ => ArithmeticOp(instruction.Op, left, right),
+                                });
+
+                                break;
+                            }
+
+                            Push(ArithmeticOp(instruction.Op, left, right));
                             break;
                         }
 
@@ -541,6 +885,14 @@ namespace TERN.Runtime
                         }
 
                         case Op.Jump:
+                            // Every loop back edge is an unconditional jump, so counting
+                            // steps here is enough to stop runaway scripts while keeping
+                            // the per-instruction dispatch free of bookkeeping.
+                            if (++_steps > _maxInstructions)
+                            {
+                                CheckBudget(frame, ip);
+                            }
+
                             ip = instruction.A;
                             break;
 
@@ -612,6 +964,109 @@ namespace TERN.Runtime
                             if (locals[frameBase + instruction.A].Kind != ValueKind.List)
                             {
                                 ip = instruction.B;
+                            }
+
+                            break;
+                        }
+
+                        // Fused numeric compare and branch: one dispatch instead of three.
+                        case Op.JumpLtLocalInt:
+                        case Op.JumpLeLocalInt:
+                        case Op.JumpGtLocalInt:
+                        case Op.JumpGeLocalInt:
+                        case Op.JumpEqLocalInt:
+                        case Op.JumpNeLocalInt:
+                        {
+                            var cell = _locals[frameBase + instruction.A];
+
+                            if (cell.Kind == ValueKind.Int)
+                            {
+                                var left = cell.AsInt();
+                                var right = instruction.B;
+                                var take = instruction.Op switch
+                                {
+                                    Op.JumpLtLocalInt => left < right,
+                                    Op.JumpLeLocalInt => left <= right,
+                                    Op.JumpGtLocalInt => left > right,
+                                    Op.JumpGeLocalInt => left >= right,
+                                    Op.JumpEqLocalInt => left == right,
+                                    _ => left != right,
+                                };
+
+                                if (!take)
+                                {
+                                    ip = instruction.C;
+                                }
+
+                                break;
+                            }
+
+                            // Slow path: floats, strings, and other comparable values.
+                            var slowResult = CompareLocalToInt(cell, instruction.B);
+                            var slowTake = instruction.Op switch
+                            {
+                                Op.JumpLtLocalInt => slowResult < 0,
+                                Op.JumpLeLocalInt => slowResult <= 0,
+                                Op.JumpGtLocalInt => slowResult > 0,
+                                Op.JumpGeLocalInt => slowResult >= 0,
+                                Op.JumpEqLocalInt => slowResult == 0,
+                                _ => slowResult != 0,
+                            };
+
+                            if (!slowTake)
+                            {
+                                ip = instruction.C;
+                            }
+
+                            break;
+                        }
+
+                        case Op.JumpLtLocalLocal:
+                        case Op.JumpLeLocalLocal:
+                        case Op.JumpGtLocalLocal:
+                        case Op.JumpGeLocalLocal:
+                        case Op.JumpEqLocalLocal:
+                        case Op.JumpNeLocalLocal:
+                        {
+                            var leftCell = _locals[frameBase + instruction.A];
+                            var rightCell = _locals[frameBase + instruction.B];
+
+                            if (leftCell.Kind == ValueKind.Int && rightCell.Kind == ValueKind.Int)
+                            {
+                                var left = leftCell.AsInt();
+                                var right = rightCell.AsInt();
+                                var take = instruction.Op switch
+                                {
+                                    Op.JumpLtLocalLocal => left < right,
+                                    Op.JumpLeLocalLocal => left <= right,
+                                    Op.JumpGtLocalLocal => left > right,
+                                    Op.JumpGeLocalLocal => left >= right,
+                                    Op.JumpEqLocalLocal => left == right,
+                                    _ => left != right,
+                                };
+
+                                if (!take)
+                                {
+                                    ip = instruction.C;
+                                }
+
+                                break;
+                            }
+
+                            var result = CompareOrThrow(leftCell, rightCell);
+                            var slowTake = instruction.Op switch
+                            {
+                                Op.JumpLtLocalLocal => result < 0,
+                                Op.JumpLeLocalLocal => result <= 0,
+                                Op.JumpGtLocalLocal => result > 0,
+                                Op.JumpGeLocalLocal => result >= 0,
+                                Op.JumpEqLocalLocal => result == 0,
+                                _ => result != 0,
+                            };
+
+                            if (!slowTake)
+                            {
+                                ip = instruction.C;
                             }
 
                             break;
@@ -741,6 +1196,52 @@ namespace TERN.Runtime
                         case Op.Return:
                         {
                             var result = _stack[--_sp];
+
+                            // Inline fast path: no open upvalues and no active handlers.
+                            if (frame.OpenUpvalues is null && _handlers.Count == 0)
+                            {
+                                _frameCount--;
+                                _sp = frame.StackBase;
+                                _localsTop = frame.LocalsBase;
+
+                                if (_frameCount <= frameFloor)
+                                {
+                                    return result;
+                                }
+
+                                Push(result);
+                                goto nextFrame;
+                            }
+
+                            frame.Ip = ip;
+
+                            if (ReturnFrame(result, frameFloor))
+                            {
+                                return result;
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.ReturnLocal:
+                        {
+                            var result = _locals[frameBase + instruction.A];
+
+                            if (frame.OpenUpvalues is null && _handlers.Count == 0)
+                            {
+                                _frameCount--;
+                                _sp = frame.StackBase;
+                                _localsTop = frame.LocalsBase;
+
+                                if (_frameCount <= frameFloor)
+                                {
+                                    return result;
+                                }
+
+                                Push(result);
+                                goto nextFrame;
+                            }
+
                             frame.Ip = ip;
 
                             if (ReturnFrame(result, frameFloor))
@@ -858,16 +1359,32 @@ namespace TERN.Runtime
 
         // ------------------------------------------------------------------ stack
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void Push(in Value value)
         {
+            // Frames reserve `StackSize` slots when they are entered, so this is
+            // a de-facto never-taken guard that keeps the JIT from eliding safety.
             if (_sp >= _stack.Length)
             {
-                Array.Resize(ref _stack, _stack.Length * 2);
+                GrowStack(_sp + 1);
             }
 
             _stack[_sp++] = value;
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void GrowStack(int needed)
+        {
+            var size = _stack.Length;
+            while (size < needed)
+            {
+                size *= 2;
+            }
+
+            Array.Resize(ref _stack, size);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private Value Pop() => _stack[--_sp];
 
         private void EnsureLocals(int needed)
@@ -923,36 +1440,84 @@ namespace TERN.Runtime
 
         // ------------------------------------------------------------------ frames
 
-        private Frame AllocateFrame()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnsureLocalsFast(int needed)
         {
-            if (_frameCount == _frames.Length)
+            if (needed > _locals.Length)
             {
-                Array.Resize(ref _frames, _frames.Length * 2);
+                GrowLocals(needed);
             }
-
-            var index = _frameCount++;
-            var frame = _frames[index];
-            if (frame is null)
-            {
-                frame = new Frame();
-                _frames[index] = frame;
-            }
-
-            return frame;
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void GrowLocals(int needed)
+        {
+            var size = _locals.Length;
+            while (size < needed)
+            {
+                size *= 2;
+            }
+
+            Array.Resize(ref _locals, size);
+        }
+
+        private static Frame[] CreateFrames(int count)
+        {
+            var frames = new Frame[count];
+            for (var i = 0; i < count; i++)
+            {
+                frames[i] = new Frame();
+            }
+
+            return frames;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void GrowFrames()
+        {
+            var old = _frames.Length;
+            var frames = new Frame[old * 2];
+            Array.Copy(_frames, frames, old);
+            for (var i = old; i < frames.Length; i++)
+            {
+                frames[i] = new Frame();
+            }
+
+            _frames = frames;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void PushFrame(TernClosure closure, int argc, int stackBase, bool isMethod)
         {
             var proto = closure.Proto;
 
-            if (_frameCount >= Options.MaxCallDepth)
+            if (_frameCount >= _maxCallDepth)
             {
-                throw Error("StackOverflow", $"call depth exceeded {Options.MaxCallDepth}");
+                ThrowDepthExceeded();
             }
 
-            EnsureLocals(_localsTop + proto.LocalCount);
+            var localCount = proto.LocalCount > 0 ? proto.LocalCount : 1;
+            var needed = _localsTop + localCount;
+            if (needed > _locals.Length)
+            {
+                GrowLocals(needed);
+            }
 
-            var frame = AllocateFrame();
+            if (_frameCount == _frames.Length)
+            {
+                GrowFrames();
+            }
+
+            var frame = _frames[_frameCount++];
+
+            // Reserve the callee's whole expression stack up front so the hot
+            // opcode handlers never have to grow it mid-frame.
+            var stackNeed = stackBase + proto.MaxStack;
+            if (stackNeed > _stack.Length)
+            {
+                GrowStack(stackNeed);
+            }
+
             frame.Closure = closure;
             frame.Module = closure.Module;
             frame.Code = proto.Instructions;
@@ -964,66 +1529,176 @@ namespace TERN.Runtime
             frame.IsMethod = isMethod;
             frame.OpenUpvalues?.Clear();
 
-            _localsTop += Math.Max(proto.LocalCount, 1);
+            _localsTop += localCount;
         }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void LoopCounterNotInt(in Value counter) =>
+            throw Error("TypeError", $"loop counter became {TypeName(counter)}; it must stay an integer");
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ThrowDepthExceeded() =>
+            throw Error("StackOverflow", $"call depth exceeded {_maxCallDepth}");
 
         /// <summary>
         /// Sets up a call. Closures, natives, bound methods and struct types are
         /// handled here; natives are invoked immediately and never allocate a frame.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private bool TryEnterCall(in Value callee, int argc, int argsBase, int resultSlot)
+        {
+            if (callee.Kind == ValueKind.Closure)
+            {
+                EnterClosure(callee.AsClosure(), argc, argsBase, resultSlot);
+                return true;
+            }
+
+            return TryEnterNonClosure(callee, argc, argsBase, resultSlot);
+        }
+
+        /// <summary>
+        /// Enters a TERN function. Kept small and branch-predictable: the exact arity
+        /// case (no defaults, no rest) is the one every recursive benchmark hits.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void EnterClosure(TernClosure closure, int argc, int argsBase, int resultSlot)
+        {
+            var proto = closure.Proto;
+
+            // Fast path: exactly the declared number of arguments.
+            if (argc == proto.ParamCount && !proto.HasRest)
+            {
+                PushFrame(closure, argc, resultSlot, proto.IsMethod);
+
+                var baseSlot = _localsTop - (proto.LocalCount > 0 ? proto.LocalCount : 1);
+                var target = baseSlot + (proto.IsMethod ? 1 : 0);
+
+                // Small arities dominate; an unrolled copy beats Array.Copy there.
+                switch (argc)
+                {
+                    case 0:
+                        break;
+                    case 1:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        break;
+                    case 2:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        _locals[target + 1] = _stack[argsBase + 1];
+                        break;
+                    case 3:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        _locals[target + 1] = _stack[argsBase + 1];
+                        _locals[target + 2] = _stack[argsBase + 2];
+                        break;
+                    case 4:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        _locals[target + 1] = _stack[argsBase + 1];
+                        _locals[target + 2] = _stack[argsBase + 2];
+                        _locals[target + 3] = _stack[argsBase + 3];
+                        break;
+                    case 5:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        _locals[target + 1] = _stack[argsBase + 1];
+                        _locals[target + 2] = _stack[argsBase + 2];
+                        _locals[target + 3] = _stack[argsBase + 3];
+                        _locals[target + 4] = _stack[argsBase + 4];
+                        break;
+                    case 6:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        _locals[target + 1] = _stack[argsBase + 1];
+                        _locals[target + 2] = _stack[argsBase + 2];
+                        _locals[target + 3] = _stack[argsBase + 3];
+                        _locals[target + 4] = _stack[argsBase + 4];
+                        _locals[target + 5] = _stack[argsBase + 5];
+                        break;
+                    case 7:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        _locals[target + 1] = _stack[argsBase + 1];
+                        _locals[target + 2] = _stack[argsBase + 2];
+                        _locals[target + 3] = _stack[argsBase + 3];
+                        _locals[target + 4] = _stack[argsBase + 4];
+                        _locals[target + 5] = _stack[argsBase + 5];
+                        _locals[target + 6] = _stack[argsBase + 6];
+                        break;
+                    case 8:
+                        _locals[target + 0] = _stack[argsBase + 0];
+                        _locals[target + 1] = _stack[argsBase + 1];
+                        _locals[target + 2] = _stack[argsBase + 2];
+                        _locals[target + 3] = _stack[argsBase + 3];
+                        _locals[target + 4] = _stack[argsBase + 4];
+                        _locals[target + 5] = _stack[argsBase + 5];
+                        _locals[target + 6] = _stack[argsBase + 6];
+                        _locals[target + 7] = _stack[argsBase + 7];
+                        break;
+                    default:
+                        Array.Copy(_stack, argsBase, _locals, target, argc);
+                        break;
+                }
+                if (proto.IsMethod)
+                {
+                    _locals[baseSlot] = Value.Nil;
+                }
+
+                _sp = resultSlot;
+                return;
+            }
+
+            EnterClosureSlow(closure, argc, argsBase, resultSlot);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void EnterClosureSlow(TernClosure closure, int argc, int argsBase, int resultSlot)
+        {
+            var proto = closure.Proto;
+
+            if (argc < proto.RequiredParams)
+            {
+                throw Error("ArgumentError",
+                    $"{proto.Name ?? "function"}() expects at least {proto.RequiredParams} argument(s) but got {argc}");
+            }
+
+            if (!proto.HasRest && argc > proto.ParamCount)
+            {
+                throw Error("ArgumentError",
+                    $"{proto.Name ?? "function"}() expects at most {proto.ParamCount} argument(s) but got {argc}");
+            }
+
+            PushFrame(closure, argc, resultSlot, proto.IsMethod);
+
+            var frame = _frames[_frameCount - 1];
+            var baseSlot = frame.LocalsBase;
+            var offset = proto.IsMethod ? 1 : 0;
+
+            if (proto.IsMethod)
+            {
+                // Called without a receiver: `this` is nil, fields are unavailable.
+                _locals[baseSlot] = Value.Nil;
+            }
+
+            for (var i = 0; i < proto.ParamCount; i++)
+            {
+                _locals[baseSlot + offset + i] = i < argc ? _stack[argsBase + i] : Value.Missing;
+            }
+
+            if (proto.HasRest)
+            {
+                var rest = new TernList(Math.Max(0, argc - proto.ParamCount));
+                for (var i = proto.ParamCount; i < argc; i++)
+                {
+                    rest.Add(_stack[argsBase + i]);
+                }
+
+                _locals[baseSlot + offset + proto.ParamCount] = Value.Of(rest);
+            }
+
+            _sp = resultSlot;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private bool TryEnterNonClosure(in Value callee, int argc, int argsBase, int resultSlot)
         {
             switch (callee.Kind)
             {
-                case ValueKind.Closure:
-                {
-                    var closure = callee.AsClosure();
-                    var proto = closure.Proto;
-
-                    if (argc < proto.RequiredParams)
-                    {
-                        throw Error("ArgumentError",
-                            $"{proto.Name ?? "function"}() expects at least {proto.RequiredParams} argument(s) but got {argc}");
-                    }
-
-                    if (!proto.HasRest && argc > proto.ParamCount)
-                    {
-                        throw Error("ArgumentError",
-                            $"{proto.Name ?? "function"}() expects at most {proto.ParamCount} argument(s) but got {argc}");
-                    }
-
-                    PushFrame(closure, argc, resultSlot, proto.IsMethod);
-
-                    var frame = _frames[_frameCount - 1];
-                    var baseSlot = frame.LocalsBase;
-                    var offset = proto.IsMethod ? 1 : 0;
-
-                    if (proto.IsMethod)
-                    {
-                        // Called without a receiver: `this` is nil, fields are unavailable.
-                        _locals[baseSlot] = Value.Nil;
-                    }
-
-                    for (var i = 0; i < proto.ParamCount; i++)
-                    {
-                        _locals[baseSlot + offset + i] = i < argc ? _stack[argsBase + i] : Value.Missing;
-                    }
-
-                    if (proto.HasRest)
-                    {
-                        var rest = new TernList(Math.Max(0, argc - proto.ParamCount));
-                        for (var i = proto.ParamCount; i < argc; i++)
-                        {
-                            rest.Add(_stack[argsBase + i]);
-                        }
-
-                        _locals[baseSlot + offset + proto.ParamCount] = Value.Of(rest);
-                    }
-
-                    _sp = resultSlot;
-                    return true;
-                }
-
                 case ValueKind.Native:
                 {
                     var native = callee.AsNative();
@@ -1922,6 +2597,17 @@ namespace TERN.Runtime
             return target.Kind == ValueKind.List
                 ? Value.Of(target.AsList().Slice((int)from, (int)to))
                 : Value.Str(target.AsString().Substring((int)from, (int)(to - from)));
+        }
+
+        /// <summary>Compares a local against an integer constant, supporting floats and strings.</summary>
+        private int CompareLocalToInt(in Value cell, int constant)
+        {
+            if (cell.Kind == ValueKind.Float)
+            {
+                return cell.AsDouble().CompareTo((double)constant);
+            }
+
+            return CompareOrThrow(cell, new Value((long)constant));
         }
 
         private long RequireInteger(in Value value, string what) => value.Kind switch

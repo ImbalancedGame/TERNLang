@@ -1,0 +1,52 @@
+// Counted-loop lowering edge cases: inclusive bounds, descending steps, mutation,
+// nesting, break/continue through finally, and non-integer accumulators.
+for (let i = 0; i <= 2; i++) { print("le" + i + " "); }
+println("");
+for (let i = 3; i > 0; i--) { print("gt" + i + " "); }
+println("");
+for (let i = 3; i >= 1; i--) { print("ge" + i + " "); }
+println("");
+
+for (let i = 0; i < 5; i++) { i = i + 1; print("j" + i + " "); }
+println("");
+
+for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 2; j++) { print(i * 10 + j); }
+}
+println("");
+
+let s = 0;
+for (let i = 0; i < 10; i++) {
+    if (i == 2) { continue; }
+    if (i == 4) { break; }
+    s += i;
+}
+println("bc " + s);
+
+for (let i = 0; i < 3; i++) {
+    try {
+        if (i == 1) { break; }
+        print("t" + i + " ");
+    } finally {
+        println("fin" + i);
+    }
+}
+
+let f = 0.0;
+for (let i = 0; i < 4; i++) { f = f + 0.25; }
+println("float " + f);
+
+let acc = "";
+for (let i = 0; i < 3; i++) { acc = acc + i; }
+println("str " + acc);
+
+let arr = [];
+for (let i = 0; i < 3; i++) { arr.push(i * i); }
+println(arr);
+
+fn sumTo(n) {
+    let t = 0;
+    for (let i = 1; i <= n; i++) { t = t + i; }
+    return t;
+}
+println("sum " + sumTo(10) + " " + sumTo(0));

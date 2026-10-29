@@ -95,6 +95,24 @@ namespace TERN.Compiler
         Invoke,           // A = name constant, B = argument count
         Return,
         ReturnNil,
+        ReturnLocal,      // A = slot; returns the local directly
+
+        // fused arithmetic-into-local: pops two values, stores into A, pushes nothing
+        AddStoreLocal, SubStoreLocal, MulStoreLocal, DivStoreLocal, ModStoreLocal,
+
+        // loop back edge: increments A by B, then jumps to C
+        IncLocalJump,
+
+        // `x = x <op> y` where y is a constant or another local: one dispatch, no stack traffic
+        AddLocalConstStore, SubLocalConstStore, AddLocalLocalStore, SubLocalLocalStore,
+
+        // `x = x <op> <pure expression>`: the expression leaves its value on the stack
+        AddLocalStack, SubLocalStack,
+
+        // counted loops with a constant bound and a step of one.
+        // ForPrepLt A=counter, B=limit, C=exit    (jump to exit when the loop cannot run)
+        // ForNextLt A=counter, B=limit, C=body    (step, then loop while the bound holds)
+        ForPrepLt, ForNextLt, ForPrepLe, ForNextLe, ForPrepGt, ForNextGt, ForPrepGe, ForNextGe,
         MakeClosure,      // A = prototype index
         CloseUpvalues,    // A = first slot to close
 
@@ -110,6 +128,11 @@ namespace TERN.Compiler
         EnterTry,         // A = handler target
         ExitTry,
         Throw,
+
+        // fused compare and jump (numeric fast paths for loop conditions)
+        // A = first local slot, B = second slot or integer constant, C = false target
+        JumpLtLocalInt, JumpLeLocalInt, JumpGtLocalInt, JumpGeLocalInt, JumpEqLocalInt, JumpNeLocalInt,
+        JumpLtLocalLocal, JumpLeLocalLocal, JumpGtLocalLocal, JumpGeLocalLocal, JumpEqLocalLocal, JumpNeLocalLocal,
 
         // operators and slicing
         In,               // pops item, container; pushes bool
