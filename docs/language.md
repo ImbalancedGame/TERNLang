@@ -631,6 +631,7 @@ tern run script.tern --time   # also report wall clock time
 tern run script.tern --no-fs  # sandbox the file system
 tern check script.tern        # parse, lint and compile, but do not run
 tern disasm script.tern       # dump the bytecode
+tern emit script.tern -o out.json  # export the bytecode as JSON (native backend)
 tern docs                     # print the standard library reference
 tern repl                     # interactive session
 ```
@@ -638,6 +639,14 @@ tern repl                     # interactive session
 `tern check` exits with `2` on errors and `0` when the file compiles, even if it
 produced warnings. `tern disasm` is the tool to reach for when reasoning about
 performance.
+
+`tern emit` is the input to the ahead-of-time backend in [`native/`](../native/README.md),
+which compiles the same bytecode to C and then to a standalone binary:
+
+```bash
+native/build.sh script.tern -o script
+./script
+```
 
 ### The REPL
 

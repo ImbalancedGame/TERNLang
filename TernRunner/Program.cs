@@ -30,6 +30,7 @@ namespace TernRunner
                     "check" => Check(args),
                     "repl" => Repl(),
                     "disasm" => Disassemble(args),
+                    "emit" => EmitBytecode(args),
                     "docs" => PrintDocs(args),
                     "version" or "--version" or "-v" => PrintVersion(),
                     "help" or "--help" or "-h" => PrintHelp(),
@@ -75,6 +76,7 @@ Usage:
   tern run <script.tern> [args...]   Run a script
   tern check <script.tern> [--quiet] Parse, lint and compile only (no execution)
   tern disasm <script.tern>          Print the compiled bytecode
+  tern emit <script.tern> [-o file]  Export bytecode as JSON for the native backend
   tern docs [--markdown]             List the standard library (markdown by default)
   tern repl                          Start an interactive session
   tern version                       Print the version
@@ -348,6 +350,36 @@ Options for `run`:
 
             var module = engine.LoadFile(Path.GetFullPath(path));
             Disassembler.Dump(module.Entry, Console.Out);
+            return 0;
+        }
+
+        private static int EmitBytecode(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("error: emit needs a script path");
+                return 2;
+            }
+
+            var path = Path.GetFullPath(args[1]);
+            var engine = new TernEngine
+            {
+                WorkingDirectory = Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory(),
+            };
+
+            var module = engine.LoadFile(path);
+            var json = NativeExport.ToJson(module);
+
+            var output = args.Length > 3 && args[2] == "-o" ? args[3] : null;
+            if (output is null)
+            {
+                Console.Out.Write(json);
+            }
+            else
+            {
+                File.WriteAllText(output, json);
+            }
+
             return 0;
         }
 

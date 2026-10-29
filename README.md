@@ -49,6 +49,9 @@ match tickets.length {
   standard modules, with per-engine caching.
 * **A single dependency-free binary** — a bytecode VM with no runtime
   reflection in the hot path.
+* **Ahead-of-time compilation** — `tern emit` plus `native/` turn the same
+  bytecode into C and then into a standalone ELF binary with no runtime
+  installed ([`native/README.md`](native/README.md)).
 * **Sandboxable** — file system access can be disabled per engine, so scripts
   from a ticket or a chat bot can be run safely.
 * **Linted on the way in** — a fast AST pass warns about assignments used as
@@ -71,7 +74,11 @@ match tickets.length {
 ./tools/tern disasm examples/triage.tern  # dump bytecode
 ./tools/tern repl                         # interactive (:help for commands)
 ./tools/tern docs                         # standard library reference (markdown)
+./tools/tern emit examples/triage.tern -o triage.json   # bytecode as JSON
 ./tools/tern version
+
+# compile a script to a standalone native binary
+native/build.sh examples/triage.tern -o triage && ./triage
 ```
 
 Script arguments are exposed as `os.args()`:
@@ -191,6 +198,12 @@ two tight numeric loops are 2.8x behind. LuaJIT, Node and C# are tracing/AOT
 compilers and are 10-30x ahead on numeric code. See `bench/compare/workloads.md`
 for per-workload notes and the remaining per-opcode costs.
 
+`for` loops over lists, maps, strings and ranges used to leave one stack slot
+behind per iteration (`IterNext` kept the iterator it had already advanced).
+That grew the operand stack without bound — a 20 million iteration loop reached
+1.5 GB — and it is fixed: the same loop now peaks at 45 MB and runs 1.9x faster
+(2.64 s -> 1.36 s).
+
 Whole-process times for the equivalent scripts (`./tools/bench.sh`, including
 ~90 ms of process start, parse, compile and JIT):
 
@@ -234,6 +247,25 @@ The optimisations that get there:
   resolution.
 * **String keys hashed without allocation** in the map implementation.
 
+### Compiled with the native backend
+
+The same five workloads through `native/` (C, `cc -O2`, no runtime), best of
+nine runs, whole process including start-up:
+
+| Workload   | TERN native | TERN VM | Lua 5.4 | LuaJIT | Node 22 | C#    |
+| ---------- | ----------: | ------: | ------: | -----: | ------: | ----: |
+| `fib`      |          21 |     157 |      57 |      8 |      10 |     5 |
+| `loop`     |          73 |     104 |      37 |     14 |      10 |     6 |
+| `maps`     |         146 |     148 |     200 |    60 |     100 |    68 |
+| `bintree`  |           6 |      45 |      45 |      8 |       5 |    30 |
+| `strings`  |           6 |      18 |      14 |      6 |       3 |     4 |
+
+The VM column is in-process (start-up excluded); the native column includes
+about a millisecond of process start, so it is 7.4x ahead of the interpreter on
+`fib`, 2.6x on `strings` and 7.4x on `bintree`, level on `maps`, and within 2-3x
+of LuaJIT on `fib` and `bintree`. Building one binary takes ~1.9 s, almost all
+of it `cc -O2` over the runtime.
+
 ## Repository layout
 
 ```
@@ -250,6 +282,7 @@ tools/              build.py, tern launcher, test.sh, bench.sh, gen-docs.sh,
 tests/              golden-output test suite (NN_name.tern + NN_name.out)
 examples/           runnable sample scripts
 bench/              micro benchmarks
+native/             AOT backend: bytecode -> C -> ELF (ternc.py, runtime/, tests)
 docs/language.md    the language reference
 docs/stdlib.md      generated builtin reference (`tools/gen-docs.sh`)
 ```

@@ -1391,7 +1391,11 @@ namespace TERN.Runtime
 
                         case Op.IterNext:
                         {
-                            var iterator = _stack[_sp - 1].AsIterator();
+                            // The iterator is *consumed*: the compiler records
+                            // pop: 1 / push: bindings, so leaving the (already
+                            // advanced) iterator on the stack would leak one slot
+                            // per iteration - unbounded growth for `for` loops.
+                            var iterator = _stack[--_sp].AsIterator();
                             var bindings = instruction.B;
 
                             if (!iterator.Next(out var first, out var second))
