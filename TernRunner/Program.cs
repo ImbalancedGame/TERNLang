@@ -73,7 +73,7 @@ TERN {Version} - a small, sandboxed scripting language.
 
 Usage:
   tern run <script.tern> [args...]   Run a script
-  tern check <script.tern>           Parse and compile only (no execution)
+  tern check <script.tern> [--quiet] Parse, lint and compile only (no execution)
   tern disasm <script.tern>          Print the compiled bytecode
   tern docs [--markdown]             List the standard library (markdown by default)
   tern repl                          Start an interactive session
@@ -83,6 +83,7 @@ Usage:
 Options for `run`:
   --no-fs        Disable file system access (sandbox mode)
   --time         Print execution time to stderr
+  --quiet        Suppress lint warnings
 """);
             return 0;
         }
@@ -121,11 +122,18 @@ Options for `run`:
                 return 2;
             }
 
+            var quiet = options.Contains("--quiet");
+
             var engine = new TernEngine
             {
                 AllowFileSystem = !options.Contains("--no-fs"),
                 WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory(),
+                LintOnCompile = !quiet,
             };
+
+            // Lint warnings are advisory, so they go to stderr and never change
+            // the exit code; errors still throw out of LoadFile.
+            engine.Warnings = diagnostic => Console.Error.WriteLine(diagnostic.Format());
 
             for (var i = 1; i < positional.Count; i++)
             {
@@ -160,34 +168,47 @@ Options for `run`:
             }
 
             var path = args[1];
-            var source = File.ReadAllText(path);
-            var diagnostics = new DiagnosticBag();
+            var full = Path.GetFullPath(path);
+            var source = File.ReadAllText(full);
 
-            var engine = new TernEngine { WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(path))! };
+            var engine = new TernEngine { WorkingDirectory = Path.GetDirectoryName(full)! };
+            var diagnostics = engine.Check(source, Path.GetFileName(path), full);
 
-            try
+            var errors = 0;
+            var warnings = 0;
+            var quiet = args.Contains("--quiet", StringComparer.Ordinal);
+
+            foreach (var diagnostic in diagnostics)
             {
-                engine.CompileScript(source, Path.GetFileName(path), path: Path.GetFullPath(path));
-            }
-            catch (TernCompileException exception)
-            {
-                foreach (var diagnostic in exception.Diagnostics)
+                if (diagnostic.Severity == DiagnosticSeverity.Error)
                 {
-                    Console.Error.WriteLine(diagnostic.Format());
+                    errors++;
+                }
+                else
+                {
+                    warnings++;
+
+                    if (quiet)
+                    {
+                        continue;
+                    }
                 }
 
+                Console.Error.WriteLine(diagnostic.Format());
+            }
+
+            if (errors > 0)
+            {
+                Console.Error.WriteLine($"failed: {Path.GetFileName(path)} with {errors} error(s)");
                 return 2;
             }
 
-            var count = 0;
-            foreach (var diagnostic in diagnostics.Items)
-            {
-                Console.Error.WriteLine(diagnostic.Format());
-                count++;
-            }
+            var summary = warnings == 0
+                ? $"ok: {Path.GetFileName(path)} compiled"
+                : $"ok: {Path.GetFileName(path)} compiled with {warnings} warning(s)";
 
-            Console.WriteLine($"ok: {Path.GetFileName(path)} compiled");
-            return count == 0 ? 0 : 2;
+            Console.WriteLine(summary);
+            return 0;
         }
 
         private static int PrintDocs(string[] args)

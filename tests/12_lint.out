@@ -1,0 +1,8 @@
+12_lint:3: warning TRN0304: assignment used as a condition; use '==' to compare ('total = ...')
+12_lint:5: warning TRN0305: 'total' is compared with itself, so this is always true
+12_lint:6: warning TRN0306: list and map literals are compared by identity, so newly built literals are never equal (compare lengths or items instead)
+12_lint:10: warning TRN0308: 'value' shadows a variable declared on line 8
+assigned 5
+shadowed 2
+kept 1
+done

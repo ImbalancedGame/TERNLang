@@ -51,6 +51,8 @@ match tickets.length {
   reflection in the hot path.
 * **Sandboxable** — file system access can be disabled per engine, so scripts
   from a ticket or a chat bot can be run safely.
+* **Linted on the way in** — a fast AST pass warns about assignments used as
+  conditions, impossible comparisons and shadowed locals before anything runs.
 
 ## Quick start
 
@@ -65,7 +67,7 @@ match tickets.length {
 ./tools/tern run examples/triage.tern
 
 # other commands
-./tools/tern check examples/triage.tern   # compile only, report diagnostics
+./tools/tern check examples/triage.tern   # compile only, report diagnostics and warnings
 ./tools/tern disasm examples/triage.tern  # dump bytecode
 ./tools/tern repl                         # interactive
 ./tools/tern docs                         # standard library reference (markdown)

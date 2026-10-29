@@ -602,7 +602,39 @@ compilation fails.
 | `TRN00xx` | lexer |
 | `TRN01xx` | parser |
 | `TRN02xx` | compiler (scoping, constness, struct rules, arity) |
+| `TRN03xx` | linter (warnings only) |
 
-`tern check <file>` compiles without running and reports diagnostics. `tern
-disasm <file>` dumps the bytecode, which is useful when reasoning about
+### The linter
+
+Every compilation runs a small AST analysis pass. Its findings are **warnings**:
+the script still compiles and runs exactly as written, and warnings print to
+stderr during `tern run` unless you pass `--quiet`.
+
+| Code | Meaning |
+| ---- | ------- |
+| `TRN0304` | assignment used as a condition: `if (x = 1)` |
+| `TRN0305` | a value compared with itself: `x == x` |
+| `TRN0306` | two collection literals compared, which is always false |
+| `TRN0308` | a local shadows an enclosing local of the same name |
+| `TRN0310` | member access on a literal `nil`, which always raises |
+
+The linter never fires for `nil` receivers inside a `try` block, since catching
+that error is a legitimate pattern, and it ignores shadowing of top-level
+variables, which is normal in scripts.
+
+### Command line
+
+```bash
+tern run script.tern [args]   # execute, printing lint warnings to stderr
+tern run script.tern --quiet  # execute without lint warnings
+tern run script.tern --time   # also report wall clock time
+tern run script.tern --no-fs  # sandbox the file system
+tern check script.tern        # parse, lint and compile, but do not run
+tern disasm script.tern       # dump the bytecode
+tern docs                     # print the standard library reference
+tern repl                     # interactive session
+```
+
+`tern check` exits with `2` on errors and `0` when the file compiles, even if it
+produced warnings. `tern disasm` is the tool to reach for when reasoning about
 performance.

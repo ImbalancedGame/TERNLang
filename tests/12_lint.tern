@@ -1,0 +1,17 @@
+// Lint warnings must be reported on stderr and must not stop the script.
+let total = 0;
+if (total = 5) { println("assigned ${total}"); }
+
+let same = total == total;
+let nested = [[1]] == [[1]];
+fn shadowDemo() {
+    let value = 1;
+    {
+        let value = 2;
+        println("shadowed ${value}");
+    }
+    return value;
+}
+
+println("kept ${shadowDemo()}");
+println("done");

@@ -47,6 +47,12 @@ namespace TERN
         /// <summary>When false, every <c>fs</c> call raises a PermissionError.</summary>
         public bool AllowFileSystem { get; set; } = true;
 
+        /// <summary>When false, the AST linter does not run before compilation.</summary>
+        public bool LintOnCompile { get; set; } = true;
+
+        /// <summary>Receives lint warnings as they are produced.</summary>
+        public Action<Diagnostic>? Warnings { get; set; }
+
         public string WorkingDirectory { get; set; } = Directory.GetCurrentDirectory();
 
         public List<string> ScriptArguments { get; } = new();
@@ -178,6 +184,8 @@ namespace TERN
                 throw new TernCompileException(diagnostics.Items);
             }
 
+            Lint(program, diagnostics, sourceName);
+
             var compiler = new ModuleCompiler(scope, this, diagnostics, sourceName, path);
             var entry = compiler.CompileModule(program);
 
@@ -200,6 +208,8 @@ namespace TERN
                 throw new TernCompileException(diagnostics.Items);
             }
 
+            Lint(program, diagnostics, sourceName);
+
             var compiler = new ModuleCompiler(module.Scope, this, diagnostics, sourceName, module.Path);
             var entry = compiler.CompileModule(program, returnLastValue);
 
@@ -211,9 +221,58 @@ namespace TERN
             module.ReplaceEntry(entry);
         }
 
+        /// <summary>Runs the linter and forwards its warnings to the host, if any.</summary>
+        private void Lint(BlockStmt program, DiagnosticBag diagnostics, string? sourceName)
+        {
+            if (!LintOnCompile)
+            {
+                return;
+            }
+
+            var before = diagnostics.Count;
+            Analyzer.Analyze(program, diagnostics, sourceName);
+
+            if (Warnings is null)
+            {
+                return;
+            }
+
+            for (var i = before; i < diagnostics.Count; i++)
+            {
+                var diagnostic = diagnostics.Items[i];
+                if (diagnostic.Severity != DiagnosticSeverity.Error)
+                {
+                    Warnings(diagnostic);
+                }
+            }
+        }
+
         /// <summary>Parses without compiling; used by `tern check` and editor tooling.</summary>
         public BlockStmt Parse(string source, DiagnosticBag diagnostics, string? sourceName = null) =>
             Parser.ParseProgram(source, diagnostics, sourceName);
+
+        /// <summary>
+        /// Compiles, then returns every diagnostic (errors and lint warnings)
+        /// without running the script. This is what <c>tern check</c> uses.
+        /// </summary>
+        public IReadOnlyList<Diagnostic> Check(string source, string? sourceName = null, string? path = null)
+        {
+            var diagnostics = new DiagnosticBag();
+            var program = Parser.ParseProgram(source, diagnostics, sourceName);
+
+            if (diagnostics.HasErrors)
+            {
+                return diagnostics.Items;
+            }
+
+            Analyzer.Analyze(program, diagnostics, sourceName);
+
+            var scope = CreateScope(sourceName ?? "<check>");
+            var compiler = new ModuleCompiler(scope, this, diagnostics, sourceName, path);
+            compiler.CompileModule(program);
+
+            return diagnostics.Items;
+        }
 
         public TernModule? LoadFileModule(string path, string? importerPath)
         {
