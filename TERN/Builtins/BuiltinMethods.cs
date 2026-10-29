@@ -135,6 +135,8 @@ namespace TERN.Builtins
 
                 return Value.Of(list);
             }, "Splits on whitespace, dropping empty pieces.");
+            Add(stringMethods, "format", 1, -1, (vm, a) => Value.Str(Builtins.StandardLibrary.Format(vm, a[0].AsString(), a, 1)),
+                "Formats the string as a template, like text.format.");
             Add(stringMethods, "toString", 1, 1, (vm, a) => a[0], "The string itself.");
             Add(stringMethods, "isEmpty", 1, 1, (vm, a) => Value.Bool(a[0].AsString().Length == 0), "True when the string has no characters.");
 
@@ -480,6 +482,7 @@ namespace TERN.Builtins
                 return Value.Of(result);
             }, "List of [key, value] pairs in insertion order.");
             Add(mapMethods, "has", 2, 2, (vm, a) => Value.Bool(a[0].AsMap().ContainsKey(a[1])), "True when the key exists.");
+            Add(mapMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsMap().ContainsKey(a[1])), "Alias of has.");
             Add(mapMethods, "get", 2, 3, (vm, a) =>
             {
                 if (a[0].AsMap().TryGet(a[1], out var value))
@@ -549,6 +552,33 @@ namespace TERN.Builtins
                 Value.Bool(a[1].Kind == ValueKind.Int && a[0].AsRange().Contains(a[1].AsInt())), "True when the number is inside the range.");
             Add(rangeMethods, "toString", 1, 1, (vm, a) => Value.Str(a[0].AsRange().ToString()), "Range notation such as 0..<5.");
             Add(rangeMethods, "length", 1, 1, (vm, a) => new Value(a[0].AsRange().Length), "Number of values in the range.");
+            Add(rangeMethods, "map", 2, 2, (vm, a) =>
+            {
+                var values = a[0].AsRange().ToList();
+                var callback = a[1];
+                var result = new TernList(values.Count);
+                var arguments = new Value[1];
+                for (var i = 0; i < values.Count; i++)
+                {
+                    arguments[0] = values[i];
+                    result.Add(vm.CallValue(callback, arguments.AsSpan(0, 1)));
+                }
+
+                return Value.Of(result);
+            }, "List of callback results over the range, like list.map.");
+            Add(rangeMethods, "each", 2, 2, (vm, a) =>
+            {
+                var values = a[0].AsRange().ToList();
+                var callback = a[1];
+                var arguments = new Value[1];
+                for (var i = 0; i < values.Count; i++)
+                {
+                    arguments[0] = values[i];
+                    vm.CallValue(callback, arguments.AsSpan(0, 1));
+                }
+
+                return Value.Nil;
+            }, "Calls the callback for each value in the range.");
         }
 
         private static Dictionary<string, TernNative> Table(ValueKind kind)

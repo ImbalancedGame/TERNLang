@@ -3123,13 +3123,14 @@ static Value n_clamp_self(int argc, Value *argv) {
 }
 
 static Value n_round_self(int argc, Value *argv) {
+    // The interpreter rounds half away from zero and returns a float, so a
+    // compiled program must not disagree about either.
     Value v = argv[0];
     int digits = argc > 1 ? (int)require_int(argv[1], "round") : 0;
     double value = v_as_double(v);
+    if (digits <= 0) return v_float(round(value));
     double scale = pow(10.0, digits);
-    double rounded = round(value * scale) / scale;
-    if (digits == 0) return v_int((int64_t)rounded);
-    return v_float(rounded);
+    return v_float(round(value * scale) / scale);
 }
 
 static Value n_toint_self(int argc, Value *argv) {
@@ -4264,10 +4265,17 @@ static Value os_args(int argc, Value *argv) {
     return v_obj((Obj *)list);
 }
 
-static const MethodSlot number_methods[] = {
+// The method tables mirror the interpreter's exactly: a name that is not
+// listed here raises MemberError on both back ends, so a script cannot start
+// working only because it was compiled.
+static const MethodSlot int_methods[] = {
+    {"abs", n_abs_self}, {"clamp", n_clamp_self}, {"times", n_times_self},
+    {"toFloat", n_tofloat_self}, {"toString", n_tostring_self}, {NULL, NULL},
+};
+
+static const MethodSlot float_methods[] = {
     {"abs", n_abs_self}, {"clamp", n_clamp_self}, {"round", n_round_self},
-    {"toInt", n_toint_self}, {"toFloat", n_tofloat_self}, {"toString", n_tostring_self},
-    {"times", n_times_self}, {NULL, NULL},
+    {"toInt", n_toint_self}, {"toString", n_tostring_self}, {NULL, NULL},
 };
 
 static const MethodSlot range_methods[] = {
@@ -4330,8 +4338,11 @@ NativeFn tern_builtin_method(Value receiver, const char *name) {
     if (v_is_obj(receiver, O_RANGE)) {
         return lookup_method(range_methods, name);
     }
-    if (v_is_num(receiver)) {
-        return lookup_method(number_methods, name);
+    if (receiver.tag == T_INT) {
+        return lookup_method(int_methods, name);
+    }
+    if (receiver.tag == T_FLOAT) {
+        return lookup_method(float_methods, name);
     }
     return NULL;
 }

@@ -437,6 +437,80 @@ namespace TERN.Builtins
 
         // ------------------------------------------------------------- filesystem
 
+        /// <summary>
+        /// `{}` / `{0}` substitution, shared by `text.format` and `"…".format`.
+        /// Placeholders stay in step: `format("{0} and {}", "a", "b")` is
+        /// "a and b".
+        /// </summary>
+        internal static string Format(VM vm, string template, ReadOnlySpan<Value> arguments, int first)
+        {
+            var builder = new StringBuilder(template.Length + 16);
+            var argument = first;
+            var index = 0;
+
+            while (index < template.Length)
+            {
+                var c = template[index];
+                if (c == '{')
+                {
+                    if (index + 1 < template.Length && template[index + 1] == '{')
+                    {
+                        builder.Append('{');
+                        index += 2;
+                        continue;
+                    }
+
+                    var close = template.IndexOf('}', index);
+                    if (close < 0)
+                    {
+                        throw vm.Error("FormatError", "unclosed '{' in format string");
+                    }
+
+                    var specifier = template.Substring(index + 1, close - index - 1).Trim();
+                    Value value;
+                    if (specifier.Length == 0)
+                    {
+                        if (argument >= arguments.Length)
+                        {
+                            throw vm.Error("FormatError", "not enough arguments for format string");
+                        }
+
+                        value = arguments[argument++];
+                    }
+                    else if (int.TryParse(specifier, out var position))
+                    {
+                        if (first + position >= arguments.Length)
+                        {
+                            throw vm.Error("FormatError", $"format argument {{{position}}} is missing");
+                        }
+
+                        value = arguments[first + position];
+                        argument = Math.Max(argument, first + position + 1);
+                    }
+                    else
+                    {
+                        throw vm.Error("FormatError", $"unsupported format specifier '{{{specifier}}}'");
+                    }
+
+                    builder.Append(value.ToDisplayString());
+                    index = close + 1;
+                    continue;
+                }
+
+                if (c == '}' && index + 1 < template.Length && template[index + 1] == '}')
+                {
+                    builder.Append('}');
+                    index += 2;
+                    continue;
+                }
+
+                builder.Append(c);
+                index++;
+            }
+
+            return builder.ToString();
+        }
+
         private static void InstallFileSystem(TernEngine engine)
         {
             var map = new TernMap();
@@ -756,78 +830,8 @@ namespace TERN.Builtins
         private static void InstallText(TernEngine engine)
         {
             var map = new TernMap();
-            Add(map, "format", 1, -1, (vm, a) =>
-            {
-                var template = a[0].AsString();
-                var builder = new StringBuilder(template.Length + 16);
-                var argument = 1;
-                var index = 0;
-
-                while (index < template.Length)
-                {
-                    var c = template[index];
-                    if (c == '{')
-                    {
-                        if (index + 1 < template.Length && template[index + 1] == '{')
-                        {
-                            builder.Append('{');
-                            index += 2;
-                            continue;
-                        }
-
-                        var close = template.IndexOf('}', index);
-                        if (close < 0)
-                        {
-                            throw vm.Error("FormatError", "unclosed '{' in format string");
-                        }
-
-                        var specifier = template.Substring(index + 1, close - index - 1).Trim();
-                        Value value;
-                        if (specifier.Length == 0)
-                        {
-                            if (argument >= a.Length)
-                            {
-                                throw vm.Error("FormatError", "not enough arguments for format string");
-                            }
-
-                            value = a[argument++];
-                        }
-                        else if (int.TryParse(specifier, out var position))
-                        {
-                            if (position + 1 >= a.Length)
-                            {
-                                throw vm.Error("FormatError", $"format argument {{{position}}} is missing");
-                            }
-
-                            value = a[position + 1];
-
-                            // Keep positional placeholders in step with explicit ones:
-                            // "text.format(\"{0} and {}\", \"a\", \"b\")" yields "a and b".
-                            argument = Math.Max(argument, position + 2);
-                        }
-                        else
-                        {
-                            throw vm.Error("FormatError", $"unsupported format specifier '{{{specifier}}}'");
-                        }
-
-                        builder.Append(value.ToDisplayString());
-                        index = close + 1;
-                        continue;
-                    }
-
-                    if (c == '}' && index + 1 < template.Length && template[index + 1] == '}')
-                    {
-                        builder.Append('}');
-                        index += 2;
-                        continue;
-                    }
-
-                    builder.Append(c);
-                    index++;
-                }
-
-                return Value.Str(builder.ToString());
-            }, "Formats {} and {0} placeholders with arguments.");
+            Add(map, "format", 1, -1, (vm, a) => Value.Str(Format(vm, a[0].AsString(), a, 1)),
+                "Formats {} and {0} placeholders with arguments.");
 
             Add(map, "upper", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToUpperInvariant()), "Uppercased copy.");
             Add(map, "lower", 1, 1, (vm, a) => Value.Str(a[0].AsString().ToLowerInvariant()), "Lowercased copy.");

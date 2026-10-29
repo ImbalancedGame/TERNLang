@@ -234,6 +234,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | ---- | --------- |
 | `clear` | `clear()` |
 | `clone` | `clone()` |
+| `contains` | `contains(arg)` |
 | `entries` | `entries()` |
 | `get` | `get(arg, [arg])` |
 | `has` | `has(arg)` |
@@ -250,7 +251,9 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | Name | Signature |
 | ---- | --------- |
 | `contains` | `contains(arg)` |
+| `each` | `each(arg)` |
 | `length` | `length()` |
+| `map` | `map(arg)` |
 | `toList` | `toList()` |
 | `toString` | `toString()` |
 
@@ -262,6 +265,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `contains` | `contains(arg)` |
 | `count` | `count(arg)` |
 | `endsWith` | `endsWith(arg)` |
+| `format` | `format(...)` |
 | `indexOf` | `indexOf(arg)` |
 | `isEmpty` | `isEmpty()` |
 | `lastIndexOf` | `lastIndexOf(arg)` |

@@ -1,0 +1,14 @@
+1 + 2 = 3
+again-again
+literal {braces}
+true false
+[0, 1, 4, 9, 16]
+[1, 2, 3]
+6
+MemberError
+MemberError
+MemberError
+MemberError
+5 5.0 3
+5.5 5 6.0 5.5 3.0
+6
