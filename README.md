@@ -174,26 +174,55 @@ TypeError: nil has no method 'missing'
 
 ## Performance
 
-Measured with `./tools/bench.sh` (same machine, release-style build, warm
-cache). Times are wall clock for the whole process, including startup:
+`tools/compare.sh` runs five workloads written identically in TERN, Lua 5.4,
+LuaJIT, Node 22 and C# (Roslyn) and compares in-process timings, so startup and
+host warm-up are excluded. Best of seven runs on a 2 vCPU / 2.6 GHz machine:
 
-| Benchmark            | Workload                                   | Time    |
-| -------------------- | ------------------------------------------ | ------- |
-| `fib.tern`           | `fib(30)`, 2.7 M calls                     | ~300 ms |
-| `loop.tern`          | 5 M iteration numeric loop                 | ~380 ms |
-| `maps.tern`          | 200 k string-keyed inserts + 200 k lookups | ~250 ms |
-| `bintree.tern`       | 65 535-node struct tree, alloc heavy       | ~80 ms  |
-| `strings.tern`       | 20 k interpolations + join/split/upper     | ~50 ms  |
+| Workload   | TERN | Lua 5.4 | LuaJIT | Node 22 | C#    | TERN / Lua |
+| ---------- | ---: | ------: | -----: | ------: | ----: | ---------: |
+| `fib`      |  113 |      51 |      6 |       8 |     5 |      2.21x |
+| `loop`     |  101 |      30 |     12 |       8 |     4 |      3.37x |
+| `maps`     |  204 |     140 |     55 |      86 |    61 |      1.45x |
+| `bintree`  |   33 |      26 |      6 |       4 |    22 |      1.25x |
+| `strings`  |   16 |      10 |      5 |       2 |     4 |      1.54x |
+
+Whole-process times for the equivalent scripts (`./tools/bench.sh`, including
+~86 ms of process start, parse, compile and JIT):
+
+| Benchmark      | Workload                                   | Time      |
+| -------------- | ------------------------------------------ | --------- |
+| `fib.tern`     | `fib(30)`, 2.7 M calls                     | ~170 ms   |
+| `loop.tern`    | 5 M iteration numeric loop                 | ~194 ms   |
+| `maps.tern`    | 200 k string-keyed inserts + 200 k lookups | ~258 ms   |
+| `bintree.tern` | 65 535-node struct tree, alloc heavy       | ~76 ms    |
+| `strings.tern` | 20 k interpolations + join/split/upper     | ~61 ms    |
+
+TERN is a bytecode interpreter, so the honest comparison is against Lua 5.4;
+LuaJIT, Node and C# are tracing/AOT compilers and are 20-30x ahead on numeric
+code. See `bench/compare/workloads.md` for the full breakdown and the remaining
+per-opcode costs.
 
 The optimisations that get there:
 
 * **Tagged `Value` structs** — numbers and booleans never box inside the
   interpreter loop.
+* **A single dispatch loop** over a contiguous `Instr[]`, with the whole
+  instruction (opcode plus three operands) in one 16-byte struct and a
+  `[MethodImpl(AggressiveOptimization)]` entry point so the interpreter is fully
+  optimised from its first call while everything else stays quick-jitted for a
+  fast start.
+* **Fused arithmetic, compare and store opcodes** — `AddLocalLocal`,
+  `AddLocalConst`, `AddLocalConstStore`, `AddLocalStack`, `JumpLtLocalInt`, ...,
+  so `total += i % 7` compiles to three instructions.
+* **Counted loops** — `ForPrep{Lt,Le,Gt,Ge}` / `ForNext{Lt,Le,Gt,Ge}` fold the
+  increment, the comparison and the branch into one opcode per iteration, and
+  update the counter in place.
+* **Reciprocal modulo** — `x % k` for a positive constant `k` becomes a
+  64x64→128 multiply and a shift, with an exact range check that falls back to
+  the hardware divide.
+* **Cheap calls** — pooled pre-populated frames, per-frame stack reservation, an
+  unrolled argument copy for the first nine arities, and inline return paths.
 * **Constant folding** in the compiler, including integer `**`.
-* **Fused arithmetic opcodes** — `*LocalLocal` / `*LocalConst` variants avoid
-  decoding operands for the common `total += i % 7` case.
-* **A single dispatch loop** over a contiguous `ReadOnlySpan<Instr>`, with the
-  whole instruction (opcode plus three operands) in one 16-byte struct.
 * **Locals in a flat slot array** — parameters, receivers and loop counters are
   index-addressed, never looked up by name at runtime.
 * **Jump targets patched at emit time**, so there is no runtime branch

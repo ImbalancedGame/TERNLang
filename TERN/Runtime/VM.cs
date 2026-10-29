@@ -150,6 +150,7 @@ namespace TERN.Runtime
             return Run(floor);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private Value Run(int frameFloor)
         {
             if (_frameCount <= frameFloor)
@@ -596,11 +597,11 @@ namespace TERN.Runtime
                                     }
                                 }
 
-                                Push(Value.Bool(found));
+                                Push(found ? Value.True : Value.False);
                                 break;
                             }
 
-                            Push(Value.Bool(Contains(item, container)));
+                            Push(Contains(item, container) ? Value.True : Value.False);
                             break;
                         }
 
@@ -771,22 +772,22 @@ namespace TERN.Runtime
                                         Push(new Value(a >> (int)(b & 63)));
                                         goto binaryDone;
                                     case Op.Lt:
-                                        Push(Value.Bool(a < b));
+                                        Push(a < b ? Value.True : Value.False);
                                         goto binaryDone;
                                     case Op.Le:
-                                        Push(Value.Bool(a <= b));
+                                        Push(a <= b ? Value.True : Value.False);
                                         goto binaryDone;
                                     case Op.Gt:
-                                        Push(Value.Bool(a > b));
+                                        Push(a > b ? Value.True : Value.False);
                                         goto binaryDone;
                                     case Op.Ge:
-                                        Push(Value.Bool(a >= b));
+                                        Push(a >= b ? Value.True : Value.False);
                                         goto binaryDone;
                                     case Op.Eq:
-                                        Push(Value.Bool(a == b));
+                                        Push(a == b ? Value.True : Value.False);
                                         goto binaryDone;
                                     case Op.Ne:
-                                        Push(Value.Bool(a != b));
+                                        Push(a != b ? Value.True : Value.False);
                                         goto binaryDone;
                                 }
                             }

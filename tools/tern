@@ -4,10 +4,4 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DOTNET_ROOT="${TERN_TOOLCHAIN_DIR:-/tmp/tern-toolchain}/dotnet"
-
-# The interpreter loop is the hot path: it is JIT compiled fully optimised in the
-# runtimeconfig. Set TERN_FAST_START=1 to prefer a quicker launch for tiny scripts.
-if [[ "${TERN_FAST_START:-0}" == "1" ]]; then
-  export DOTNET_TC_QuickJitForLoops=1
-fi
 exec "$HERE/build/dotnet" "$HERE/build/TERN.Runner.dll" "$@"

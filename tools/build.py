@@ -127,7 +127,7 @@ def main() -> int:
         '    "framework": { "name": "Microsoft.NETCore.App", "version": "10.0.11" },\n'
         '    "configProperties": {\n'
         '      "System.Runtime.TieredPGO": true,\n'
-        '      "System.Runtime.TieredCompilation.QuickJitForLoops": false\n'
+        '      "System.Runtime.TieredCompilation.QuickJitForLoops": true\n'
         '    }\n  }\n}\n',
         encoding="utf-8",
     )

@@ -1,0 +1,42 @@
+// `x % k` with a positive constant divisor uses a reciprocal; a variable divisor
+// uses the hardware divide. Both must agree, including at the edges of int64.
+let values = [0, 1, -1, 2, -2, 6, -6, 7, -7, 13, -13, 14, -14, 100, -100,
+    46341, -46341, 140737488355328, -140737488355328,
+    9223372036854775807, -9223372036854775807, -9223372036854775807 - 1];
+let divisors = [2, 3, 5, 7, 13, 16, 1000, 1024, 99991, 1000000007, 4294967296, 9223372036854775807];
+let bad = 0;
+
+fn note(x, d, fast, slow) {
+    if (fast != slow) {
+        println("MISMATCH x=${x} d=${d} fast=${fast} slow=${slow}");
+        return 1;
+    }
+    return 0;
+}
+
+for (let k = 0; k < divisors.length; k++) {
+    let d = divisors[k];
+    for (let i = 0; i < values.length; i++) {
+        let x = values[i];
+        if (d == 2) { bad += note(x, d, x % 2, x % d); }
+        if (d == 3) { bad += note(x, d, x % 3, x % d); }
+        if (d == 5) { bad += note(x, d, x % 5, x % d); }
+        if (d == 7) { bad += note(x, d, x % 7, x % d); }
+        if (d == 13) { bad += note(x, d, x % 13, x % d); }
+        if (d == 16) { bad += note(x, d, x % 16, x % d); }
+        if (d == 1000) { bad += note(x, d, x % 1000, x % d); }
+        if (d == 1024) { bad += note(x, d, x % 1024, x % d); }
+        if (d == 99991) { bad += note(x, d, x % 99991, x % d); }
+        if (d == 1000000007) { bad += note(x, d, x % 1000000007, x % d); }
+        if (d == 4294967296) { bad += note(x, d, x % 4294967296, x % d); }
+        if (d == 9223372036854775807) { bad += note(x, d, x % 9223372036854775807, x % d); }
+    }
+}
+
+println("mismatches ${bad}");
+println(9223372036854775807 % 7);
+println((-9223372036854775807 - 1) % 7);
+println((-9223372036854775807 - 1) % 3);
+println(13 % 1);
+println(13 % -1);
+println(7 % 3);
