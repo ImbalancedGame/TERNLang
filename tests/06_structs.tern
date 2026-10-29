@@ -35,3 +35,13 @@ struct Wallet { cash
 let wallet = Wallet(Money(10, "GBP"));
 println(wallet.total(), wallet);
 println(type(p), type(counter));
+
+// Struct values compare by identity, including against nil.
+let nothing = nil;
+let same = p;
+let other = Point(3, 4);
+println(p == nothing, p != nothing);
+println(p == same, p == other, p != other);
+if (p == nil) { println("wrong"); } else { println("not nil"); }
+let boxed = [p];
+println(len(boxed), boxed[0] == p);

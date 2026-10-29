@@ -8,6 +8,10 @@ Each script is exported with `tern emit`, compiled by `native/ternc.py`, run in
 the `tests/` directory and diffed against the matching `.out` file. Scripts that
 the native backend cannot compile yet are reported as SKIP with the reason, so
 the table doubles as a to-do list.
+
+Every script is run twice: once normally and once with `TERN_GC_THRESHOLD=4096`,
+which makes the collector run constantly and turns any missed root into a
+wrong answer or a crash. `--no-stress` runs only the normal pass.
 """
 import argparse
 import os
@@ -26,6 +30,8 @@ def main(argv):
     parser.add_argument("filters", nargs="*", help="substrings of test names to run")
     parser.add_argument("--timeout", type=float, default=60.0, help="per-test seconds")
     parser.add_argument("--verbose", action="store_true", help="print full diffs")
+    parser.add_argument("--no-stress", action="store_true",
+                        help="skip the aggressive-collection pass")
     args = parser.parse_args(argv)
 
     names = sorted(
@@ -65,11 +71,26 @@ def main(argv):
             # Like tools/test.sh: compare the text, not the exit status. Some
             # scripts end with an uncaught error on purpose.
             actual = run.stdout + run.stderr
-            if actual != expected:
-                failed.append((name, "output differs"))
-            else:
+            problem = None if actual == expected else "output differs"
+
+            # Second pass with a tiny GC threshold: the collector then runs
+            # thousands of times per script, so a missing root shows up here.
+            if problem is None and not args.no_stress:
+                try:
+                    stress = subprocess.run(
+                        [binary], cwd=TESTS, capture_output=True, text=True,
+                        timeout=args.timeout, env={**os.environ, "TERN_GC_THRESHOLD": "4096"},
+                    )
+                except subprocess.TimeoutExpired:
+                    problem = "timeout under GC stress"
+                else:
+                    if stress.stdout + stress.stderr != expected:
+                        problem = "differs under GC stress (missed root?)"
+
+            if problem is None:
                 passed += 1
                 continue
+            failed.append((name, problem))
 
             if args.verbose:
                 diff = subprocess.run(["diff", "-u", os.path.join(TESTS, name + ".out"), "-"],

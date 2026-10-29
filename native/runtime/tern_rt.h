@@ -43,6 +43,9 @@ typedef enum {
 
 typedef struct Obj {
     ObjType type;
+    uint8_t marked;     // collector mark bit
+    uint8_t klass;      // size class (0..GC_CLASSES-1), GC_LARGE for big objects
+    uint16_t reserved;
 } Obj;
 
 // 16 bytes, and - unlike the .NET struct - it holds no managed references, so a
@@ -235,6 +238,7 @@ typedef struct Proto {
     int32_t stack;
     uint8_t rest;
     uint8_t is_method;
+    int32_t nup;        // captured upvalues (closures are traced through them)
     Value *consts;
     const DivMagic *divs;
 } Proto;
@@ -258,6 +262,15 @@ extern int tern_call_depth;
 
 // Casts away `volatile` when handing a frame slot to the runtime.
 #define NP(p) ((Value *)(void *)(p))
+
+// Garbage collection. Roots are the registered global/constant arrays plus the
+// C stack and registers, which are scanned conservatively, so generated code
+// never has to describe its frame.
+void tern_gc_set_stack_bottom(void *anchor);
+void tern_gc_register_values(Value *base, int count);
+void tern_gc_register_ptrs(void **base, int count);
+void tern_gc_collect(void);
+size_t tern_gc_live_bytes(void);
 
 void tern_raise(Value payload);
 void tern_raise_kind(const char *kind, Value payload);

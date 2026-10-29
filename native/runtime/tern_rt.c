@@ -49,31 +49,516 @@ void tern_panic(const char *kind, const char *fmt, ...) {
 }
 
 // ------------------------------------------------------------------ allocation
+//
+// Objects come out of 16-byte size classes (16..512 bytes) with a free list per
+// class, backed by 256 KiB blocks that are bump-allocated; anything larger gets
+// a block of its own. A mark-sweep collector reclaims them.
+//
+// Roots are the registered global/constant arrays plus the C stack and the
+// callee-saved registers, which are scanned conservatively: a word that looks
+// like the address of an object start keeps that object (and everything it
+// points at) alive. That is why the generated code does not have to describe
+// its frame to the collector.
 
-// Objects are immortal (there is no collector yet), so they are bump-allocated
-// out of large blocks: one pointer bump per object instead of a malloc call.
-// Blocks are 16-byte aligned, which is enough for every object the runtime has.
-static char *arena_cursor = NULL;
-static size_t arena_left = 0;
-static const size_t ARENA_BLOCK = 1u << 20;
+#define GC_ALIGN 16u
+#define GC_CLASSES 32
+#define GC_SMALL_MAX (GC_CLASSES * GC_ALIGN)
+#define GC_LARGE 255
+#define GC_BLOCK (256u * 1024u)
+#define GC_BITMAP_BYTES(payload) (((payload) / GC_ALIGN + 7u) / 8u)
 
-Value *tern_alloc(size_t size, ObjType type) {
-    size = (size + 15u) & ~(size_t)15u;
+typedef struct Block {
+    char *data;
+    size_t cap;
+    size_t used;
+    uint8_t *starts;    // one bit per 16-byte slot: object boundaries
+    int single;         // holds exactly one large object
+} Block;
 
-    if (size > arena_left) {
-        size_t block = size > ARENA_BLOCK / 4 ? size : ARENA_BLOCK;
-        arena_cursor = (char *)malloc(block);
-        if (!arena_cursor) {
-            tern_panic("MemoryError", "out of memory allocating %zu bytes", size);
-        }
-        arena_left = block;
+static Block **gc_blocks = NULL;     // sorted by data address
+static int gc_block_count = 0;
+static int gc_block_cap = 0;
+static Block *gc_current = NULL;
+static void *gc_free[GC_CLASSES];
+
+static size_t gc_since = 0;
+static size_t gc_threshold = 16u << 20;   // collect late; small scripts never do
+static int gc_threshold_fixed = 0;        // TERN_GC_THRESHOLD was set
+static size_t gc_collections = 0;
+static size_t gc_allocated_total = 0;
+static size_t gc_live_bytes = 0;
+static char *gc_stack_bottom = NULL;
+
+// Objects already sitting in a free list keep their slot in the block, so later
+// sweeps must not release their inner arrays a second time. `type` is set to
+// this sentinel; `klass` keeps the size the sweep needs.
+#define GC_DEAD ((ObjType)255)
+
+// The free-list link lives in an object's second word: the first word holds the
+// object header (type, marked, klass) and the sweep needs `klass` to know each
+// object's size.
+static void *gc_link(const Obj *object) {
+    void *next;
+    memcpy(&next, (const char *)object + 8, sizeof next);
+    return next;
+}
+
+static void gc_set_link(Obj *object, void *next) {
+    memcpy((char *)object + 8, &next, sizeof next);
+}
+
+typedef struct ValueRoot {
+    Value *base;
+    int count;
+} ValueRoot;
+
+typedef struct PtrRoot {
+    void **base;
+    int count;
+} PtrRoot;
+
+static ValueRoot *gc_value_roots = NULL;
+static int gc_value_root_count = 0;
+static PtrRoot *gc_ptr_roots = NULL;
+static int gc_ptr_root_count = 0;
+
+static void gc_mark_object(Obj *object);
+
+/// `anchor` must be the address of a local in `main`: every function the
+/// program calls runs below it, so [current frame, anchor) is the whole live C
+/// stack. Using a helper's local here would be wrong - its frame is dead by the
+/// time the program body runs and its memory gets reused.
+void tern_gc_set_stack_bottom(void *anchor) {
+    gc_stack_bottom = (char *)anchor;
+}
+
+void tern_gc_register_values(Value *base, int count) {
+    gc_value_roots = (ValueRoot *)realloc(gc_value_roots, (size_t)(gc_value_root_count + 1) * sizeof(ValueRoot));
+    gc_value_roots[gc_value_root_count].base = base;
+    gc_value_roots[gc_value_root_count].count = count;
+    gc_value_root_count++;
+}
+
+void tern_gc_register_ptrs(void **base, int count) {
+    gc_ptr_roots = (PtrRoot *)realloc(gc_ptr_roots, (size_t)(gc_ptr_root_count + 1) * sizeof(PtrRoot));
+    gc_ptr_roots[gc_ptr_root_count].base = base;
+    gc_ptr_roots[gc_ptr_root_count].count = count;
+    gc_ptr_root_count++;
+}
+
+static void gc_index_insert(Block *block) {
+    if (gc_block_count == gc_block_cap) {
+        gc_block_cap = gc_block_cap ? gc_block_cap * 2 : 16;
+        gc_blocks = (Block **)realloc(gc_blocks, (size_t)gc_block_cap * sizeof(Block *));
     }
 
-    Obj *object = (Obj *)arena_cursor;
-    arena_cursor += size;
-    arena_left -= size;
-    memset(object, 0, size);
+    int at = gc_block_count;
+    while (at > 0 && gc_blocks[at - 1]->data > block->data) {
+        gc_blocks[at] = gc_blocks[at - 1];
+        at--;
+    }
+    gc_blocks[at] = block;
+    gc_block_count++;
+}
+
+static Block *gc_new_block(size_t payload) {
+    size_t bitmap = GC_BITMAP_BYTES(payload);
+    size_t header = (sizeof(Block) + bitmap + GC_ALIGN - 1) & ~(size_t)(GC_ALIGN - 1);
+    char *raw = (char *)malloc(header + payload);
+    if (!raw) {
+        tern_panic("MemoryError", "out of memory allocating %zu bytes", payload);
+    }
+
+    Block *block = (Block *)raw;
+    block->starts = (uint8_t *)(raw + sizeof(Block));
+    block->data = raw + header;
+    block->cap = payload;
+    block->used = 0;
+    block->single = 0;
+    memset(block->starts, 0, bitmap);
+    gc_index_insert(block);
+    return block;
+}
+
+/// The block that owns `address`, or NULL. Blocks are sorted, so this is a
+/// binary search over a handful of entries.
+static Block *gc_block_of(const void *address) {
+    const char *pointer = (const char *)address;
+    int low = 0, high = gc_block_count - 1;
+    while (low <= high) {
+        int middle = (low + high) / 2;
+        Block *block = gc_blocks[middle];
+        if (pointer < block->data) {
+            high = middle - 1;
+        } else if (pointer >= block->data + block->cap) {
+            low = middle + 1;
+        } else {
+            return block;
+        }
+    }
+    return NULL;
+}
+
+static bool gc_is_object_start(const void *address) {
+    Block *block = gc_block_of(address);
+    if (!block) {
+        return false;
+    }
+
+    size_t offset = (size_t)((const char *)address - block->data);
+    if ((offset % GC_ALIGN) != 0 || offset >= block->used) {
+        return false;
+    }
+
+    return (block->starts[offset / GC_ALIGN / 8] & (uint8_t)(1u << ((offset / GC_ALIGN) % 8))) != 0;
+}
+
+static void gc_poison(Block *block, size_t offset) {
+    block->starts[(offset / GC_ALIGN) / 8] |= (uint8_t)(1u << ((offset / GC_ALIGN) % 8));
+}
+
+static void gc_release(Obj *object) {
+    switch (object->type) {
+        case O_LIST:
+            free(((List *)object)->items);
+            break;
+        case O_MAP: {
+            Map *map = (Map *)object;
+            free(map->entries);
+            free(map->order);
+            break;
+        }
+        case O_INSTANCE:
+            free(((Instance *)object)->fields);
+            break;
+        default:
+            break;
+    }
+}
+
+// ------------------------------------------------------------------ collector
+
+typedef struct GrayStack {
+    Obj **items;
+    size_t count;
+    size_t cap;
+} GrayStack;
+
+static GrayStack gc_gray;
+
+static void gc_push(Obj *object) {
+    if (gc_gray.count == gc_gray.cap) {
+        gc_gray.cap = gc_gray.cap ? gc_gray.cap * 2 : 1024;
+        gc_gray.items = (Obj **)realloc(gc_gray.items, gc_gray.cap * sizeof(Obj *));
+        if (!gc_gray.items) {
+            tern_panic("MemoryError", "collector ran out of memory");
+        }
+    }
+    gc_gray.items[gc_gray.count++] = object;
+}
+
+static void gc_mark_value(Value value) {
+    if (value.tag == T_OBJ) {
+        gc_mark_object(value.as.o);
+    }
+}
+
+static void gc_mark_object(Obj *object) {
+    if (!object || object->marked) {
+        return;
+    }
+    object->marked = 1;
+    gc_push(object);
+}
+
+static void gc_mark_conservative(void *candidate) {
+    if (gc_is_object_start(candidate)) {
+        gc_mark_object((Obj *)candidate);
+    }
+}
+
+static void gc_trace(void) {
+    while (gc_gray.count > 0) {
+        Obj *object = gc_gray.items[--gc_gray.count];
+        switch (object->type) {
+            case O_LIST: {
+                List *list = (List *)object;
+                for (int32_t i = 0; i < list->count; i++) {
+                    gc_mark_value(list->items[i]);
+                }
+                break;
+            }
+            case O_MAP: {
+                Map *map = (Map *)object;
+                for (int32_t i = 0; i < map->cap; i++) {
+                    MapEntry *entry = &map->entries[i];
+                    if (entry->used && !entry->dead) {
+                        gc_mark_value(entry->key);
+                        gc_mark_value(entry->value);
+                    }
+                }
+                break;
+            }
+            case O_CLOSURE: {
+                Closure *closure = (Closure *)object;
+                int upvalues = closure->proto ? closure->proto->nup : 0;
+                for (int i = 0; i < upvalues; i++) {
+                    gc_mark_object((Obj *)closure->up[i]);
+                }
+                break;
+            }
+            case O_CELL:
+                gc_mark_value(((Cell *)object)->value);
+                break;
+            case O_INSTANCE: {
+                Instance *instance = (Instance *)object;
+                for (int32_t i = 0; i < instance->type->nfields; i++) {
+                    gc_mark_value(instance->fields[i]);
+                }
+                break;
+            }
+            case O_TYPE: {
+                TypeObj *type = (TypeObj *)object;
+                for (int32_t i = 0; i < type->nfields; i++) {
+                    gc_mark_value(type->defaults[i]);
+                    if (type->defproto) {
+                        gc_mark_object((Obj *)type->defproto[i]);
+                    }
+                }
+                for (int32_t i = 0; i < type->nmethods; i++) {
+                    gc_mark_object((Obj *)type->methods[i]);
+                }
+                break;
+            }
+            case O_BOUND: {
+                Bound *bound = (Bound *)object;
+                gc_mark_value(bound->receiver);
+                gc_mark_value(bound->callee);
+                break;
+            }
+            case O_ITER: {
+                Iterator *iterator = (Iterator *)object;
+                gc_mark_value(iterator->target);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
+// Reads memory it does not own on purpose (the scan is word-granular over a
+// byte range), so address sanitizer instrumentation is switched off for it.
+__attribute__((no_sanitize_address))
+__attribute__((no_sanitize_address))
+static void gc_scan_conservative_range(const char *from, const char *to) {
+    // Round inwards so the scan only ever sees whole words.
+    const char *start = (const char *)(((uintptr_t)from + sizeof(void *) - 1) & ~(uintptr_t)(sizeof(void *) - 1));
+    const char *end = (const char *)((uintptr_t)to & ~(uintptr_t)(sizeof(void *) - 1));
+    for (const char *cursor = start; cursor + sizeof(void *) <= end; cursor += sizeof(void *)) {
+        void *candidate;
+        memcpy(&candidate, cursor, sizeof candidate);
+        if (candidate) {
+            gc_mark_conservative(candidate);
+        }
+    }
+}
+
+size_t tern_gc_live_bytes(void) { return gc_live_bytes; }
+
+/// `TERN_GC_STATS=1` makes a program print one line about the collector to
+/// stderr when it exits. Handy when tuning a workload; never on by default.
+static void gc_print_stats(void) {
+    fprintf(stderr, "gc: %zu collections, %zu bytes allocated, %zu bytes live, %d blocks\n",
+            gc_collections, gc_allocated_total, gc_live_bytes, gc_block_count);
+}
+
+void tern_gc_collect(void) {
+    if (!gc_stack_bottom) {
+        return;
+    }
+    gc_collections++;
+
+    // Spilling the registers with setjmp is what makes a register-only pointer
+    // visible to the scanner.
+    jmp_buf registers;
+    memset(&registers, 0, sizeof registers);
+    setjmp(registers);
+    // GCC spills every callee-saved register to the stack here, so the scan
+    // below sees values that only live in registers.
+    __builtin_unwind_init();
+
+    gc_gray.count = 0;
+
+    for (int i = 0; i < gc_value_root_count; i++) {
+        ValueRoot *root = &gc_value_roots[i];
+        for (int j = 0; j < root->count; j++) {
+            gc_mark_value(root->base[j]);
+        }
+    }
+
+    for (int i = 0; i < gc_ptr_root_count; i++) {
+        PtrRoot *root = &gc_ptr_roots[i];
+        for (int j = 0; j < root->count; j++) {
+            gc_mark_object((Obj *)root->base[j]);
+        }
+    }
+
+    gc_mark_value(tern_thrown);
+
+    char here = 0;
+    const char *top = (const char *)&here;
+    if (top < gc_stack_bottom) {
+        gc_scan_conservative_range(top, gc_stack_bottom);
+    } else {
+        gc_scan_conservative_range(gc_stack_bottom, top);
+    }
+
+    gc_scan_conservative_range((const char *)&registers, (const char *)&registers + sizeof registers);
+    gc_trace();
+
+    // Free lists are rebuilt from scratch every time: a block that is released
+    // below must not leave entries behind that point into freed memory.
+    for (int i = 0; i < GC_CLASSES; i++) {
+        gc_free[i] = NULL;
+    }
+
+    // ---- sweep, pass 1: keep or drop each block
+    size_t live_bytes = 0;
+    int write = 0;
+    for (int i = 0; i < gc_block_count; i++) {
+        Block *block = gc_blocks[i];
+        bool keep = true;
+
+        if (block->single) {
+            Obj *object = (Obj *)block->data;
+            if (object->marked) {
+                object->marked = 0;
+                live_bytes += block->cap;
+            } else {
+                gc_release(object);
+                keep = false;
+            }
+        } else {
+            int live = 0;
+            for (size_t offset = 0; offset < block->used; ) {
+                Obj *object = (Obj *)(block->data + offset);
+                offset += ((size_t)object->klass + 1) * GC_ALIGN;
+                if (object->marked) {
+                    live++;
+                } else if (object->type != GC_DEAD) {
+                    gc_release(object);
+                }
+            }
+
+            // A block with nothing left in it (and not the one being bumped)
+            // goes back to malloc.
+            if (live == 0 && block != gc_current) {
+                keep = false;
+            }
+        }
+
+        if (keep) {
+            if (!block->single) {
+                // ---- pass 2 for this block: dead objects join the free lists
+                for (size_t offset = 0; offset < block->used; ) {
+                    Obj *object = (Obj *)(block->data + offset);
+                    size_t size = ((size_t)object->klass + 1) * GC_ALIGN;
+                    offset += size;
+                    if (object->marked) {
+                        object->marked = 0;
+                        live_bytes += size;
+                    } else if (object->type != GC_DEAD) {
+                        int klass = (int)(size / GC_ALIGN) - 1;
+                        object->type = GC_DEAD;
+                        object->klass = (uint8_t)klass;
+                        gc_set_link(object, gc_free[klass]);
+                        gc_free[klass] = object;
+                    }
+                }
+            }
+            gc_blocks[write++] = block;
+        } else {
+            free(block);
+        }
+    }
+    gc_block_count = write;
+
+    gc_live_bytes = live_bytes;
+    gc_since = 0;
+    if (!gc_threshold_fixed) {
+        size_t floor = 16u << 20;
+        gc_threshold = live_bytes * 2 > floor ? live_bytes * 2 : floor;
+    }
+}
+
+/// Drops free-list entries that point into a block that is about to be freed.
+/// (Called before the sweep releases blocks; kept separate for clarity.)
+/// Fresh bump block. Collections are triggered by `tern_alloc` itself, which
+/// keeps the threshold meaningful instead of tying it to block size.
+static void gc_new_current(size_t size) {
+    if (!gc_current || gc_current->used + size > gc_current->cap) {
+        gc_current = gc_new_block(GC_BLOCK);
+    }
+}
+
+Value *tern_alloc(size_t size, ObjType type) {
+    size = (size + (GC_ALIGN - 1)) & ~(size_t)(GC_ALIGN - 1);
+
+    // One compare per allocation. Everything below may call into user code
+    // (string formatting), so it is done before any object exists.
+    if (gc_since >= gc_threshold) {
+        tern_gc_collect();
+    }
+
+    Obj *object = NULL;
+
+    if (size <= GC_SMALL_MAX) {
+        int klass = (int)(size / GC_ALIGN) - 1;
+        object = (Obj *)gc_free[klass];
+        if (object) {
+            gc_free[klass] = gc_link(object);
+            memset(object, 0, size);
+        }
+    }
+
+    if (!object) {
+        if (size > GC_SMALL_MAX) {
+            // One block per large object: the sweep can free the whole block.
+            Block *block = gc_new_block(size);
+            block->single = 1;
+            block->used = size;
+            gc_poison(block, 0);
+            object = (Obj *)block->data;
+        } else {
+            int klass = (int)(size / GC_ALIGN) - 1;
+            if (!gc_current || gc_current->used + size > gc_current->cap) {
+                gc_new_current(size);
+                object = (Obj *)gc_free[klass];
+                if (object) {
+                    gc_free[klass] = gc_link(object);
+                    memset(object, 0, size);
+                }
+            }
+
+            if (!object) {
+                Block *block = gc_current;
+                if (!block || block->used + size > block->cap) {
+                    tern_panic("MemoryError", "out of memory");
+                }
+                size_t offset = block->used;
+                gc_poison(block, offset);
+                block->used = offset + size;
+                object = (Obj *)(block->data + offset);
+            }
+        }
+    }
+
+    gc_since += size;
+    gc_allocated_total += size;
     object->type = type;
+    object->marked = 0;
+    object->klass = size <= GC_SMALL_MAX ? (uint8_t)(size / GC_ALIGN - 1) : GC_LARGE;
     return (Value *)object;
 }
 
@@ -3404,6 +3889,7 @@ Value tern_lookup_global(const char *name) {
 }
 
 void tern_bind_globals(Value *globals, const char **names, int count) {
+    tern_gc_register_values(globals, count);
     for (int i = 0; i < count; i++) {
         globals[i] = tern_lookup_global(names[i]);
     }
@@ -3412,4 +3898,20 @@ void tern_bind_globals(Value *globals, const char **names, int count) {
 void tern_rt_init(void) {
     /* stdout is unbuffered-per-line by default; keep line buffering for pipes. */
     setvbuf(stdout, NULL, _IOLBF, 0);
+
+    /* TERN_GC_THRESHOLD exists so the collector can be stress-tested: a tiny
+       value collects constantly and surfaces missing roots. */
+    const char *threshold = getenv("TERN_GC_THRESHOLD");
+    if (threshold && *threshold) {
+        long long value = atoll(threshold);
+        if (value > 0) {
+            gc_threshold = (size_t)value;
+            gc_threshold_fixed = 1;
+        }
+    }
+
+    if (getenv("TERN_GC_STATS")) {
+        atexit(gc_print_stats);
+    }
+
 }

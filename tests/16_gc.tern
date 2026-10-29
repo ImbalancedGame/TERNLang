@@ -1,0 +1,54 @@
+// Allocation churn: the collector must reclaim without losing anything live.
+struct Pair { left, right }
+
+fn build(round) {
+    let items = [];
+    for (let i = 0; i < 40; i = i + 1) {
+        items.push([i, "item${round}-${i}", {"round": round, "i": i}]);
+    }
+    return items;
+}
+
+fn adder(start) {
+    let total = start;
+    return fn(delta) { total += delta; return total; };
+}
+
+fn tree(depth) {
+    if (depth == 0) { return [1, []]; }
+    let kids = [];
+    for (let i = 0; i < 2; i = i + 1) { kids.push(tree(depth - 1)); }
+    return [1, kids];
+}
+
+fn weight(node) {
+    let sum = node[0];
+    for child in node[1] { sum += weight(child); }
+    return sum;
+}
+
+let kept = [];
+let total = 0;
+for (let round = 0; round < 200; round += 1) {
+    let items = build(round);
+    for item in items {
+        total += item[0] + len(item[1]) + item[2]["i"];
+    }
+    let add = adder(round);
+    for (let i = 0; i < 10; i += 1) { add(i); }
+    total += add(1);
+    let pairs = [];
+    for (let i = 0; i < 60; i += 1) {
+        pairs = [Pair(i, "p${i}"), pairs];
+    }
+    let deep = tree(6);
+    total += weight(deep);
+    kept.push(weight(deep) + len(pairs));
+    if (len(kept) > 8) { kept = kept.slice(1); }
+}
+
+let joined = "";
+for value in kept { joined = "${joined}${value},"; }
+println(len(joined));
+println(total);
+println(kept);

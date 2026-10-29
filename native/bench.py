@@ -28,7 +28,10 @@ def best_run(command, runs, cwd=None):
     best = float("inf")
     for _ in range(runs):
         start = time.perf_counter()
-        subprocess.run(command, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        done = subprocess.run(command, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if done.returncode != 0:
+            # Timing a workload that crashed would report a meaningless number.
+            return None
         best = min(best, time.perf_counter() - start)
     return best * 1000.0
 
@@ -56,7 +59,12 @@ def main(argv):
                 print("%s: build failed\n%s" % (name, built.stderr or built.stdout))
                 continue
 
-            row = {"name": name, "native": best_run([binary], args.runs)}
+            native = best_run([binary], args.runs)
+            if native is None:
+                print("%s: exited with an error; fix the workload before timing it" % name)
+                continue
+
+            row = {"name": name, "native": native}
             if args.interp:
                 row["interp"] = best_run([TERN, "run", source], args.runs, cwd=REPO)
             rows.append(row)

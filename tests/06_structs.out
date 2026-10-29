@@ -7,3 +7,7 @@ Config(name: "custom", retries: 3)
 2
 10 Wallet(cash: Money(amount: 10, currency: "GBP"))
 Point Counter
+false true
+true false true
+not nil
+1 true

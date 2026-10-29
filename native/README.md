@@ -56,8 +56,16 @@ Other notable points:
 * **Modules** — each imported file gets its own `G_N` globals array and a
   `load_module_N()` that runs its body once and returns a map of its exports.
   `import "std:x"` constants are resolved against the runtime's namespaces.
-* **Allocation** — objects are immortal (no collector yet) and bump-allocated
-  out of 1 MiB blocks, one pointer bump per object.
+* **Allocation and GC** — objects come from 16-byte size classes (16..512
+  bytes) with one free list per class, bump-allocated out of 256 KiB blocks;
+  larger objects get a block of their own. A mark-sweep collector runs when 16
+  MiB or twice the live set has been allocated since the last collection. Roots
+  are the registered global/constant/type arrays plus the C stack and
+  callee-saved registers, scanned conservatively (a word that points at an
+  object start keeps that object alive), so generated functions do not have to
+  describe their frames. `TERN_GC_THRESHOLD=<bytes>` overrides the initial
+  threshold; a tiny value (e.g. `512`) collects constantly and is how the
+  collector is stress-tested.
 * **Standard library** — the whole standard library lives in the runtime: the
   globals, `math`/`time`/`json`/`os`/`random`/`text`/`lists`, the string, list,
   map, range and number methods, and map insertion order.
@@ -92,26 +100,35 @@ because that is what a user pays to run the script:
 
 | Workload   | native | `tern run` | speed-up |
 | ---------- | -----: | ---------: | -------: |
-| `fib`      |   21 ms |     280 ms |   13.0x |
-| `loop`     |   73 ms |     272 ms |    3.7x |
-| `maps`     |  146 ms |     317 ms |    2.2x |
-| `strings`  |    6 ms |     147 ms |   21.4x |
-| `bintree`  |    6 ms |     174 ms |   26.6x |
+| `fib`      |   21 ms |     273 ms |   12.8x |
+| `loop`     |   73 ms |     284 ms |    3.9x |
+| `maps`     |  145 ms |     278 ms |    1.9x |
+| `strings`  |    6 ms |     140 ms |   23.0x |
+| `bintree`  |    9 ms |     163 ms |   18.2x |
 
 Measured in-process instead (start-up excluded, best of nine, from
 `tools/compare.sh`), the interpreter needs 157 / 104 / 148 / 18 / 45 ms for the
-same five workloads, so the compiled code is **7.4x** ahead on `fib`, 1.4x on
-`loop`, level on `maps`, 2.6x on `strings` and 7.4x on `bintree` — and within
-2-3x of LuaJIT and Node on `fib` and `bintree` while staying a plain C compiler
-back end.
+same five workloads, so the compiled code is **7.5x** ahead on `fib`, 1.4x on
+`loop`, level on `maps`, 3.0x on `strings` and 5.0x on `bintree` — and within
+2-3x of LuaJIT and Node on `fib`, level with LuaJIT on `bintree`, while staying
+a plain C compiler back end.
+
+Collecting costs nothing here: `bintree`, `fib` and `loop` stay under the 16 MiB
+allocation budget and never collect at all, and `maps` (the only workload that
+crosses it) pays a few percent. Run any binary with `TERN_GC_STATS=1` to see
+collections, bytes allocated and bytes live on exit.
 
 Compiling costs: export 80 ms, code generation 35 ms, `cc -O2` about 1.8 s for
 the whole single-translation-unit program.
 
 ## Limitations
 
-* No garbage collector yet: memory is never reclaimed, so long-running programs
-  that allocate in a loop will grow.
+* The collector is conservative: an integer that happens to look like an object
+  address can keep one object alive, and the heap floor is 16 MiB before the
+  first collection, so peak RSS for small programs is the same as before.
+* Allocation is a free-list pop (small) or a `malloc` per large object, which
+  costs a few percent on allocator-heavy workloads compared with the old bump
+  allocator.
 * Compiler diagnostics (the `12_lint` warnings) are not emitted by binaries;
   use `./tools/tern check` for that.
 * Uncaught errors print the message without a stack trace.

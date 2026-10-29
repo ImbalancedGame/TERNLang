@@ -188,11 +188,12 @@ class Generator:
             divs = "D_%d" % index if proto["divs"] else "NULL"
             name = c_string(proto["name"]) if proto["name"] is not None else "NULL"
             self.emit(
-                "static Proto P_%d = { fn_%d, %s, %d, %d, %d, %d, %d, %d, %s, %s };"
+                "static Proto P_%d = { fn_%d, %s, %d, %d, %d, %d, %d, %d, %d, %s, %s };"
                 % (
                     index, index, name,
                     proto["params"], proto["required"], proto["locals"], max(4, proto["stack"]),
                     1 if proto["rest"] else 0, 1 if proto["method"] else 0,
+                    len(proto["upvalues"]),
                     consts, divs,
                 )
             )
@@ -570,17 +571,18 @@ class Generator:
             line("if (!v_is_list(%s)) goto L%d;" % (self.loc(a, captured), b))
 
         elif op == "JumpCmp":
-            line("{ Value b = st[--sp], a = st[--sp]; int cmp;")
-            line("  if (a.tag == T_INT && b.tag == T_INT) cmp = a.as.i < b.as.i ? -1 : (a.as.i > b.as.i ? 1 : 0);")
-            line("  else if (a.tag == T_OBJ || b.tag == T_OBJ) cmp = (int)tern_compare(a, b).as.i;")
-            line("  else if (v_is_num(a) && v_is_num(b)) cmp = v_as_double(a) < v_as_double(b) ? -1 : (v_as_double(a) > v_as_double(b) ? 1 : 0);")
-            line("  else cmp = 0;")
             condition = {0: "cmp < 0", 1: "cmp <= 0", 2: "cmp > 0", 3: "cmp >= 0"}.get(a)
             if condition:
+                line("{ Value b = st[--sp], a = st[--sp]; int cmp;")
+                line("  if (a.tag == T_INT && b.tag == T_INT) cmp = a.as.i < b.as.i ? -1 : (a.as.i > b.as.i ? 1 : 0);")
+                line("  else if (v_is_num(a) && v_is_num(b)) cmp = v_as_double(a) < v_as_double(b) ? -1 : (v_as_double(a) > v_as_double(b) ? 1 : 0);")
+                line("  else cmp = (int)tern_compare(a, b).as.i;")
                 line("  if ((%s) == %s) goto L%d; }" % (condition, "true" if c else "false", b))
             else:
-                # Eq / Ne compare values, not orderings.
+                # Eq / Ne compare values for equality; they never order them, so
+                # they must not go through tern_compare.
                 compare = "tern_equal(a, b)" if a == 4 else "!tern_equal(a, b)"
+                line("{ Value b = st[--sp], a = st[--sp];")
                 line("  if ((%s) == %s) goto L%d; }" % (compare, "true" if c else "false", b))
 
         elif op in ("ForPrepLt", "ForPrepLe", "ForPrepGt", "ForPrepGe"):
@@ -797,13 +799,44 @@ class Generator:
             self.emit("}")
             self.emit()
 
-        self.emit("int main(int argc, char **argv) {")
+        # Roots the collector cannot find by scanning the stack: constant
+        # tables, struct type arrays and the per-module export values.
+        self.emit("// ---- collector roots")
+        self.emit("static void register_roots(void) {")
+        for index, proto in enumerate(self.protos):
+            if proto["consts"]:
+                self.emit("    tern_gc_register_values(K_%d, %d);" % (index, len(proto["consts"])))
+        for (proto_index, const_index), symbol in sorted(self.types.items()):
+            const = self.protos[proto_index]["consts"][const_index]
+            self.emit("    tern_gc_register_values(%s_defaults, %d);" % (symbol, len(const["fields"])))
+            if const["methods"]:
+                self.emit("    tern_gc_register_ptrs((void **)%s_methods, %d);" % (symbol, len(const["methods"])))
+            if any(p >= 0 for p in const.get("defprotos") or []):
+                self.emit("    tern_gc_register_ptrs((void **)%s_defproto, %d);" % (symbol, len(const["fields"])))
+        for index in range(len(self.modules)):
+            self.emit("    tern_gc_register_values(&MOD_%d, 1);" % index)
+        self.emit("}")
+        self.emit()
+
+        # The program body lives in its own function so that the collector's
+        # stack anchor is in a frame strictly above it: every local of the body
+        # (including ones the compiler inlined into it) then sits between the
+        # anchor and the current stack pointer.
+        self.emit("static int program_main(int argc, char **argv) __attribute__((noinline));")
+        self.emit("static int program_main(int argc, char **argv) {")
         self.emit("    (void)argc; (void)argv;")
         self.emit("    tern_rt_init();")
+        self.emit("    register_roots();")
         self.emit("    init_consts();")
         self.emit("    load_module_0();")
         self.emit("    fflush(stdout);")
         self.emit("    return 0;")
+        self.emit("}")
+        self.emit()
+        self.emit("int main(int argc, char **argv) {")
+        self.emit("    char tern_stack_anchor = 0;")
+        self.emit("    tern_gc_set_stack_bottom(&tern_stack_anchor);")
+        self.emit("    return program_main(argc, argv);")
         self.emit("}")
 
 

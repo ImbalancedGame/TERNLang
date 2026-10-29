@@ -257,14 +257,19 @@ nine runs, whole process including start-up:
 | `fib`      |          21 |     157 |      57 |      8 |      10 |     5 |
 | `loop`     |          73 |     104 |      37 |     14 |      10 |     6 |
 | `maps`     |         146 |     148 |     200 |    60 |     100 |    68 |
-| `bintree`  |           6 |      45 |      45 |      8 |       5 |    30 |
+| `bintree`  |           9 |      45 |      45 |      8 |       5 |    30 |
 | `strings`  |           6 |      18 |      14 |      6 |       3 |     4 |
 
 The VM column is in-process (start-up excluded); the native column includes
-about a millisecond of process start, so it is 7.4x ahead of the interpreter on
-`fib`, 2.6x on `strings` and 7.4x on `bintree`, level on `maps`, and within 2-3x
-of LuaJIT on `fib` and `bintree`. Building one binary takes ~1.9 s, almost all
-of it `cc -O2` over the runtime.
+about a millisecond of process start, so it is 7.5x ahead of the interpreter on
+`fib`, 3.0x on `strings` and 5.0x on `bintree`, level on `maps`, and within 2-3x
+of LuaJIT on `fib` (level on `bintree`). Building one binary takes ~1.9 s,
+almost all of it `cc -O2` over the runtime.
+
+Objects are allocated from per-size-class free lists and reclaimed by a
+mark-sweep collector whose roots are the registered global/constant arrays plus
+a conservative scan of the C stack, so generated code does not describe its
+frames: programs that allocate in a loop stay flat instead of growing.
 
 ## Repository layout
 
