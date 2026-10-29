@@ -387,7 +387,16 @@ namespace TERN.Syntax
                     continue;
                 }
 
-                var fieldName = Expect(TokenKind.Identifier, "a field name");
+                if (!Check(TokenKind.Identifier))
+                {
+                    // Something that is neither a field nor a method: report it
+                    // and skip a token, or the loop would spin on it forever.
+                    Error("expected a field name or 'fn' in a struct body", Current, "TRN0102");
+                    Advance();
+                    continue;
+                }
+
+                var fieldName = Advance();
                 Expr? defaultValue = null;
                 if (Match(TokenKind.Equal))
                 {

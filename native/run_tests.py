@@ -24,6 +24,9 @@ REPO = os.path.dirname(HERE)
 TESTS = os.path.join(REPO, "tests")
 TERN = os.path.join(REPO, "tools", "tern")
 
+# Scripts that never reach a runtime: they exercise the compiler's diagnostics.
+COMPILER_ONLY = {"12_lint", "24_parse_errors"}
+
 
 def main(argv):
     parser = argparse.ArgumentParser(description="Run golden tests natively.")
@@ -38,8 +41,10 @@ def main(argv):
         name[:-5]
         for name in os.listdir(TESTS)
         if name.endswith(".tern") and os.path.exists(os.path.join(TESTS, name[:-5] + ".out"))
-        # 12_lint checks compiler diagnostics, which the native backend does not emit.
-        and not name.endswith("12_lint.tern")
+        # These two check the compiler, not the runtime: 12_lint covers the
+        # lint warnings and 24_parse_errors the diagnostics for bad syntax,
+        # neither of which a compiled binary produces.
+        and name[:-5] not in COMPILER_ONLY
     )
     if args.filters:
         names = [n for n in names if any(f in n for f in args.filters)]

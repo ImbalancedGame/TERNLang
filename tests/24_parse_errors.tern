@@ -1,0 +1,7 @@
+// Malformed input must produce diagnostics and stop, never hang the parser.
+// This test only checks the compiler, so it is not run natively.
+
+struct Annotated { x: int }
+struct Numbered { 1 }
+struct Incomplete { x = }
+let broken = [1, 2;

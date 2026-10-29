@@ -21,15 +21,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 TERN = os.path.join(REPO, "tools", "tern")
 
+# Scripts that exercise the compiler's diagnostics instead of running.
+COMPILER_ONLY = {"12_lint", "24_parse_errors"}
+
 
 def scripts():
     """Every script to compare, in a stable order."""
     found = []
     tests = os.path.join(REPO, "tests")
     for name in sorted(os.listdir(tests)):
-        # 12_lint checks compiler diagnostics, which the native backend does
-        # not produce: it is a compiler test, not a runtime one.
-        if name.endswith(".tern") and not name.endswith("12_lint.tern"):
+        # Compiler-only scripts (lint warnings, syntax errors) never reach a
+        # runtime, so there is nothing to compare.
+        if name.endswith(".tern") and name[:-5] not in COMPILER_ONLY:
             found.append(os.path.join(tests, name))
     examples = os.path.join(REPO, "examples")
     if os.path.isdir(examples):
