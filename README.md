@@ -69,7 +69,7 @@ match tickets.length {
 # other commands
 ./tools/tern check examples/triage.tern   # compile only, report diagnostics and warnings
 ./tools/tern disasm examples/triage.tern  # dump bytecode
-./tools/tern repl                         # interactive
+./tools/tern repl                         # interactive (:help for commands)
 ./tools/tern docs                         # standard library reference (markdown)
 ./tools/tern version
 ```

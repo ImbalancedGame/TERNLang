@@ -638,3 +638,16 @@ tern repl                     # interactive session
 `tern check` exits with `2` on errors and `0` when the file compiles, even if it
 produced warnings. `tern disasm` is the tool to reach for when reasoning about
 performance.
+
+### The REPL
+
+`tern repl` evaluates one expression at a time and echoes the value of the last
+expression. Blocks may span lines: `tern>` continues with `...` until braces,
+brackets and quotes balance. Commands start with `:`.
+
+| Command | Effect |
+| ------- | ------ |
+| `:help` | show the command list |
+| `:globals` | list the names defined so far |
+| `:reset` | forget every definition and start over |
+| `:quit` / `exit` | leave the session |

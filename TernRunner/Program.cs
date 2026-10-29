@@ -84,6 +84,7 @@ Options for `run`:
   --no-fs        Disable file system access (sandbox mode)
   --time         Print execution time to stderr
   --quiet        Suppress lint warnings
+  --dump         Print the bytecode before running
 """);
             return 0;
         }
@@ -144,7 +145,8 @@ Options for `run`:
 
             if (options.Contains("--dump"))
             {
-                Disassembler.Dump(module.Entry, Console.Out);
+                // Keep stdout clean for the script's own output.
+                Disassembler.Dump(module.Entry, Console.Error);
             }
 
             var stopwatch = Stopwatch.StartNew();
@@ -356,7 +358,7 @@ Options for `run`:
             var module = engine.CompileScript(string.Empty, "<repl>", scope);
             var vm = engine.CreateVm();
 
-            Console.WriteLine($"TERN {Version} interactive mode. Type `exit` to quit.");
+            Console.WriteLine($"TERN {Version} interactive mode. Type `:help` for commands, `exit` to quit.");
             var buffer = new StringBuilder();
 
             while (true)
@@ -372,6 +374,49 @@ Options for `run`:
                 if (buffer.Length == 0 && line.Trim() is "exit" or "quit" or ":q")
                 {
                     return 0;
+                }
+
+                if (buffer.Length == 0 && line.TrimStart().StartsWith(":", StringComparison.Ordinal))
+                {
+                    switch (line.Trim())
+                    {
+                        case ":help":
+                            Console.WriteLine("""
+Commands:
+  :help       show this help
+  :globals    list the names defined so far
+  :reset      forget every definition
+  :quit       leave the session
+
+Type an expression to evaluate it; blocks may span several lines.
+""");
+                            continue;
+
+                        case ":globals":
+                        {
+                            var names = scope.Slots
+                                .Where(slot => !slot.IsHost)
+                                .Select(slot => slot.Name)
+                                .OrderBy(name => name, StringComparer.Ordinal)
+                                .ToList();
+
+                            Console.WriteLine(names.Count == 0
+                                ? "(nothing defined yet)"
+                                : string.Join(", ", names));
+                            continue;
+                        }
+
+                        case ":reset":
+                            scope = engine.CreateScope("<repl>");
+                            module = engine.CompileScript(string.Empty, "<repl>", scope);
+                            vm = engine.CreateVm();
+                            Console.WriteLine("(reset)");
+                            continue;
+
+                        default:
+                            Console.Error.WriteLine($"unknown command '{line.Trim()}' (try :help)");
+                            continue;
+                    }
                 }
 
                 buffer.AppendLine(line);
@@ -424,9 +469,29 @@ Options for `run`:
             var depth = 0;
             var inString = false;
             var escaped = false;
+            var inComment = false;
 
-            foreach (var c in source)
+            for (var i = 0; i < source.Length; i++)
             {
+                var c = source[i];
+
+                if (inComment)
+                {
+                    if (c == '\n')
+                    {
+                        inComment = false;
+                    }
+
+                    continue;
+                }
+
+                if (!inString && c == '/' && i + 1 < source.Length && source[i + 1] == '/')
+                {
+                    inComment = true;
+                    i++;
+                    continue;
+                }
+
                 if (inString)
                 {
                     if (escaped)
