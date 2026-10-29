@@ -48,7 +48,11 @@ def main(argv):
     with tempfile.TemporaryDirectory() as build:
         for name in names:
             source = os.path.join(TESTS, name + ".tern")
-            expected = open(os.path.join(TESTS, name + ".out"), encoding="utf-8").read()
+            # surrogateescape: a golden file may legitimately hold bytes that are
+            # not valid UTF-8 (a lone surrogate printed by the interpreter), and
+            # both sides must compare byte for byte.
+            expected = open(os.path.join(TESTS, name + ".out"), encoding="utf-8",
+                            errors="surrogateescape").read()
             binary = os.path.join(build, name)
 
             build_result = subprocess.run(
@@ -63,6 +67,7 @@ def main(argv):
             try:
                 run = subprocess.run(
                     [binary], cwd=TESTS, capture_output=True, text=True, timeout=args.timeout,
+                    encoding="utf-8", errors="surrogateescape",
                 )
             except subprocess.TimeoutExpired:
                 failed.append((name, "timeout after %.0fs" % args.timeout))
@@ -79,7 +84,8 @@ def main(argv):
                 try:
                     stress = subprocess.run(
                         [binary], cwd=TESTS, capture_output=True, text=True,
-                        timeout=args.timeout, env={**os.environ, "TERN_GC_THRESHOLD": "4096"},
+                        timeout=args.timeout, encoding="utf-8", errors="surrogateescape",
+                        env={**os.environ, "TERN_GC_THRESHOLD": "4096"},
                     )
                 except subprocess.TimeoutExpired:
                     problem = "timeout under GC stress"
@@ -94,7 +100,8 @@ def main(argv):
 
             if args.verbose:
                 diff = subprocess.run(["diff", "-u", os.path.join(TESTS, name + ".out"), "-"],
-                                      input=actual, capture_output=True, text=True)
+                                      input=actual, capture_output=True, text=True,
+                                      encoding="utf-8", errors="surrogateescape")
                 print(diff.stdout)
 
     width = max([len(n) for n in names] + [4])

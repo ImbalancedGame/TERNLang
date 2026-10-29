@@ -1,0 +1,47 @@
+// Text is counted in UTF-16 code units and manipulated per code point, so
+// accented Latin and CJK text behave like plain ASCII text.
+let accented = "héllo wörld";
+println(len(accented));
+println(accented.upper());
+println(accented.lower());
+println(accented[1]);
+println(accented[-1]);
+println(accented[1..3]);
+println(accented.indexOf("wörld"));
+println(accented.contains("wörld"));
+println(accented.startsWith("hé"));
+println(accented.replace("ö", "o"));
+println(accented.reversed());
+println(accented.words());
+
+let cjk = "日本語テキスト";
+println(len(cjk));
+println(cjk[0], cjk[3]);
+println(cjk[1..2]);
+println(cjk.chars());
+println(cjk.reversed());
+println(cjk.indexOf("テキ"));
+
+let greek = "αβγδε";
+println(greek.upper());
+println(greek.reversed());
+println(ord("α"), chr(945));
+
+// Iteration yields characters, not bytes.
+let count = 0;
+for c in "naïve" { count += 1; }
+println(count);
+let joined = "";
+for c in "abc" { joined = "${joined}${c}"; }
+println(joined);
+
+// Mixed ASCII and multi-byte text.
+let mixed = "a" + "é" + "日" + "z";
+println(len(mixed), mixed.chars(), mixed.reversed());
+println(mixed.upper());
+println("A".padStart(3, "·"));
+println("π".repeat(3));
+println("tab\there".split("\t"));
+
+// Case conversion leaves digits and symbols alone.
+println("AbC123!".upper(), "AbC123!".lower());

@@ -75,6 +75,14 @@ Other notable points:
 * **Arguments** — `main` records `argv` minus the program name, which is what
   `os.args()` returns; passing arguments works exactly as it does under
   `tern run script.tern`.
+* **Text** — strings are UTF-8 bytes, but every position the language exposes
+  (length, index, slice, iteration, `chars`, `indexOf`, `ord`, pad widths) is
+  counted the way the interpreter counts it: in UTF-16 code units, so
+  `len("héllo")` is 5 and `len("日本語")` is 3. Individual characters are moved
+  whole, so `"日本語".reversed()` gives `"語本日"` rather than shredded bytes,
+  and case conversion uses the C library's Unicode tables (`setlocale` is set
+  to `C.UTF-8` at start-up), so `"héllo".upper()` is `"HÉLLO"`. The code-unit
+  count is cached in the string object, so `len()` is O(1) after the first call.
 
 ## Tests
 
@@ -89,11 +97,11 @@ runtime behaviour) is compiled and run, and its output compared with
 `TERN_GC_THRESHOLD=4096` so the collector is under constant pressure:
 
 ```
-01_basics       ok     06_structs      ok     11_operators    ok     16_gc           ok
-02_strings      ok     07_match        ok     13_loops        ok     17_stdlib       ok
-03_control      ok     08_errors       ok     14_modulo       ok     18_patterns     ok
+01_basics       ok     06_structs      ok     11_operators    ok     17_stdlib       ok
+02_strings      ok     07_match        ok     13_loops        ok     18_patterns     ok
+03_control      ok     08_errors       ok     14_modulo       ok     19_unicode      ok
 04_functions    ok     09_builtins     ok     15_stores       ok
-05_collections  ok     10_modules_main ok
+05_collections  ok     10_modules_main ok     16_gc           ok
 ```
 
 The four `examples/*.tern` scripts and the five `bench/*.tern` workloads also
@@ -108,11 +116,11 @@ because that is what a user pays to run the script:
 
 | Workload   | native | `tern run` | speed-up |
 | ---------- | -----: | ---------: | -------: |
-| `fib`      |   18 ms |     253 ms |   13.7x |
-| `loop`     |   56 ms |     269 ms |    4.8x |
-| `maps`     |  128 ms |     326 ms |    2.6x |
-| `strings`  |    6 ms |     134 ms |   22.7x |
-| `bintree`  |    8 ms |     153 ms |   19.9x |
+| `fib`      |   18 ms |     255 ms |   14.6x |
+| `loop`     |   56 ms |     276 ms |    4.9x |
+| `maps`     |  118 ms |     282 ms |    2.4x |
+| `strings`  |    7 ms |     134 ms |   19.2x |
+| `bintree`  |    8 ms |     157 ms |   20.7x |
 
 (Timings move by up to 20% with host load; these were taken on an otherwise
 idle 2 vCPU machine.)
@@ -139,6 +147,11 @@ the whole single-translation-unit program.
 * Allocation is a free-list pop (small) or a `malloc` per large object, which
   costs a few percent on allocator-heavy workloads compared with the old bump
   allocator.
+* Characters above U+FFFF (emoji, rare CJK) count as two code units for `len`,
+  like the interpreter, but indexing, slicing, `chars()` and iteration treat
+  one as a single character: the runtime moves whole code points, whereas the
+  interpreter splits UTF-16 surrogate pairs. Text at or below U+FFFF — Latin,
+  Greek, Cyrillic, CJK — behaves identically.
 * Compiler diagnostics (the `12_lint` warnings) are not emitted by binaries;
   use `./tools/tern check` for that.
 * Uncaught errors print the message without a stack trace (the interpreter

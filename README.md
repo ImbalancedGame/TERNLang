@@ -256,9 +256,9 @@ nine runs, whole process including start-up:
 | ---------- | ----------: | ------: | ------: | -----: | ------: | ----: |
 | `fib`      |          18 |     134 |      57 |      8 |      10 |     5 |
 | `loop`     |          56 |     113 |      37 |     14 |      10 |     6 |
-| `maps`     |         128 |     192 |     200 |    60 |     100 |    68 |
+| `maps`     |         118 |     192 |     200 |    60 |     100 |    68 |
 | `bintree`  |           8 |      51 |      45 |      8 |       5 |    30 |
-| `strings`  |           6 |      20 |      14 |      6 |       3 |     4 |
+| `strings`  |           7 |      20 |      14 |      6 |       3 |     4 |
 
 The VM column is in-process (start-up excluded); the native column includes
 about a millisecond of process start, so it is 7.3x ahead of the interpreter on

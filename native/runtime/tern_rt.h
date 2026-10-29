@@ -127,8 +127,10 @@ static inline double v_as_double(Value v) {
 
 typedef struct Str {
     Obj h;
-    uint32_t len;
+    uint32_t len;      // bytes
     uint32_t hash;
+    uint32_t units;    // UTF-16 code units; 0 means "not counted yet"
+    uint32_t reserved;
     char chars[];
 } Str;
 

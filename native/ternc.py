@@ -43,8 +43,10 @@ def c_string(text):
         elif 32 <= byte < 127:
             out.append(char)
         else:
-            out.append("\\x%02x" % byte)
-    # Avoid the classic "hex escape swallows the next character" trap.
+            # Octal, not \xNN: a hex escape runs into any following hex digit
+            # ("\x8db" is one character), which silently ate the next letter
+            # after every non-ASCII byte.
+            out.append("\\%03o" % byte)
     out.append('"')
     return "".join(out)
 

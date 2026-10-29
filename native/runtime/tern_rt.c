@@ -1,6 +1,8 @@
 // TERN native runtime - implementation.
 #include "tern_rt.h"
+#include <locale.h>
 #include <math.h>
+#include <wctype.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -576,6 +578,7 @@ static uint32_t hash_bytes(const char *data, size_t len) {
 Str *str_from(const char *data, size_t len) {
     Str *s = (Str *)tern_alloc(sizeof(Str) + len + 1, O_STR);
     s->len = (uint32_t)len;
+    s->units = 0;
     s->hash = hash_bytes(data, len);
     if (len) {
         memcpy(s->chars, data, len);
@@ -585,6 +588,124 @@ Str *str_from(const char *data, size_t len) {
 }
 
 Value str_value(const char *data, size_t len) { return v_obj((Obj *)str_from(data, len)); }
+
+// --- UTF-8 <-> code units -------------------------------------------------
+//
+// Strings are stored as UTF-8, but the language counts positions in UTF-16 code
+// units (like the interpreter): every code point above U+FFFF counts as two, so
+// `len("👍")` is 2 and `len("héllo")` is 5. Everything that talks about string
+// positions (index, slice, iteration, chars, indexOf, ord, pad widths) works in
+// those units.
+
+/// Decodes the code point starting at `p`, which must be < `end`. Invalid bytes
+/// decode as themselves, one byte at a time, so a bad string still counts.
+static uint32_t utf8_decode(const char *p, const char *end, int *size) {
+    unsigned char lead = (unsigned char)*p;
+    if (lead < 0x80) {
+        *size = 1;
+        return lead;
+    }
+
+    int extra = lead >= 0xF0 ? 3 : lead >= 0xE0 ? 2 : lead >= 0xC0 ? 1 : 0;
+    if (extra == 0 || p + 1 + extra > end) {
+        *size = 1;
+        return lead;
+    }
+
+    uint32_t code = lead & (0x3F >> extra);
+    for (int i = 1; i <= extra; i++) {
+        unsigned char next = (unsigned char)p[i];
+        if ((next & 0xC0) != 0x80) {
+            *size = 1;
+            return lead;
+        }
+        code = (code << 6) | (next & 0x3F);
+    }
+
+    *size = 1 + extra;
+    return code;
+}
+
+/// Writes `code` as UTF-8; returns the number of bytes (1..4).
+static int utf8_encode(uint32_t code, char *out) {
+    if (code < 0x80) {
+        out[0] = (char)code;
+        return 1;
+    }
+    if (code < 0x800) {
+        out[0] = (char)(0xC0 | (code >> 6));
+        out[1] = (char)(0x80 | (code & 0x3F));
+        return 2;
+    }
+    if (code < 0x10000) {
+        out[0] = (char)(0xE0 | (code >> 12));
+        out[1] = (char)(0x80 | ((code >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (code & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (code >> 18));
+    out[1] = (char)(0x80 | ((code >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((code >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (code & 0x3F));
+    return 4;
+}
+
+/// Code points above U+FFFF occupy two UTF-16 code units.
+static int utf16_width(uint32_t code) { return code >= 0x10000 ? 2 : 1; }
+
+static int64_t str_units(const Str *s) {
+    // Strings are immutable, so the count is cached in the object. Strings are
+    // rarely longer than a few hundred bytes, so this keeps `len()` O(1) on
+    // the second call and beyond without costing anything at creation.
+    Str *mutable = (Str *)s;
+    if (mutable->units == 0) {
+        int64_t units = 0;
+        const char *p = s->chars;
+        const char *end = s->chars + s->len;
+        while (p < end) {
+            int size;
+            units += utf16_width(utf8_decode(p, end, &size));
+            p += size;
+        }
+        mutable->units = (uint32_t)units;
+    }
+    return (int64_t)mutable->units;
+}
+
+/// Byte offset of code-unit index `unit`, clamped to [0, len]. An index that
+/// lands inside a surrogate pair resolves to the start of that character.
+static uint32_t str_offset_of_unit(const Str *s, int64_t unit) {
+    if (unit <= 0) {
+        return 0;
+    }
+
+    const char *p = s->chars;
+    const char *end = s->chars + s->len;
+    int64_t seen = 0;
+    while (p < end) {
+        int size;
+        int width = utf16_width(utf8_decode(p, end, &size));
+        if (seen + width > unit) {
+            return (uint32_t)(p - s->chars);
+        }
+        seen += width;
+        p += size;
+    }
+    return s->len;
+}
+
+/// Code-unit index of a byte offset (used by indexOf, which searches bytes).
+static int64_t str_unit_of_offset(const Str *s, uint32_t offset) {
+    const char *p = s->chars;
+    const char *end = s->chars + (offset < s->len ? offset : s->len);
+    int64_t units = 0;
+    while (p < end) {
+        int size;
+        units += utf16_width(utf8_decode(p, end, &size));
+        p += size;
+    }
+    return units;
+}
 
 Value str_from_cstr(const char *text) { return str_value(text, strlen(text)); }
 
@@ -1129,6 +1250,7 @@ Value tern_add(Value a, Value b) {
         Str *x = (Str *)sa.as.o, *y = (Str *)sb.as.o;
         Str *joined = (Str *)tern_alloc(sizeof(Str) + x->len + y->len + 1, O_STR);
         joined->len = x->len + y->len;
+        joined->units = 0;
         memcpy(joined->chars, x->chars, x->len);
         memcpy(joined->chars + x->len, y->chars, y->len);
         joined->chars[joined->len] = '\0';
@@ -1302,7 +1424,7 @@ Value tern_compare(Value a, Value b) {
 
 int64_t tern_length(Value v) {
     if (v_is_str(v)) {
-        return ((Str *)v.as.o)->len;
+        return str_units((Str *)v.as.o);
     }
     if (v_is_list(v)) {
         return ((List *)v.as.o)->count;
@@ -1529,14 +1651,18 @@ Value tern_get_index(Value target, Value index) {
                                       ((Range *)index.as.o)->inclusive);
                 }
                 int64_t position = require_int(index, "string index");
+                int64_t units = str_units(s);
                 if (position < 0) {
-                    position += s->len;
+                    position += units;
                 }
-                if (position < 0 || position >= s->len) {
-                    tern_panic("IndexError", "index %lld out of range for string of length %u",
-                               (long long)position, s->len);
+                if (position < 0 || position >= units) {
+                    tern_panic("IndexError", "index %lld out of range for string of length %lld",
+                               (long long)position, (long long)units);
                 }
-                return str_value(&s->chars[position], 1);
+                uint32_t offset = str_offset_of_unit(s, position);
+                int size;
+                utf8_decode(s->chars + offset, s->chars + s->len, &size);
+                return str_value(s->chars + offset, (size_t)size);
             }
             case O_INSTANCE: {
                 Instance *instance = (Instance *)target.as.o;
@@ -1645,8 +1771,10 @@ bool tern_iter_next(Value value, Value *first, Value *second) {
             if ((uint32_t)it->index >= s->len) {
                 return false;
             }
-            *first = str_value(s->chars + it->index, 1);
-            it->index++;
+            int size;
+            utf8_decode(s->chars + it->index, s->chars + s->len, &size);
+            *first = str_value(s->chars + it->index, (size_t)size);
+            it->index += size;
             return true;
         }
     }
@@ -1702,6 +1830,7 @@ Value tern_concat(Value *parts, int count) {
         }
     }
     joined->len = (uint32_t)position;
+    joined->units = 0;
     joined->chars[position] = '\0';
     joined->hash = hash_bytes(joined->chars, joined->len);
     return v_obj((Obj *)joined);
@@ -1726,14 +1855,17 @@ Value tern_slice(Value target, Value start, Value end, bool inclusive) {
 
     if (v_is_str(target)) {
         Str *s = (Str *)target.as.o;
+        int64_t units = str_units(s);
         int64_t from = start.tag == T_NIL ? 0 : require_int(start, "slice");
-        int64_t to = end.tag == T_NIL ? s->len : require_int(end, "slice") + (inclusive ? 1 : 0);
-        if (from < 0) from += s->len;
-        if (to < 0) to += s->len;
+        int64_t to = end.tag == T_NIL ? units : require_int(end, "slice") + (inclusive ? 1 : 0);
+        if (from < 0) from += units;
+        if (to < 0) to += units;
         if (from < 0) from = 0;
-        if (to > s->len) to = s->len;
+        if (to > units) to = units;
         if (to < from) to = from;
-        return str_value(s->chars + from, (size_t)(to - from));
+        uint32_t begin = str_offset_of_unit(s, from);
+        uint32_t finish = str_offset_of_unit(s, to);
+        return str_value(s->chars + begin, (size_t)(finish - begin));
     }
 
     tern_panic("TypeError", "cannot slice %s", tern_type_name(target));
@@ -1922,9 +2054,10 @@ static Value n_chr(int argc, Value *argv) {
 static Value n_ord(int argc, Value *argv) {
     Str *s = as_str(arg(argc, argv, 0), "ord");
     if (s->len == 0) {
-        return v_nil();
+        tern_panic("ArgumentError", "ord() requires a non-empty string");
     }
-    return v_int((unsigned char)s->chars[0]);
+    int size;
+    return v_int((int64_t)utf8_decode(s->chars, s->chars + s->len, &size));
 }
 
 static Value n_range(int argc, Value *argv) {
@@ -2166,31 +2299,78 @@ static Str *self_str(int argc, Value *argv) {
     return (Str *)argv[0].as.o;
 }
 
-static Value s_upper(int argc, Value *argv) {
-    Str *s = self_str(argc, argv);
-    Str *out = (Str *)tern_alloc(sizeof(Str) + s->len + 1, O_STR);
+// Case conversion walks code points and uses the C library's Unicode tables
+// (the runtime calls setlocale(LC_CTYPE, "C.UTF-8") at start-up), so "héllo"
+// upper-cases to "HÉLLO" and CJK text passes through untouched. A code point
+// whose uppercase form is a different length (ß -> SS) is handled by encoding
+// the mapped code point only, which matches the interpreter for every
+// single-code-point mapping.
+static Value case_map(Value self, bool upper) {
+    Str *s = (Str *)self.as.o;
+
+    // Fast path: pure ASCII maps one byte to one byte, so the result is exact
+    // and needs no buffer growth.
+    bool ascii = true;
     for (uint32_t i = 0; i < s->len; i++) {
-        char c = s->chars[i];
-        out->chars[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+        if ((unsigned char)s->chars[i] >= 0x80) {
+            ascii = false;
+            break;
+        }
     }
-    out->len = s->len;
-    out->chars[s->len] = '\0';
-    out->hash = hash_bytes(out->chars, out->len);
-    return v_obj((Obj *)out);
+    if (ascii) {
+        Str *out = (Str *)tern_alloc(sizeof(Str) + s->len + 1, O_STR);
+        for (uint32_t i = 0; i < s->len; i++) {
+            char c = s->chars[i];
+            if (upper && c >= 'a' && c <= 'z') {
+                c = (char)(c - 32);
+            } else if (!upper && c >= 'A' && c <= 'Z') {
+                c = (char)(c + 32);
+            }
+            out->chars[i] = c;
+        }
+        out->len = s->len;
+        out->units = s->len;      // one byte per code unit
+        out->chars[s->len] = '\0';
+        out->hash = hash_bytes(out->chars, out->len);
+        return v_obj((Obj *)out);
+    }
+
+    Buf buf;
+    buf_init(&buf);
+    const char *p = s->chars;
+    const char *end = s->chars + s->len;
+    while (p < end) {
+        unsigned char lead = (unsigned char)*p;
+        if (lead < 0x80) {
+            // ASCII fast path: the overwhelming majority of text, and towupper
+            // through the locale tables would dominate the cost otherwise.
+            char mapped = (char)lead;
+            if (upper && lead >= 'a' && lead <= 'z') {
+                mapped = (char)(lead - 32);
+            } else if (!upper && lead >= 'A' && lead <= 'Z') {
+                mapped = (char)(lead + 32);
+            }
+            buf_add_char(&buf, mapped);
+            p++;
+            continue;
+        }
+
+        int size;
+        uint32_t code = utf8_decode(p, end, &size);
+        wint_t mapped = upper ? towupper((wint_t)code) : towlower((wint_t)code);
+        if (mapped != 0 && mapped != (wint_t)code && mapped <= 0x10FFFF) {
+            code = (uint32_t)mapped;
+        }
+        char bytes[4];
+        int written = utf8_encode(code, bytes);
+        buf_add(&buf, bytes, (size_t)written);
+        p += size;
+    }
+    return buf_finish(&buf);
 }
 
-static Value s_lower(int argc, Value *argv) {
-    Str *s = self_str(argc, argv);
-    Str *out = (Str *)tern_alloc(sizeof(Str) + s->len + 1, O_STR);
-    for (uint32_t i = 0; i < s->len; i++) {
-        char c = s->chars[i];
-        out->chars[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
-    }
-    out->len = s->len;
-    out->chars[s->len] = '\0';
-    out->hash = hash_bytes(out->chars, out->len);
-    return v_obj((Obj *)out);
-}
+static Value s_upper(int argc, Value *argv) { return case_map(argv[0], true); }
+static Value s_lower(int argc, Value *argv) { return case_map(argv[0], false); }
 
 static bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 
@@ -2265,7 +2445,10 @@ static Value s_indexof(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
     Str *needle = as_str(arg(argc, argv, 1), "indexOf");
     char *found = memmem(s->chars, s->len, needle->chars, needle->len);
-    return v_int(found ? (int64_t)(found - s->chars) : -1);
+    if (!found) {
+        return v_int(-1);
+    }
+    return v_int(str_unit_of_offset(s, (uint32_t)(found - s->chars)));
 }
 
 static Value s_lastindexof(int argc, Value *argv) {
@@ -2276,7 +2459,7 @@ static Value s_lastindexof(int argc, Value *argv) {
     }
     for (int64_t at = (int64_t)s->len - (int64_t)needle->len; at >= 0; at--) {
         if (memcmp(s->chars + at, needle->chars, needle->len) == 0) {
-            return v_int(at);
+            return v_int(str_unit_of_offset(s, (uint32_t)at));
         }
     }
     return v_int(-1);
@@ -2403,6 +2586,7 @@ static Value s_repeat(int argc, Value *argv) {
         memcpy(out->chars + i * s->len, s->chars, s->len);
     }
     out->len = (uint32_t)total;
+    out->units = 0;
     out->chars[total] = '\0';
     out->hash = hash_bytes(out->chars, out->len);
     return v_obj((Obj *)out);
@@ -2411,8 +2595,11 @@ static Value s_repeat(int argc, Value *argv) {
 static Value s_chars(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
     List *chars = list_new((int)s->len);
-    for (uint32_t i = 0; i < s->len; i++) {
-        list_push(chars, str_value(s->chars + i, 1));
+    for (uint32_t i = 0; i < s->len; ) {
+        int size;
+        utf8_decode(s->chars + i, s->chars + s->len, &size);
+        list_push(chars, str_value(s->chars + i, (size_t)size));
+        i += (uint32_t)size;
     }
     return v_obj((Obj *)chars);
 }
@@ -2454,27 +2641,61 @@ static Value s_tostring(int argc, Value *argv) {
 static Value s_pad(int argc, Value *argv, bool start) {
     Str *s = self_str(argc, argv);
     int64_t width = iarg(argc, argv, 1, "pad");
-    char fill = ' ';
+    Str *fill = NULL;
     if (argc > 2 && v_is_str(argv[2]) && ((Str *)argv[2].as.o)->len > 0) {
-        fill = ((Str *)argv[2].as.o)->chars[0];
+        fill = (Str *)argv[2].as.o;
     }
-    if (width <= (int64_t)s->len) {
+
+    int64_t units = str_units(s);
+    if (width <= units) {
         return argv[0];
     }
-    size_t pad = (size_t)(width - s->len);
-    Str *out = (Str *)tern_alloc(sizeof(Str) + (size_t)width + 1, O_STR);
+
+    // The fill can be any (multi-byte, multi-code-point) string: repeat it
+    // until the padding reaches the requested number of code units, copying
+    // whole characters only.
+    int64_t need = width - units;
+    Buf pad;
+    buf_init(&pad);
+    if (fill) {
+        int64_t produced = 0;
+        while (produced < need) {
+            for (uint32_t i = 0; i < fill->len && produced < need; ) {
+                int size;
+                utf8_decode(fill->chars + i, fill->chars + fill->len, &size);
+                if (produced + utf16_width(utf8_decode(fill->chars + i, fill->chars + fill->len, &size)) > need) {
+                    break;
+                }
+                buf_add(&pad, fill->chars + i, (size_t)size);
+                produced += utf16_width(utf8_decode(fill->chars + i, fill->chars + fill->len, &size));
+                i += (uint32_t)size;
+            }
+            if (fill->len == 0) {
+                break;
+            }
+        }
+    } else {
+        for (int64_t i = 0; i < need; i++) {
+            buf_add_char(&pad, ' ');
+        }
+    }
+
+    Str *out = (Str *)tern_alloc(sizeof(Str) + pad.len + s->len + 1, O_STR);
     size_t position = 0;
     if (start) {
-        memset(out->chars, fill, pad);
-        position = pad;
+        memcpy(out->chars, pad.data, pad.len);
+        position = pad.len;
     }
     memcpy(out->chars + position, s->chars, s->len);
     position += s->len;
     if (!start) {
-        memset(out->chars + position, fill, pad);
-        position += pad;
+        memcpy(out->chars + position, pad.data, pad.len);
+        position += pad.len;
     }
+    free(pad.data);
+
     out->len = (uint32_t)position;
+    out->units = 0;
     out->chars[position] = '\0';
     out->hash = hash_bytes(out->chars, out->len);
     return v_obj((Obj *)out);
@@ -2485,14 +2706,25 @@ static Value s_padend(int argc, Value *argv) { return s_pad(argc, argv, false); 
 
 static Value s_reversed(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
-    Str *out = (Str *)tern_alloc(sizeof(Str) + s->len + 1, O_STR);
-    for (uint32_t i = 0; i < s->len; i++) {
-        out->chars[i] = s->chars[s->len - 1 - i];
+    Buf buf;
+    buf_init(&buf);
+    // Walk forward recording each code point's start, then emit them backwards:
+    // reversing bytes would shred multi-byte characters.
+    uint32_t *starts = (uint32_t *)malloc(sizeof(uint32_t) * (s->len + 1));
+    int count = 0;
+    for (uint32_t i = 0; i < s->len; ) {
+        starts[count++] = i;
+        int size;
+        utf8_decode(s->chars + i, s->chars + s->len, &size);
+        i += (uint32_t)size;
     }
-    out->len = s->len;
-    out->chars[s->len] = '\0';
-    out->hash = hash_bytes(out->chars, out->len);
-    return v_obj((Obj *)out);
+    for (int i = count - 1; i >= 0; i--) {
+        uint32_t from = starts[i];
+        uint32_t to = i + 1 < count ? starts[i + 1] : s->len;
+        buf_add(&buf, s->chars + from, to - from);
+    }
+    free(starts);
+    return buf_finish(&buf);
 }
 
 // --- list methods ----------------------------------------------------------
@@ -4214,6 +4446,9 @@ void tern_bind_globals(Value *globals, const char **names, int count) {
 void tern_rt_init(void) {
     /* stdout is unbuffered-per-line by default; keep line buffering for pipes. */
     setvbuf(stdout, NULL, _IOLBF, 0);
+
+    /* towupper/towlower need a UTF-8 locale to know about non-ASCII letters. */
+    setlocale(LC_CTYPE, "C.UTF-8");
 
     /* TERN_GC_THRESHOLD exists so the collector can be stress-tested: a tiny
        value collects constantly and surfaces missing roots. */

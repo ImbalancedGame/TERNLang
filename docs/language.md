@@ -222,6 +222,10 @@ Iterating a string yields its characters:
 for c in "hey" { println(c); }   // h e y
 ```
 
+Strings are sequences of Unicode code units, so `len` counts them: `len("héllo")`
+is 5 and `len("日本語")` is 3. Indexing, slicing and iteration move whole
+characters, so multi-byte text is never split in half.
+
 ---
 
 ## 6. Control flow
