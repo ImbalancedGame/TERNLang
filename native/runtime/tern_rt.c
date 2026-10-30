@@ -4628,11 +4628,6 @@ static Value make_native_arity(const char *name, NativeFn fn, int min_args, int 
     return v_obj((Obj *)native);
 }
 
-// Unchecked by default: only the globals table and `net` state their contract.
-static Value make_native(const char *name, NativeFn fn) {
-    return make_native_arity(name, fn, -1, -1);
-}
-
 // Method argument counts are stored with the receiver included, but the
 // message reports them without it, exactly like the interpreter.
 static void check_method_arity(const char *name, const MethodSlot *slot, int argc_with_receiver) {
@@ -5340,51 +5335,51 @@ static Value namespace_map(const char *ns) {
     Map *map = map_new();
 
     if (strcmp(ns, "math") == 0) {
-        map_set(map, str_from_cstr("floor"), make_native("floor", m_floor));
-        map_set(map, str_from_cstr("ceil"), make_native("ceil", m_ceil));
-        map_set(map, str_from_cstr("round"), make_native("round", m_round));
-        map_set(map, str_from_cstr("sqrt"), make_native("sqrt", m_sqrt));
-        map_set(map, str_from_cstr("trunc"), make_native("trunc", m_trunc));
-        map_set(map, str_from_cstr("pow"), make_native("pow", m_pow));
-        map_set(map, str_from_cstr("abs"), make_native("abs", m_abs));
-        map_set(map, str_from_cstr("min"), make_native("min", m_min));
-        map_set(map, str_from_cstr("max"), make_native("max", m_max));
-        map_set(map, str_from_cstr("sign"), make_native("sign", m_sign));
-        map_set(map, str_from_cstr("clamp"), make_native("clamp", m_clamp));
-        map_set(map, str_from_cstr("isInteger"), make_native("isInteger", m_isinteger));
-        map_set(map, str_from_cstr("isNaN"), make_native("isNaN", m_isnan));
-        map_set(map, str_from_cstr("gcd"), make_native("gcd", m_gcd));
+        map_set(map, str_from_cstr("floor"), make_native_arity("floor", m_floor, 1, 1));
+        map_set(map, str_from_cstr("ceil"), make_native_arity("ceil", m_ceil, 1, 1));
+        map_set(map, str_from_cstr("round"), make_native_arity("round", m_round, 1, 2));
+        map_set(map, str_from_cstr("sqrt"), make_native_arity("sqrt", m_sqrt, 1, 1));
+        map_set(map, str_from_cstr("trunc"), make_native_arity("trunc", m_trunc, 1, 1));
+        map_set(map, str_from_cstr("pow"), make_native_arity("pow", m_pow, 2, 2));
+        map_set(map, str_from_cstr("abs"), make_native_arity("abs", m_abs, 1, 1));
+        map_set(map, str_from_cstr("min"), make_native_arity("min", m_min, 1, -1));
+        map_set(map, str_from_cstr("max"), make_native_arity("max", m_max, 1, -1));
+        map_set(map, str_from_cstr("sign"), make_native_arity("sign", m_sign, 1, 1));
+        map_set(map, str_from_cstr("clamp"), make_native_arity("clamp", m_clamp, 3, 3));
+        map_set(map, str_from_cstr("isInteger"), make_native_arity("isInteger", m_isinteger, 1, 1));
+        map_set(map, str_from_cstr("isNaN"), make_native_arity("isNaN", m_isnan, 1, 1));
+        map_set(map, str_from_cstr("gcd"), make_native_arity("gcd", m_gcd, 2, 2));
         map_set(map, str_from_cstr("pi"), v_float(3.141592653589793));
         map_set(map, str_from_cstr("e"), v_float(2.718281828459045));
         map_set(map, str_from_cstr("tau"), v_float(6.283185307179586));
         map_set(map, str_from_cstr("infinity"), v_float(INFINITY));
         map_set(map, str_from_cstr("nan"), v_float(NAN));
-        map_set(map, str_from_cstr("lcm"), make_native("lcm", m_lcm));
-        map_set(map, str_from_cstr("log"), make_native("log", m_log));
-        map_set(map, str_from_cstr("log2"), make_native("log2", m_log2));
-        map_set(map, str_from_cstr("log10"), make_native("log10", m_log10));
-        map_set(map, str_from_cstr("cbrt"), make_native("cbrt", m_cbrt));
-        map_set(map, str_from_cstr("hypot"), make_native("hypot", m_hypot));
-        map_set(map, str_from_cstr("exp"), make_native("exp", m_exp));
-        map_set(map, str_from_cstr("sin"), make_native("sin", m_sin));
-        map_set(map, str_from_cstr("cos"), make_native("cos", m_cos));
-        map_set(map, str_from_cstr("tan"), make_native("tan", m_tan));
-        map_set(map, str_from_cstr("asin"), make_native("asin", m_asin));
-        map_set(map, str_from_cstr("acos"), make_native("acos", m_acos));
-        map_set(map, str_from_cstr("atan"), make_native("atan", m_atan));
-        map_set(map, str_from_cstr("atan2"), make_native("atan2", m_atan2));
-        map_set(map, str_from_cstr("toDegrees"), make_native("toDegrees", m_todegrees));
-        map_set(map, str_from_cstr("toRadians"), make_native("toRadians", m_toradians));
+        map_set(map, str_from_cstr("lcm"), make_native_arity("lcm", m_lcm, 2, 2));
+        map_set(map, str_from_cstr("log"), make_native_arity("log", m_log, 1, 2));
+        map_set(map, str_from_cstr("log2"), make_native_arity("log2", m_log2, 1, 1));
+        map_set(map, str_from_cstr("log10"), make_native_arity("log10", m_log10, 1, 1));
+        map_set(map, str_from_cstr("cbrt"), make_native_arity("cbrt", m_cbrt, 1, 1));
+        map_set(map, str_from_cstr("hypot"), make_native_arity("hypot", m_hypot, 2, 2));
+        map_set(map, str_from_cstr("exp"), make_native_arity("exp", m_exp, 1, 1));
+        map_set(map, str_from_cstr("sin"), make_native_arity("sin", m_sin, 1, 1));
+        map_set(map, str_from_cstr("cos"), make_native_arity("cos", m_cos, 1, 1));
+        map_set(map, str_from_cstr("tan"), make_native_arity("tan", m_tan, 1, 1));
+        map_set(map, str_from_cstr("asin"), make_native_arity("asin", m_asin, 1, 1));
+        map_set(map, str_from_cstr("acos"), make_native_arity("acos", m_acos, 1, 1));
+        map_set(map, str_from_cstr("atan"), make_native_arity("atan", m_atan, 1, 1));
+        map_set(map, str_from_cstr("atan2"), make_native_arity("atan2", m_atan2, 2, 2));
+        map_set(map, str_from_cstr("toDegrees"), make_native_arity("toDegrees", m_todegrees, 1, 1));
+        map_set(map, str_from_cstr("toRadians"), make_native_arity("toRadians", m_toradians, 1, 1));
         return v_obj((Obj *)map);
     }
 
     if (strcmp(ns, "lists") == 0) {
-        map_set(map, str_from_cstr("range"), make_native("range", ln_range));
-        map_set(map, str_from_cstr("zip"), make_native("zip", ln_zip));
-        map_set(map, str_from_cstr("enumerate"), make_native("enumerate", ln_enumerate));
-        map_set(map, str_from_cstr("chunk"), make_native("chunk", ln_chunk));
-        map_set(map, str_from_cstr("sort"), make_native("sort", ln_sort));
-        map_set(map, str_from_cstr("repeat"), make_native("repeat", ln_repeat));
+        map_set(map, str_from_cstr("range"), make_native_arity("range", ln_range, 1, 3));
+        map_set(map, str_from_cstr("zip"), make_native_arity("zip", ln_zip, 1, -1));
+        map_set(map, str_from_cstr("enumerate"), make_native_arity("enumerate", ln_enumerate, 1, 1));
+        map_set(map, str_from_cstr("chunk"), make_native_arity("chunk", ln_chunk, 2, 2));
+        map_set(map, str_from_cstr("sort"), make_native_arity("sort", ln_sort, 1, 2));
+        map_set(map, str_from_cstr("repeat"), make_native_arity("repeat", ln_repeat, 2, 2));
         return v_obj((Obj *)map);
     }
 
@@ -5393,46 +5388,46 @@ static Value namespace_map(const char *ns) {
         // `trimStart` are reached through a string receiver, not through the
         // namespace, and keeping the namespaces identical keeps a name from
         // resolving to the wrong function in `tern_lookup_std_member`.
-        map_set(map, str_from_cstr("format"), make_native("format", s_format));
-        map_set(map, str_from_cstr("pad"), make_native("pad", tx_pad));
-        map_set(map, str_from_cstr("trim"), make_native("trim", s_trim));
-        map_set(map, str_from_cstr("join"), make_native("join", ln_join));
-        map_set(map, str_from_cstr("upper"), make_native("upper", s_upper));
-        map_set(map, str_from_cstr("lower"), make_native("lower", s_lower));
-        map_set(map, str_from_cstr("split"), make_native("split", s_split));
+        map_set(map, str_from_cstr("format"), make_native_arity("format", s_format, 1, -1));
+        map_set(map, str_from_cstr("pad"), make_native_arity("pad", tx_pad, 2, 3));
+        map_set(map, str_from_cstr("trim"), make_native_arity("trim", s_trim, 1, 1));
+        map_set(map, str_from_cstr("join"), make_native_arity("join", ln_join, 1, 2));
+        map_set(map, str_from_cstr("upper"), make_native_arity("upper", s_upper, 1, 1));
+        map_set(map, str_from_cstr("lower"), make_native_arity("lower", s_lower, 1, 1));
+        map_set(map, str_from_cstr("split"), make_native_arity("split", s_split, 2, 2));
         return v_obj((Obj *)map);
     }
 
     if (strcmp(ns, "json") == 0) {
-        map_set(map, str_from_cstr("stringify"), make_native("stringify", js_stringify));
-        map_set(map, str_from_cstr("parse"), make_native("parse", js_parse));
-        map_set(map, str_from_cstr("tryParse"), make_native("tryParse", js_tryparse));
+        map_set(map, str_from_cstr("stringify"), make_native_arity("stringify", js_stringify, 1, 2));
+        map_set(map, str_from_cstr("parse"), make_native_arity("parse", js_parse, 1, 1));
+        map_set(map, str_from_cstr("tryParse"), make_native_arity("tryParse", js_tryparse, 1, 2));
         return v_obj((Obj *)map);
     }
 
     if (strcmp(ns, "os") == 0) {
-        map_set(map, str_from_cstr("platform"), make_native("platform", os_platform));
-        map_set(map, str_from_cstr("lineSeparator"), make_native("lineSeparator", os_linesep));
-        map_set(map, str_from_cstr("cwd"), make_native("cwd", os_cwd));
-        map_set(map, str_from_cstr("args"), make_native("args", os_args));
-        map_set(map, str_from_cstr("env"), make_native("env", os_env));
-        map_set(map, str_from_cstr("setEnv"), make_native("setEnv", os_setenv));
-        map_set(map, str_from_cstr("joinPath"), make_native("joinPath", os_joinpath));
+        map_set(map, str_from_cstr("platform"), make_native_arity("platform", os_platform, 0, 0));
+        map_set(map, str_from_cstr("lineSeparator"), make_native_arity("lineSeparator", os_linesep, 0, 0));
+        map_set(map, str_from_cstr("cwd"), make_native_arity("cwd", os_cwd, 0, 0));
+        map_set(map, str_from_cstr("args"), make_native_arity("args", os_args, 0, 0));
+        map_set(map, str_from_cstr("env"), make_native_arity("env", os_env, 1, 2));
+        map_set(map, str_from_cstr("setEnv"), make_native_arity("setEnv", os_setenv, 2, 2));
+        map_set(map, str_from_cstr("joinPath"), make_native_arity("joinPath", os_joinpath, 0, -1));
         return v_obj((Obj *)map);
     }
 
     if (strcmp(ns, "fs") == 0) {
-        map_set(map, str_from_cstr("read"), make_native("read", fs_read));
-        map_set(map, str_from_cstr("readBytes"), make_native("readBytes", fs_readbytes));
-        map_set(map, str_from_cstr("write"), make_native("write", fs_write));
-        map_set(map, str_from_cstr("append"), make_native("append", fs_append));
-        map_set(map, str_from_cstr("exists"), make_native("exists", fs_exists));
-        map_set(map, str_from_cstr("size"), make_native("size", fs_size));
-        map_set(map, str_from_cstr("remove"), make_native("remove", fs_remove));
-        map_set(map, str_from_cstr("list"), make_native("list", fs_list));
-        map_set(map, str_from_cstr("mkdir"), make_native("mkdir", fs_mkdir));
-        map_set(map, str_from_cstr("isFile"), make_native("isFile", fs_isfile));
-        map_set(map, str_from_cstr("isDir"), make_native("isDir", fs_isdir));
+        map_set(map, str_from_cstr("read"), make_native_arity("read", fs_read, 1, 1));
+        map_set(map, str_from_cstr("readBytes"), make_native_arity("readBytes", fs_readbytes, 1, 1));
+        map_set(map, str_from_cstr("write"), make_native_arity("write", fs_write, 2, 2));
+        map_set(map, str_from_cstr("append"), make_native_arity("append", fs_append, 2, 2));
+        map_set(map, str_from_cstr("exists"), make_native_arity("exists", fs_exists, 1, 1));
+        map_set(map, str_from_cstr("size"), make_native_arity("size", fs_size, 1, 1));
+        map_set(map, str_from_cstr("remove"), make_native_arity("remove", fs_remove, 1, 1));
+        map_set(map, str_from_cstr("list"), make_native_arity("list", fs_list, 1, 1));
+        map_set(map, str_from_cstr("mkdir"), make_native_arity("mkdir", fs_mkdir, 1, 1));
+        map_set(map, str_from_cstr("isFile"), make_native_arity("isFile", fs_isfile, 1, 1));
+        map_set(map, str_from_cstr("isDir"), make_native_arity("isDir", fs_isdir, 1, 1));
         return v_obj((Obj *)map);
     }
 
@@ -5465,20 +5460,20 @@ static Value namespace_map(const char *ns) {
     }
 
     if (strcmp(ns, "random") == 0) {
-        map_set(map, str_from_cstr("seed"), make_native("seed", rnd_seed));
-        map_set(map, str_from_cstr("float"), make_native("float", rnd_float));
-        map_set(map, str_from_cstr("int"), make_native("int", rnd_int));
-        map_set(map, str_from_cstr("bool"), make_native("bool", rnd_bool));
-        map_set(map, str_from_cstr("choice"), make_native("choice", rnd_choice));
-        map_set(map, str_from_cstr("shuffle"), make_native("shuffle", rnd_shuffle));
+        map_set(map, str_from_cstr("seed"), make_native_arity("seed", rnd_seed, 1, 1));
+        map_set(map, str_from_cstr("float"), make_native_arity("float", rnd_float, 0, 2));
+        map_set(map, str_from_cstr("int"), make_native_arity("int", rnd_int, 1, 2));
+        map_set(map, str_from_cstr("bool"), make_native_arity("bool", rnd_bool, 0, 0));
+        map_set(map, str_from_cstr("choice"), make_native_arity("choice", rnd_choice, 1, 1));
+        map_set(map, str_from_cstr("shuffle"), make_native_arity("shuffle", rnd_shuffle, 1, 1));
         return v_obj((Obj *)map);
     }
 
     if (strcmp(ns, "time") == 0) {
-        map_set(map, str_from_cstr("millis"), make_native("millis", t_millis));
-        map_set(map, str_from_cstr("iso"), make_native("iso", t_iso));
-        map_set(map, str_from_cstr("now"), make_native("now", t_now));
-        map_set(map, str_from_cstr("sleep"), make_native("sleep", n_sleep));
+        map_set(map, str_from_cstr("millis"), make_native_arity("millis", t_millis, 0, 0));
+        map_set(map, str_from_cstr("iso"), make_native_arity("iso", t_iso, 1, 1));
+        map_set(map, str_from_cstr("now"), make_native_arity("now", t_now, 0, 0));
+        map_set(map, str_from_cstr("sleep"), make_native_arity("sleep", n_sleep, 1, 1));
         return v_obj((Obj *)map);
     }
 

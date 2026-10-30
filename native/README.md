@@ -203,11 +203,13 @@ it.
   three stores, and `fib(30)` — 2.7 M calls — runs 2-3% slower than with
   `--no-traces`, which also drops the per-line stores. Errors then still print
   a single `at <module> (file:line)` line, pointing at the failing instruction.
-* Every builtin checks its argument count: the 25 globals and the per-type
-  method tables carry the interpreter's min/max contract and raise its
-  `ArgumentError` ("len() expects 1 argument(s) but got 2", "push() expects at
-  least 1 argument(s) but got 0"). Namespace members (`math.floor`, `fs.read`,
-  ...) are the exception and read missing arguments as `nil`.
+* Every builtin checks its argument count: the 25 globals, the per-type method
+  tables and all 74 namespace members (`math.floor`, `fs.read`, ...) carry the
+  interpreter's min/max contract and raise its `ArgumentError` in its wording
+  ("len() expects 1 argument(s) but got 2", "push() expects at least 1
+  argument(s) but got 0", "clamp() expects 3 argument(s) but got 2"). Missing
+  arguments are therefore an error instead of a `nil` that crashes inside the
+  builtin.
 * Error text matches the interpreter except for JSON syntax errors, where the
   interpreter forwards the .NET parser's wording ("expected a string key at
   offset 1") and the native runtime says "invalid JSON at offset N" with the

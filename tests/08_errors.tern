@@ -92,5 +92,25 @@ println(kind(fn() { let m = {"a": 1}; m.get(); }));
 println(kind(fn() { [2, 1].sort(1); }));
 println(kind(fn() { max(); }));
 
+// Namespace members check their counts too: the compiled backend used to read
+// missing arguments as nil, and a zero-argument call could crash it outright.
+println(kind(fn() { math.floor(); }));
+println(kind(fn() { math.floor(1, 2); }));
+println(kind(fn() { math.round(1, 2, 3); }));
+println(kind(fn() { math.clamp(1, 2); }));
+println(kind(fn() { math.gcd(1); }));
+println(kind(fn() { math.min(); }));
+println(kind(fn() { fs.read(); }));
+println(kind(fn() { fs.write("x"); }));
+println(kind(fn() { json.parse(); }));
+println(kind(fn() { json.stringify(); }));
+println(kind(fn() { os.env(); }));
+println(kind(fn() { time.millis(1); }));
+println(kind(fn() { random.int(1, 2, 3); }));
+println(kind(fn() { text.format(); }));
+println(kind(fn() { text.trim(); }));
+println(kind(fn() { lists.zip(); }));
+println(kind(fn() { lists.chunk([1], 2, 3); }));
+
 // The script ends with an uncaught error so the trace report is part of the golden.
 error("custom failure");
