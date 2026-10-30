@@ -266,6 +266,33 @@ def main():
                  str(recent.list.currentItem().data(Qt.UserRole)))
     recent.deleteLater()
 
+    # --------------------------------------------------------- actions
+    # A shortcut with no handler is a dead key, which is worse than no shortcut
+    # at all. Trigger every action and make sure nothing raises: the dock ones
+    # change visibility, the file ones open dialogs, which are not triggered
+    # here (they would block waiting for a human).
+    # Anything that opens a modal dialog would block the suite: those are
+    # covered by the checks that call their bodies directly.
+    blocking = {"new", "open", "open_recent", "recent", "save", "save_all", "close_tab",
+                "undo", "redo", "select_all", "cut", "copy", "paste", "exit",
+                "goto_file", "goto_line", "docs", "about", "keymap", "goto_symbol",
+                "goto_symbol_in_file", "find_usages", "rename", "check", "debug",
+                "compile"}
+    raised = []
+    for name, action in window.actions_map.items():
+        if name in blocking or not action.shortcut().toString():
+            continue
+        try:
+            action.trigger()
+            pump(app, 20)
+        except Exception as error:                     # noqa: BLE001 - reported below
+            raised.append(f"{name}: {error}")
+    checks.check("every shortcut does something without failing", raised == [], str(raised[:3]))
+    if window._area() is not None:
+        window._area().find_bar.hide()
+    window.tabs_widget.setCurrentWidget(window.tabs[editor.path])
+    pump(app, 200)
+
     # ------------------------------------------------------ find in path
     window.show_find_in_path("classify")
     pump(app, 700)

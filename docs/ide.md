@@ -75,7 +75,7 @@ machine `tools/ide/qt_stubs.py` writes stand-ins for them into
 | Compile | Ctrl+F5 | builds and runs it through the native backend |
 | Reformat | Ctrl+Alt+L | the server's formatter, 4-space indent |
 | Themes | View → Theme | Darcula and light, applied to editor *and* tool windows |
-| Tool windows | View | Project, Structure, Run, Problems, Terminal |
+| Tool windows | View | Project, Structure, Run, Problems, Terminal, Debug, Commit, Find |
 | Debugging | Debug window, gutter | breakpoints, stepping, call stack, locals, evaluate |
 | Version control | Commit window | git status, stage, commit and a coloured diff view |
 | Remembers state | settings | last project, theme, size, open files |

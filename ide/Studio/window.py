@@ -224,7 +224,7 @@ class StudioWindow(QMainWindow):
         self.actions_map = {
             "new": self._action("New File...", "Ctrl+N", self.new_file),
             "open": self._action("Open...", "Ctrl+O", self.open_file_dialog),
-            "open_recent": self._action("Open Recent", None, None),
+            "open_recent": self._action("Open Recent", "Ctrl+Shift+E", self.recent_files),
             "save": self._action("Save", "Ctrl+S", self.save_current),
             "save_all": self._action("Save All", "Ctrl+Shift+S", self.save_all),
             "close_tab": self._action("Close Tab", "Ctrl+W", lambda: self.close_tab(self.tabs_widget.currentIndex())),
@@ -254,6 +254,8 @@ class StudioWindow(QMainWindow):
             "goto_file": self._action("Go to File...", "Ctrl+Shift+N", self.goto_file),
             "find_in_path": self._action("Find in Path...", "Ctrl+Shift+F",
                                          lambda: self.show_find_in_path()),
+            "find_window": self._action("Find Window", "Alt+3",
+                                        lambda: self._show_dock(self.find_dock)),
             "goto_symbol_in_file": self._action("Go to Symbol in File...", "Ctrl+F12",
                                                 self.goto_symbol_in_file),
             "keymap": self._action("Default Keymap", None, self.show_keymap),
@@ -330,6 +332,7 @@ class StudioWindow(QMainWindow):
         view_menu.addAction(a["run_window"])
         view_menu.addAction(a["problems"])
         view_menu.addAction(a["terminal"])
+        view_menu.addAction(a["find_window"])
         view_menu.addAction(a["debug_window"])
         view_menu.addAction(a["commit"])
         view_menu.addSeparator()
