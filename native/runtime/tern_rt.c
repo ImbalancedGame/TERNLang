@@ -1371,6 +1371,16 @@ static int64_t need_int(Value v, const char *fn, int index) {
     return 0;
 }
 
+// .NET saturates a float-to-integer conversion that is out of range: NaN
+// becomes 0, a too-large value becomes INT64_MAX and a too-small one INT64_MIN.
+// A plain cast would give INT64_MIN at both ends, so clamp here to match.
+static int64_t f64_to_i64(double number) {
+    if (number != number) return 0;
+    if (number >= 9223372036854775808.0) return INT64_MAX;
+    if (number <= -9223372036854775808.0) return INT64_MIN;
+    return (int64_t)number;
+}
+
 // Float parameters take any number and name the position like need_int does.
 static double need_number(Value v, const char *fn, int index) {
     if (!v_is_num(v)) {
@@ -2203,7 +2213,7 @@ static Value n_int(int argc, Value *argv) {
         return v;
     }
     if (v.tag == T_FLOAT) {
-        return v_int((int64_t)v.as.f);
+        return v_int(f64_to_i64(v.as.f));
     }
     if (v.tag == T_BOOL) {
         return v_int(v.as.i);
@@ -2730,13 +2740,14 @@ static Value s_slice(int argc, Value *argv) {
     int64_t units = str_units(s);
 
     // Both bounds are optional and count code units, like len() and indexing.
+    // A bound that is passed must be an integer: nil is not short for "absent".
     int64_t from = 0;
     int64_t to = units;
-    if (argc > 1 && argv[1].tag != T_NIL) {
-        from = iarg(argc, argv, 1, "slice");
+    if (argc > 1) {
+        from = need_int(argv[1], "slice", 2);
     }
-    if (argc > 2 && argv[2].tag != T_NIL) {
-        to = iarg(argc, argv, 2, "slice");
+    if (argc > 2) {
+        to = need_int(argv[2], "slice", 3);
     }
     if (from < 0) from += units;
     if (to < 0) to += units;
@@ -2755,9 +2766,7 @@ static Value s_split(int argc, Value *argv) {
 
     // The default separator is a single space, not "any whitespace": the
     // interpreter leaves empty pieces in place ("a  b".split() has three).
-    Value separator_value = (argc > 1 && argv[1].tag != T_NIL)
-        ? argv[1]
-        : str_value(" ", 1);
+    Value separator_value = argc > 1 ? argv[1] : str_value(" ", 1);
     Str *separator = as_str(separator_value, "split");
 
     if (separator->len == 0) {
@@ -2835,7 +2844,10 @@ static Value s_replacefirst(int argc, Value *argv) {
 static Value s_repeat(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
     int64_t times = iarg(argc, argv, 1, "repeat");
-    if (times <= 0) {
+    if (times < 0) {
+        tern_panic("ArgumentError", "repeat count cannot be negative");
+    }
+    if (times == 0) {
         return str_value("", 0);
     }
     size_t total = (size_t)times * s->len;
@@ -3131,7 +3143,9 @@ static Value l_indexof(int argc, Value *argv) {
 }
 
 static Value l_slice(int argc, Value *argv) {
-    return tern_slice(argv[0], arg(argc, argv, 1), arg(argc, argv, 2), false);
+    Value start = argc > 1 ? v_int(need_int(argv[1], "slice", 2)) : v_nil();
+    Value end = argc > 2 ? v_int(need_int(argv[2], "slice", 3)) : v_nil();
+    return tern_slice(argv[0], start, end, false);
 }
 
 static Value l_reverse(int argc, Value *argv) {
@@ -3152,7 +3166,7 @@ static int sort_cmp(const void *a, const void *b) {
 
 static Value l_sort(int argc, Value *argv) {
     List *list = self_list(argc, argv);
-    if (argc > 1 && argv[1].tag != T_NIL) {
+    if (argc > 1) {
         // Comparator-driven sort (insertion sort: simple and stable).
         Value comparator = argv[1];
         for (int32_t i = 1; i < list->count; i++) {
@@ -3161,7 +3175,7 @@ static Value l_sort(int argc, Value *argv) {
             while (j >= 0) {
                 Value pair[2] = {key, list->items[j]};
                 Value result = tern_call(comparator, 2, pair);
-                if (result.as.i >= 0) {
+                if (v_is_num(result) && v_as_double(result) >= 0) {
                     break;
                 }
                 list->items[j + 1] = list->items[j];
@@ -3245,8 +3259,10 @@ static Value l_concat(int argc, Value *argv) {
 static Value l_insert(int argc, Value *argv) {
     List *list = self_list(argc, argv);
     int64_t at = iarg(argc, argv, 1, "insert");
-    if (at < 0) at = 0;
-    if (at > list->count) at = list->count;
+    if (at < 0 || at > list->count) {
+        tern_panic("IndexError", "insert index %lld out of range for list of length %d",
+                   (long long)at, list->count);
+    }
     list_reserve(list, list->count + 1);
     memmove(list->items + at + 1, list->items + at, (size_t)(list->count - at) * sizeof(Value));
     list->items[at] = arg(argc, argv, 2);
@@ -3424,7 +3440,7 @@ static Value n_round_self(int argc, Value *argv) {
 static Value n_toint_self(int argc, Value *argv) {
     (void)argc;
     Value v = argv[0];
-    return v_int(v.tag == T_INT ? v.as.i : (int64_t)v.as.f);
+    return v_int(v.tag == T_INT ? v.as.i : f64_to_i64(v.as.f));
 }
 
 static Value n_tofloat_self(int argc, Value *argv) {
@@ -3746,26 +3762,10 @@ static Value m_tostring_self(int argc, Value *argv) {
     return tern_to_string(argv[0]);
 }
 
+// merge is the interpreter's `+`: a map plus a map merges, a map plus a string
+// concatenates, and anything else is the operator's own type error.
 static Value m_merge(int argc, Value *argv) {
-    Map *map = (Map *)argv[0].as.o;
-    Value argument = arg(argc, argv, 1);
-    if (!v_is_map(argument)) {
-        // The interpreter routes merge through `+`, which only knows how to add
-        // a map to a map; anything else reads a non-map as a Map pointer here.
-        tern_panic("TypeError", "operator '+' is not defined for map and %s",
-                   tern_type_name(argument));
-    }
-    Map *other = (Map *)argument.as.o;
-    Map *out = map_new();
-    for (int32_t i = 0; i < map->cap; i++) {
-        MapEntry *entry = &map->entries[i];
-        if (entry->used && !entry->dead) map_set(out, entry->key, entry->value);
-    }
-    for (int32_t i = 0; i < other->cap; i++) {
-        MapEntry *entry = &other->entries[i];
-        if (entry->used && !entry->dead) map_set(out, entry->key, entry->value);
-    }
-    return v_obj((Obj *)out);
+    return tern_add(argv[0], arg(argc, argv, 1));
 }
 
 // --- lists namespace -------------------------------------------------------

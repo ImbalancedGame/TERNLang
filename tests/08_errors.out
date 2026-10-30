@@ -52,5 +52,15 @@ index -9 out of range for list of length 3
 index -9 out of range for string of length 2
 index -9 out of range for range of length 5
 range index must be an integer, not range
+repeat count cannot be negative
+split expects a string, not nil
+slice() argument 2 must be an integer, got nil
+slice() argument 3 must be an integer, got nil
+insert index -3 out of range for list of length 2
+nil is not callable
+operator '+' is not defined for map and nil
+{}a {"k": 1}
+9223372036854775807 -9223372036854775808 0
+9223372036854775807 -9223372036854775808
 Error: custom failure
-  at <module> (08_errors:123)
+  at <module> (08_errors:138)

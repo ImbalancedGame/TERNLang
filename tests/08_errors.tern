@@ -119,5 +119,20 @@ println(kind(fn() { return "ab"[-9]; }));
 println(kind(fn() { let span = 1..5; return span[-9]; }));
 println(kind(fn() { let span = 1..5; return span[span]; }));
 
+// Method arguments behave the same in both back ends: nil is an argument, not a
+// missing one, an out-of-range insert is an error rather than a clamp, and a
+// float that does not fit saturates the way .NET converts.
+let empty = {};
+println(kind(fn() { "abc".repeat(-3); }));
+println(kind(fn() { "abc".split(nil); }));
+println(kind(fn() { "abc".slice(nil, 2); }));
+println(kind(fn() { [1].slice(0, nil); }));
+println(kind(fn() { [1, 2].insert(-3, 0); }));
+println(kind(fn() { [3, 1].sort(nil); }));
+println(kind(fn() { empty.merge(nil); }));
+println(empty.merge("a"), empty.merge({"k": 1}));
+println(1e20.toInt(), (-1e20).toInt(), (1e400 - 1e400).toInt());
+println(int(1e400), int(-1e400));
+
 // The script ends with an uncaught error so the trace report is part of the golden.
 error("custom failure");
