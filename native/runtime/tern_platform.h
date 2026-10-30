@@ -149,6 +149,23 @@ static void tern_closedir(TernDir *dir) {
 #define readdir(dir) tern_readdir(dir)
 #define closedir(dir) tern_closedir(dir)
 
+// Loading a library at run time. TLS uses dlopen on POSIX and D3D12 uses
+// LoadLibrary on Windows; both go through these two names so the callers do not
+// care which.
+static void *tern_lib_open(const char *name) {
+    return (void *)LoadLibraryA(name);
+}
+
+static void *tern_lib_symbol(void *library, const char *name) {
+    return (void *)GetProcAddress((HMODULE)library, name);
+}
+
+static void tern_lib_close(void *library) {
+    if (library) {
+        FreeLibrary((HMODULE)library);
+    }
+}
+
 #else
 
 #include <arpa/inet.h>
@@ -173,6 +190,24 @@ static void tern_closedir(TernDir *dir) {
 #include <wctype.h>
 #include <time.h>
 #include <unistd.h>
+
+#endif
+
+#ifndef _WIN32
+
+static void *tern_lib_open(const char *name) {
+    return dlopen(name, RTLD_NOW | RTLD_LOCAL);
+}
+
+static void *tern_lib_symbol(void *library, const char *name) {
+    return dlsym(library, name);
+}
+
+static void tern_lib_close(void *library) {
+    if (library) {
+        dlclose(library);
+    }
+}
 
 #endif
 

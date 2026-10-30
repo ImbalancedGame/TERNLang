@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Exercises std:d3d12 with no Windows and no GPU.
+#
+# tools/d3d12/mock_d3d12.c is built as a shared library with the same exported
+# entry points and the same COM vtables as d3d12.dll, so the runtime's calls land
+# on the right slots. The probe runs in the interpreter and as a compiled binary,
+# the two outputs must match, and the PNG is decoded afterwards. Finally the same
+# probe is cross-compiled for Windows with Zig, which proves the Direct3D 12 code
+# compiles against the real headers as well as the fake ones.
+set -u
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+cd "$HERE"
+
+echo "d3d12: building the mock driver"
+cc -shared -fPIC -o "$WORK/libd3d12.so" tools/d3d12/mock_d3d12.c || {
+    echo "d3d12: cannot build the mock driver" >&2
+    exit 1
+}
+export TERN_D3D12_LIBRARY="$WORK/libd3d12.so"
+export TERN_DXGI_LIBRARY="$WORK/libd3d12.so"
+
+echo "d3d12: running the probe in the interpreter"
+TERN_D3D12_PNG="$WORK/interp.png" ./tools/tern tools/d3d12/probe.tern > "$WORK/interp.txt" 2>&1 || {
+    echo "d3d12: the interpreter probe failed" >&2
+    cat "$WORK/interp.txt" >&2
+    exit 1
+}
+
+echo "d3d12: compiling the probe natively"
+python3 native/ternc.py tools/d3d12/probe.tern -o "$WORK/probe" > "$WORK/build.txt" 2>&1 || {
+    echo "d3d12: the native build failed" >&2
+    cat "$WORK/build.txt" >&2
+    exit 1
+}
+
+TERN_D3D12_PNG="$WORK/native.png" "$WORK/probe" > "$WORK/native.txt" 2>&1 || {
+    echo "d3d12: the native probe failed" >&2
+    cat "$WORK/native.txt" >&2
+    exit 1
+}
+
+if ! diff -u "$WORK/interp.txt" "$WORK/native.txt"; then
+    echo "d3d12: the two back ends disagree" >&2
+    exit 1
+fi
+echo "d3d12: both back ends agree"
+
+python3 - "$WORK" <<'PY'
+import struct, sys, zlib
+
+def read_png(path):
+    data = open(path, "rb").read()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    offset, idat, size = 8, b"", None
+    while offset < len(data):
+        length, kind = struct.unpack(">I4s", data[offset:offset + 8])
+        body = data[offset + 8:offset + 8 + length]
+        if kind == b"IHDR":
+            width, height, depth, colour, _, _, _ = struct.unpack(">IIBBBBB", body)
+            size = (width, height, depth, colour)
+        elif kind == b"IDAT":
+            idat += body
+        offset += 12 + length
+    return size, zlib.decompress(idat)
+
+for name in ("interp", "native"):
+    (width, height, depth, colour), raw = read_png(f"{sys.argv[1]}/{name}.png")
+    assert (width, height, depth, colour) == (3, 2, 8, 6), (width, height, depth, colour)
+    stride = width * 4 + 1
+    pixels = [tuple(raw[i * stride + 1 + x * 4:i * stride + 5 + x * 4]) for i in range(height) for x in range(width)]
+    assert set(pixels) == {(64, 128, 191, 255)}, set(pixels)
+print("d3d12: the PNG decodes to the cleared colour")
+PY
+
+echo "d3d12: the unavailable path"
+cat > "$WORK/missing.tern" <<'TERN'
+import "std:d3d12";
+println(d3d12.available());
+try {
+    d3d12.create(4, 4);
+} catch (e) {
+    println(str(e));
+}
+TERN
+TERN_D3D12_LIBRARY="$WORK/absent.so" ./tools/tern "$WORK/missing.tern" > "$WORK/missing_interp.txt" 2>&1
+python3 native/ternc.py "$WORK/missing.tern" -o "$WORK/missing" > /dev/null 2>&1
+TERN_D3D12_LIBRARY="$WORK/absent.so" "$WORK/missing" > "$WORK/missing_native.txt" 2>&1
+if ! diff -u "$WORK/missing_interp.txt" "$WORK/missing_native.txt"; then
+    echo "d3d12: the two back ends disagree when the library is missing" >&2
+    exit 1
+fi
+cat "$WORK/missing_interp.txt"
+
+# The Windows build compiles the same code against the real d3d12.h when the
+# cross compiler is around, which catches a structure or signature that only the
+# mock would have accepted.
+ZIG="${TERN_ZIG:-$(command -v zig || true)}"
+if [ -z "$ZIG" ]; then
+    ZIG="$(python3 - <<'PY' 2>/dev/null
+import os, ziglang
+print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))
+PY
+)"
+fi
+if [ -n "$ZIG" ] && [ -x "$ZIG" ]; then
+    echo "d3d12: cross-compiling the probe for Windows"
+    if ! python3 native/ternc.py --target windows tools/d3d12/probe.tern -o "$WORK/probe.exe" > "$WORK/win.txt" 2>&1; then
+        echo "d3d12: the Windows build failed" >&2
+        sed -n 1,20p "$WORK/win.txt" >&2
+        exit 1
+    fi
+    python3 - "$WORK/probe.exe" <<'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+pe = struct.unpack_from("<I", data, 0x3C)[0]
+assert data[pe:pe + 4] == b"PE\0\0" and struct.unpack_from("<H", data, pe + 4)[0] == 0x8664
+print("d3d12: Windows build ok (x86-64 console)")
+PY
+else
+    echo "d3d12: no Zig, skipping the Windows build"
+fi
+
+echo "d3d12: ok"

@@ -36,6 +36,19 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `type` | `type(arg)` | The type name of a value. |
 | `values` | `values(arg)` | Values of a map. |
 
+## `d3d12`
+
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `available` | `available()` | True when d3d12.dll could be loaded (or TERN_D3D12_LIBRARY points at one). |
+| `clear` | `clear(arg, arg, arg, arg, arg)` | Clears the render target: d3d12.clear(handle, r, g, b, a), each 0..1. |
+| `close` | `close(arg)` | Releases the device and everything it owns. |
+| `create` | `create(arg, arg)` | Creates an offscreen device and render target, returning a handle. |
+| `info` | `info()` | Describes the adapter: {name, nodes}. |
+| `pixels` | `pixels(arg)` | Reads the target back as RGBA bytes, bottom row first, like gl.pixels. |
+| `save` | `save(arg, arg)` | Saves the target as a PNG: d3d12.save(handle, path). |
+| `size` | `size(arg)` | The [width, height] of a device. |
+
 ## `fs`
 
 | Name | Signature | Notes |
@@ -232,6 +245,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 
 ## `std:` modules
 
+* `std:d3d12`
 * `std:fs`
 * `std:gl`
 * `std:http`

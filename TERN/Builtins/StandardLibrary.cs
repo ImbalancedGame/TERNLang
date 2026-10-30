@@ -33,6 +33,7 @@ namespace TERN.Builtins
             RconModule.Install(engine);
             SftpModule.Install(engine);
             GlModule.Install(engine);
+            D3D12Module.Install(engine);
         }
 
         // ---------------------------------------------------------------- globals

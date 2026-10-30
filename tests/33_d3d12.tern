@@ -1,0 +1,25 @@
+// std:d3d12 without a driver: every check that runs before d3d12.dll is touched.
+// The rendering path itself — device, queue, command list, descriptors, barriers,
+// copy and readback — is exercised against tools/d3d12/mock_d3d12.c by
+// tools/test-d3d12.sh, which also cross-builds this code for Windows.
+import "std:d3d12";
+
+fn kind(block) {
+    try {
+        return str(block());
+    } catch (e) {
+        return "!" + str(e);
+    }
+}
+
+println(kind(fn() { d3d12.create(0, 4); }));
+println(kind(fn() { d3d12.create(4, 0); }));
+println(kind(fn() { d3d12.create(16385, 4); }));
+println(kind(fn() { d3d12.create("wide", 4); }));
+println(kind(fn() { d3d12.create(4, 2.5); }));
+println(kind(fn() { d3d12.clear(1, 0, 0, 0, 1); }));
+println(kind(fn() { d3d12.pixels(1); }));
+println(kind(fn() { d3d12.pixels("x"); }));
+println(kind(fn() { d3d12.save(1, ".out.png"); }));
+println(kind(fn() { d3d12.size(1); }));
+println(kind(fn() { d3d12.close(1); }));

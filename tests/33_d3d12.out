@@ -1,0 +1,11 @@
+!width must be between 1 and 16384
+!height must be between 1 and 16384
+!width must be between 1 and 16384
+!width must be an integer, not string
+!height must be an integer, not float
+!no open device with handle 1
+!no open device with handle 1
+!expected a device handle, not string
+!no open device with handle 1
+!no open device with handle 1
+!no open device with handle 1

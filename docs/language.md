@@ -572,6 +572,7 @@ abs min max copy sleep
 | `rcon` | `connect attach execute close` |
 | `sftp` | `upload download list run batch command` |
 | `gl` | `available info create clear program draw pixels save size close` |
+| `d3d12` | `available info create clear pixels save size close` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
 
@@ -755,6 +756,38 @@ scripting language.
 the same calls — points `TERN_GL_LIBRARY` at it, runs the same program in both
 back ends, and decodes the PNG that comes out. That is how the binding is tested
 without a GPU; with a real driver the same script exercises the actual hardware.
+
+### Graphics (Direct3D 12)
+
+`std:d3d12` is the Windows renderer: a device, an offscreen render target, a
+clear, and the pixels back as a PNG. Like the OpenGL module it links nothing —
+`d3d12.dll` is opened at run time and every method is a call through the COM
+vtable at the slot the Windows SDK gives it.
+
+```tern
+import "std:d3d12";
+
+let target = d3d12.create(640, 480);
+d3d12.clear(target, 0.1, 0.1, 0.15, 1);
+println(d3d12.size(target));
+d3d12.save(target, "clear.png");
+d3d12.close(target);
+```
+
+`d3d12.pixels` returns RGBA bytes with the bottom row first, exactly like
+`gl.pixels`, so one script can render with either backend; `d3d12.save` flips
+them for the PNG. Resource sizes are capped at 16384, which is the Direct3D 12
+limit for a 2D texture, and the readback pitch comes from the device rather than
+from a guess.
+
+Two caveats. The compiled backend has to be a Windows binary
+(`python3 native/ternc.py --target windows app.tern -o app.exe`), and the
+interpreter needs .NET on Windows. Neither is available in a POSIX build, where
+every call raises `D3D12Error: Direct3D 12 is not available on this system`.
+
+Direct3D 12 also has no equivalent of a shader string compile here yet: this is
+the render-target path, not the pipeline path. The pipeline state object, root
+signature and `d3dcompiler_47` are the next step.
 
 ---
 

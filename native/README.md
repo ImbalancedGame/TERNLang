@@ -204,6 +204,12 @@ way and checks each result really is a PE32+ x86-64 console image that links
 `KERNEL32.dll`; there is no Wine here, so the script proves the build, not the
 behaviour.
 
+Direct3D 12 is written against the same headers: `runtime/tern_d3d12.h` spells
+out the COM vtables and structures (the offsets were printed from the shipped
+`d3d12.h`) and opens the library with `tern_lib_open`, which is `LoadLibrary` on
+Windows and `dlopen` elsewhere. That is what lets the tests drive the real call
+sequence on Linux against `tools/d3d12/mock_d3d12.c`.
+
 The platform differences live in one file, [`runtime/tern_platform.h`](runtime/tern_platform.h):
 the CRT's names for the POSIX calls (`_mkdir`, `_unlink`, `_stricmp`), a
 `memmem`, directory iteration over `FindFirstFile`, and a monotonic clock over

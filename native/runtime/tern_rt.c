@@ -5556,6 +5556,161 @@ static ssize_t net_read_raw(int fd, unsigned char *buffer, size_t length) {
     return (ssize_t)got;
 }
 
+// --- byte buffers ---------------------------------------------------------
+//
+// Used by the HTTP parser, the PNG writer and the readback paths.
+
+typedef struct {
+    unsigned char *data;
+    size_t len;
+    size_t cap;
+} ByteBuf;
+
+static void bb_reserve(ByteBuf *buffer, size_t extra) {
+    if (buffer->len + extra <= buffer->cap) {
+        return;
+    }
+    size_t cap = buffer->cap ? buffer->cap : 256;
+    while (cap < buffer->len + extra) {
+        cap *= 2;
+    }
+    buffer->data = (unsigned char *)realloc(buffer->data, cap);
+    buffer->cap = cap;
+}
+
+static void bb_add(ByteBuf *buffer, const void *data, size_t length) {
+    bb_reserve(buffer, length);
+    if (length) {
+        memcpy(buffer->data + buffer->len, data, length);
+    }
+    buffer->len += length;
+}
+
+static void bb_add_text(ByteBuf *buffer, const char *text) {
+    bb_add(buffer, text, strlen(text));
+}
+
+static void bb_free(ByteBuf *buffer) {
+    free(buffer->data);
+    buffer->data = NULL;
+    buffer->len = 0;
+    buffer->cap = 0;
+}
+
+// --- PNG output -----------------------------------------------------------
+//
+// One writer for both graphics backends: stored deflate blocks are valid PNG
+// without a compression library, and `flip` turns OpenGL's bottom-up rows (and
+// the readback this module produces) into a top-down image.
+
+static uint32_t tern_png_crc[256];
+static int tern_png_crc_ready;
+
+static void tern_png_crc_init(void) {
+    if (tern_png_crc_ready) return;
+    for (uint32_t n = 0; n < 256; n++) {
+        uint32_t c = n;
+        for (int k = 0; k < 8; k++) {
+            c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+        }
+        tern_png_crc[n] = c;
+    }
+    tern_png_crc_ready = 1;
+}
+
+static void tern_png_u32(ByteBuf *buf, uint32_t value) {
+    unsigned char bytes[4] = {
+        (unsigned char)(value >> 24), (unsigned char)(value >> 16),
+        (unsigned char)(value >> 8), (unsigned char)value,
+    };
+    bb_add(buf, bytes, 4);
+}
+
+static void tern_png_chunk(ByteBuf *out, const char *type, const unsigned char *data, size_t length) {
+    tern_png_u32(out, (uint32_t)length);
+    uint32_t crc = 0xFFFFFFFFu;
+    for (int i = 0; i < 4; i++) {
+        unsigned char byte = (unsigned char)type[i];
+        bb_add(out, &byte, 1);
+        crc = tern_png_crc[(crc ^ byte) & 0xFF] ^ (crc >> 8);
+    }
+    if (length) {
+        bb_add(out, data, length);
+        for (size_t i = 0; i < length; i++) {
+            crc = tern_png_crc[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+        }
+    }
+    tern_png_u32(out, crc ^ 0xFFFFFFFFu);
+}
+
+static void tern_png_write(const char *path, int width, int height,
+                         const unsigned char *rgba, int flip) {
+    tern_png_crc_init();
+
+    size_t row = (size_t)width * 4;
+    unsigned char *raw = (unsigned char *)malloc((row + 1) * (size_t)height);
+    if (!raw) {
+        tern_panic("IOError", "cannot write '%s': out of memory", path);
+    }
+    for (int y = 0; y < height; y++) {
+        int source = flip ? height - 1 - y : y;
+        raw[y * (row + 1)] = 0;
+        memcpy(raw + y * (row + 1) + 1, rgba + (size_t)source * row, row);
+    }
+
+    ByteBuf idat = { 0 };
+    // zlib header, then stored deflate blocks (no compression, valid PNG).
+    unsigned char header[2] = { 0x78, 0x01 };
+    bb_add(&idat, header, 2);
+    size_t total = (row + 1) * (size_t)height;
+    size_t offset = 0;
+    do {
+        size_t length = total - offset;
+        if (length > 65535) length = 65535;
+        unsigned char block[5];
+        block[0] = (offset + length >= total) ? 1 : 0;
+        block[1] = (unsigned char)(length & 0xFF);
+        block[2] = (unsigned char)(length >> 8);
+        block[3] = (unsigned char)(~length & 0xFF);
+        block[4] = (unsigned char)((~length >> 8) & 0xFF);
+        bb_add(&idat, block, 5);
+        bb_add(&idat, raw + offset, length);
+        offset += length;
+    } while (offset < total);
+
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < total; i++) {
+        a = (a + raw[i]) % 65521;
+        b = (b + a) % 65521;
+    }
+    tern_png_u32(&idat, (b << 16) | a);
+    free(raw);
+
+    ByteBuf out = { 0 };
+    static const unsigned char signature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    bb_add(&out, signature, 8);
+
+    unsigned char ihdr[13];
+    ihdr[0] = (unsigned char)(width >> 24); ihdr[1] = (unsigned char)(width >> 16);
+    ihdr[2] = (unsigned char)(width >> 8);  ihdr[3] = (unsigned char)width;
+    ihdr[4] = (unsigned char)(height >> 24); ihdr[5] = (unsigned char)(height >> 16);
+    ihdr[6] = (unsigned char)(height >> 8);  ihdr[7] = (unsigned char)height;
+    ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    tern_png_chunk(&out, "IHDR", ihdr, sizeof ihdr);
+    tern_png_chunk(&out, "IDAT", idat.data, idat.len);
+    tern_png_chunk(&out, "IEND", NULL, 0);
+    bb_free(&idat);
+
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        bb_free(&out);
+        tern_panic("IOError", "cannot write '%s': %s", path, strerror(errno));
+    }
+    fwrite(out.data, 1, out.len, file);
+    fclose(file);
+    bb_free(&out);
+}
+
 #ifndef _WIN32
 
 // --- TLS ------------------------------------------------------------------
@@ -6610,43 +6765,6 @@ static Value n_net_peer(int argc, Value *argv) {
 #define HTTP_DEFAULT_MAX_BYTES (8 * 1024 * 1024)
 #define HTTP_MAX_HEADER_BYTES (64 * 1024)
 #define HTTP_MAX_HEADERS 32
-
-typedef struct {
-    unsigned char *data;
-    size_t len;
-    size_t cap;
-} ByteBuf;
-
-static void bb_reserve(ByteBuf *buffer, size_t extra) {
-    if (buffer->len + extra <= buffer->cap) {
-        return;
-    }
-    size_t cap = buffer->cap ? buffer->cap : 256;
-    while (cap < buffer->len + extra) {
-        cap *= 2;
-    }
-    buffer->data = (unsigned char *)realloc(buffer->data, cap);
-    buffer->cap = cap;
-}
-
-static void bb_add(ByteBuf *buffer, const void *data, size_t length) {
-    bb_reserve(buffer, length);
-    if (length) {
-        memcpy(buffer->data + buffer->len, data, length);
-    }
-    buffer->len += length;
-}
-
-static void bb_add_text(ByteBuf *buffer, const char *text) {
-    bb_add(buffer, text, strlen(text));
-}
-
-static void bb_free(ByteBuf *buffer) {
-    free(buffer->data);
-    buffer->data = NULL;
-    buffer->len = 0;
-    buffer->cap = 0;
-}
 
 /// A byte source over a socket or a complete buffer, so the parser is written
 /// once. `fd` is -1 for the fixed-buffer form.
@@ -8804,121 +8922,12 @@ static Value n_gl_pixels(int argc, Value *argv) {
     return v_obj((Obj *)list);
 }
 
-static uint32_t gl_crc_table[256];
-static int gl_crc_ready;
-
-static void gl_crc_init(void) {
-    if (gl_crc_ready) return;
-    for (uint32_t n = 0; n < 256; n++) {
-        uint32_t c = n;
-        for (int k = 0; k < 8; k++) {
-            c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-        }
-        gl_crc_table[n] = c;
-    }
-    gl_crc_ready = 1;
-}
-
-static void gl_write_u32(ByteBuf *buf, uint32_t value) {
-    unsigned char bytes[4] = {
-        (unsigned char)(value >> 24), (unsigned char)(value >> 16),
-        (unsigned char)(value >> 8), (unsigned char)value,
-    };
-    bb_add(buf, bytes, 4);
-}
-
-static void gl_png_chunk(ByteBuf *out, const char *type, const unsigned char *data, size_t length) {
-    gl_write_u32(out, (uint32_t)length);
-    uint32_t crc = 0xFFFFFFFFu;
-    for (int i = 0; i < 4; i++) {
-        unsigned char byte = (unsigned char)type[i];
-        bb_add(out, &byte, 1);
-        crc = gl_crc_table[(crc ^ byte) & 0xFF] ^ (crc >> 8);
-    }
-    if (length) {
-        bb_add(out, data, length);
-        for (size_t i = 0; i < length; i++) {
-            crc = gl_crc_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-        }
-    }
-    gl_write_u32(out, crc ^ 0xFFFFFFFFu);
-}
-
-static void gl_png_write(const char *path, int width, int height,
-                         const unsigned char *rgba, int flip) {
-    gl_crc_init();
-
-    size_t row = (size_t)width * 4;
-    unsigned char *raw = (unsigned char *)malloc((row + 1) * (size_t)height);
-    if (!raw) {
-        tern_panic("IOError", "cannot write '%s': out of memory", path);
-    }
-    for (int y = 0; y < height; y++) {
-        int source = flip ? height - 1 - y : y;
-        raw[y * (row + 1)] = 0;
-        memcpy(raw + y * (row + 1) + 1, rgba + (size_t)source * row, row);
-    }
-
-    ByteBuf idat = { 0 };
-    bb_add_text(&idat, "");
-    // zlib header, then stored deflate blocks (no compression, valid PNG).
-    unsigned char header[2] = { 0x78, 0x01 };
-    bb_add(&idat, header, 2);
-    size_t total = (row + 1) * (size_t)height;
-    size_t offset = 0;
-    do {
-        size_t length = total - offset;
-        if (length > 65535) length = 65535;
-        unsigned char block[5];
-        block[0] = (offset + length >= total) ? 1 : 0;
-        block[1] = (unsigned char)(length & 0xFF);
-        block[2] = (unsigned char)(length >> 8);
-        block[3] = (unsigned char)(~length & 0xFF);
-        block[4] = (unsigned char)((~length >> 8) & 0xFF);
-        bb_add(&idat, block, 5);
-        bb_add(&idat, raw + offset, length);
-        offset += length;
-    } while (offset < total);
-
-    uint32_t a = 1, b = 0;
-    for (size_t i = 0; i < total; i++) {
-        a = (a + raw[i]) % 65521;
-        b = (b + a) % 65521;
-    }
-    gl_write_u32(&idat, (b << 16) | a);
-    free(raw);
-
-    ByteBuf out = { 0 };
-    static const unsigned char signature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
-    bb_add(&out, signature, 8);
-
-    unsigned char ihdr[13];
-    ihdr[0] = (unsigned char)(width >> 24); ihdr[1] = (unsigned char)(width >> 16);
-    ihdr[2] = (unsigned char)(width >> 8);  ihdr[3] = (unsigned char)width;
-    ihdr[4] = (unsigned char)(height >> 24); ihdr[5] = (unsigned char)(height >> 16);
-    ihdr[6] = (unsigned char)(height >> 8);  ihdr[7] = (unsigned char)height;
-    ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    gl_png_chunk(&out, "IHDR", ihdr, sizeof ihdr);
-    gl_png_chunk(&out, "IDAT", idat.data, idat.len);
-    gl_png_chunk(&out, "IEND", NULL, 0);
-    bb_free(&idat);
-
-    FILE *file = fopen(path, "wb");
-    if (!file) {
-        bb_free(&out);
-        tern_panic("IOError", "cannot write '%s': %s", path, strerror(errno));
-    }
-    fwrite(out.data, 1, out.len, file);
-    fclose(file);
-    bb_free(&out);
-}
-
 static Value n_gl_save(int argc, Value *argv) {
     (void)argc;
     GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
     const char *path = path_arg(argc, argv, 1);
     unsigned char *pixels = gl_read_pixels(ctx);
-    gl_png_write(path, ctx->width, ctx->height, pixels, 1);
+    tern_png_write(path, ctx->width, ctx->height, pixels, 1);
     free(pixels);
     return v_nil();
 }
@@ -8969,6 +8978,8 @@ static Value missing_module(const char *module, const char *const *names) {
 }
 
 #endif
+
+#include "tern_d3d12.h"
 
 static Value namespace_map(const char *ns) {
     Map *map = map_new();
@@ -9217,6 +9228,27 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+    if (strcmp(ns, "d3d12") == 0) {
+        // The argument counts mirror TERN/Builtins/D3D12.cs.
+        map_set(map, str_from_cstr("available"),
+                make_native_arity("available", n_d3d12_available, 0, 0));
+        map_set(map, str_from_cstr("info"),
+                make_native_arity("info", n_d3d12_info, 0, 0));
+        map_set(map, str_from_cstr("create"),
+                make_native_arity("create", n_d3d12_create, 2, 2));
+        map_set(map, str_from_cstr("clear"),
+                make_native_arity("clear", n_d3d12_clear, 5, 5));
+        map_set(map, str_from_cstr("pixels"),
+                make_native_arity("pixels", n_d3d12_pixels, 1, 1));
+        map_set(map, str_from_cstr("save"),
+                make_native_arity("save", n_d3d12_save, 2, 2));
+        map_set(map, str_from_cstr("size"),
+                make_native_arity("size", n_d3d12_size, 1, 1));
+        map_set(map, str_from_cstr("close"),
+                make_native_arity("close", n_d3d12_close, 1, 1));
+        return v_obj((Obj *)map);
+    }
+
 #endif
 
     if (strcmp(ns, "random") == 0) {
@@ -9244,7 +9276,7 @@ static Value namespace_map(const char *ns) {
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
     static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists",
-                                  "fs", "net", "http", "rcon", "sftp", "gl", NULL};
+                                  "fs", "net", "http", "rcon", "sftp", "gl", "d3d12", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -9268,7 +9300,8 @@ Value tern_lookup_global(const char *name) {
         strcmp(name, "random") == 0 || strcmp(name, "text") == 0 ||
         strcmp(name, "lists") == 0 || strcmp(name, "net") == 0 ||
         strcmp(name, "http") == 0 || strcmp(name, "rcon") == 0 ||
-        strcmp(name, "sftp") == 0 || strcmp(name, "gl") == 0) {
+        strcmp(name, "sftp") == 0 || strcmp(name, "gl") == 0 ||
+        strcmp(name, "d3d12") == 0) {
         return namespace_map(name);
     }
 
