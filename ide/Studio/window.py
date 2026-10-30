@@ -26,9 +26,10 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDockWidget, QFileDialog
 
 from .editor import EditorArea
 from .lsp import LanguageServer, path_for, uri_for
-from .panels import (ChangesPanel, ConsolePanel, DebugPanel, DiffPanel, ProblemsPanel,
-                     ProjectPanel, RecentFilesDialog, StructurePanel, TerminalPanel,
-                     SearchEverywhereDialog)
+from .panels import (ChangesPanel, ConsolePanel, DebugPanel, DiffPanel,
+                     FindInPathPanel, ProblemsPanel, ProjectPanel,
+                     SearchEverywhereDialog, StructurePanel, SymbolDialog,
+                     TerminalPanel)
 from .debugger import DebugSession
 from .vcs import parse_diff
 from .theme import THEMES, monospace, stylesheet
@@ -56,6 +57,7 @@ class StudioWindow(QMainWindow):
         self.diff_tabs = {}                  # "work:/abs/path" -> DiffPanel
         self._recent = []                    # paths, most recent first
         self.debug_session = None            # the DebugSession, while there is one
+        self._outline_cache = {}             # path -> the last document symbols
         self.pending_hover = (None, None)
         self.run_process = None
         self.log_lines = []
@@ -164,6 +166,13 @@ class StudioWindow(QMainWindow):
         self.terminal_dock.setWidget(self.terminal)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.terminal_dock)
 
+        self.find_panel = FindInPathPanel(self.root, self.theme)
+        self.find_panel.openRequested.connect(self._goto_line_column)
+        self.find_dock = QDockWidget("Find", self)
+        self.find_dock.setObjectName("findDock")
+        self.find_dock.setWidget(self.find_panel)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.find_dock)
+
         self.debug_panel = DebugPanel(self.theme)
         self.debug_panel.frameSelected.connect(self._show_frame_variables)
         self.debug_panel.evaluate_callback = self._evaluate_expression
@@ -183,12 +192,14 @@ class StudioWindow(QMainWindow):
 
         self.setTabPosition(Qt.BottomDockWidgetArea, QTabWidget.North)
         for dock in (self.console_dock, self.problems_dock, self.terminal_dock,
-                     self.structure_dock, self.changes_dock, self.debug_dock):
+                     self.structure_dock, self.changes_dock, self.debug_dock,
+                     self.find_dock):
             dock.setTitleBarWidget(QWidget())
         self.tabifyDockWidget(self.console_dock, self.problems_dock)
         self.tabifyDockWidget(self.problems_dock, self.terminal_dock)
         self.tabifyDockWidget(self.terminal_dock, self.debug_dock)
         self.tabifyDockWidget(self.debug_dock, self.changes_dock)
+        self.tabifyDockWidget(self.changes_dock, self.find_dock)
         self.console_dock.raise_()
 
         self.resizeDocks([self.project_dock, self.structure_dock], [260, 260], Qt.Horizontal)
@@ -198,6 +209,7 @@ class StudioWindow(QMainWindow):
                          [170, 170, 170], Qt.Vertical)
         self.resizeDocks([self.changes_dock], [250], Qt.Vertical)
         self.resizeDocks([self.debug_dock], [250], Qt.Vertical)
+        self.resizeDocks([self.find_dock], [250], Qt.Vertical)
 
     def _action(self, text, shortcut=None, slot=None, checkable=False):
         action = QAction(text, self)
@@ -240,6 +252,11 @@ class StudioWindow(QMainWindow):
             "format": self._action("Reformat Code", "Ctrl+Alt+L", self.format_code),
             "search_everywhere": self._action("Search Everywhere", "Ctrl+Shift+A", self.search_everywhere),
             "goto_file": self._action("Go to File...", "Ctrl+Shift+N", self.goto_file),
+            "find_in_path": self._action("Find in Path...", "Ctrl+Shift+F",
+                                         lambda: self.show_find_in_path()),
+            "goto_symbol_in_file": self._action("Go to Symbol in File...", "Ctrl+F12",
+                                                self.goto_symbol_in_file),
+            "keymap": self._action("Default Keymap", None, self.show_keymap),
             "goto_symbol": self._action("Go to Symbol...", "Ctrl+Alt+Shift+N", self.goto_symbol),
             "problems": self._action("Problems", "Alt+6", lambda: self._show_dock(self.problems_dock)),
             "run": self._action("Run", "F5", self.run_current),
@@ -298,6 +315,8 @@ class StudioWindow(QMainWindow):
         edit_menu.addAction(a["find_next"])
         edit_menu.addAction(a["find_previous"])
         edit_menu.addSeparator()
+        edit_menu.addAction(a["find_in_path"])
+        edit_menu.addSeparator()
         edit_menu.addAction(a["comment"])
         edit_menu.addAction(a["duplicate"])
         edit_menu.addAction(a["move_up"])
@@ -323,6 +342,7 @@ class StudioWindow(QMainWindow):
         navigate_menu.addAction(a["recent"])
         navigate_menu.addAction(a["goto_file"])
         navigate_menu.addAction(a["goto_symbol"])
+        navigate_menu.addAction(a["goto_symbol_in_file"])
         navigate_menu.addAction(a["search_everywhere"])
         navigate_menu.addSeparator()
         navigate_menu.addAction(a["goto_definition"])
@@ -357,6 +377,7 @@ class StudioWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction(a["docs"])
+        help_menu.addAction(a["keymap"])
         help_menu.addAction(a["about"])
 
     def _build_toolbar(self):
@@ -757,10 +778,22 @@ class StudioWindow(QMainWindow):
 
     # ------------------------------------------------------------ diagnostics
 
+    @staticmethod
+    def _is_tern(path):
+        """True for a TERN document: the only kind the syntax server analyses."""
+        return str(path).endswith(".tern")
+
     def _on_diagnostics(self, uri, diagnostics):
         path = path_for(uri)
         area = self.tabs.get(path)
         if area is None:
+            return
+
+        if not self._is_tern(path):
+            # The server only speaks TERN. A Markdown tab gets no underlines,
+            # and the Problems window keeps whatever the scripts said.
+            area.editor.set_problems([])
+            self._refresh_problems()
             return
 
         problems = []
@@ -796,6 +829,7 @@ class StudioWindow(QMainWindow):
         self.server.document_symbols(uri, lambda symbols: self._outline_arrived(path, symbols))
 
     def _outline_arrived(self, path, symbols):
+        self._outline_cache[path] = list(symbols or [])
         area = self.tabs.get(path)
         if area is None or area is not self._area():
             return
@@ -1037,6 +1071,74 @@ class StudioWindow(QMainWindow):
 
     def goto_symbol(self):
         self.search_everywhere()
+
+    def show_find_in_path(self, term=None):
+        """Open the Find window, seeded with the editor's selection."""
+        self._show_dock(self.find_dock)
+        self.find_dock.raise_()
+        if term is None:
+            editor = self._editor()
+            if editor is not None:
+                term = editor.textCursor().selectedText().split("\u2029")[0]
+        if term:
+            self.find_panel.query.setText(term)
+        self.find_panel.query.setFocus()
+        self.find_panel.query.selectAll()
+        if self.find_panel.query.text():
+            self.find_panel.run_search()
+        else:
+            self.find_panel.results.clear()
+            self.find_panel.summary.setText("Type to search")
+
+    def goto_symbol_in_file(self):
+        """A filtered list of the open file's declarations, as Ctrl+F12 does."""
+        editor = self._editor()
+        if editor is None:
+            return
+
+        # Ask the server again: the cache may predate the last edit.
+        self.server.document_symbols(
+            uri_for(editor.path),
+            lambda symbols: self._symbol_dialog(editor, symbols or []))
+
+    def _symbol_dialog(self, editor, symbols):
+        if not symbols:
+            self.console.write("No symbols in this file.\n", info=True)
+            return
+
+        labels = []
+        for symbol in symbols:
+            line = symbol.get("range", {}).get("start", {}).get("line", 0) + 1
+            labels.append(f"{symbol.get('name', '?')}  —  line {line}")
+
+        dialog = SymbolDialog(labels, self.theme, self)
+        if dialog.exec() == dialog.Accepted and dialog.chosen is not None:
+            line = symbols[dialog.chosen].get("range", {}).get("start", {}).get("line", 0)
+            editor.goto(line, 0)
+            editor.setFocus()
+
+    def _goto_line_column(self, path, line, column):
+        self.open_file(path)
+        editor = self._editor()
+        if editor is None:
+            return
+        editor.goto(line - 1, column)
+        editor.setFocus()
+
+    def show_keymap(self):
+        """The shortcuts, in one dialog, because a menu is not a reference."""
+        rows = []
+        for name, action in sorted(self.actions_map.items(), key=lambda pair: pair[1].text()):
+            shortcut = action.shortcut().toString()
+            if shortcut:
+                rows.append(f"{shortcut:<22}{action.text()}")
+        text = "\n".join(rows)
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Default Keymap")
+        dialog.setText("Shortcuts in effect")
+        dialog.setDetailedText(text)
+        dialog.setStandardButtons(QMessageBox.Ok)
+        dialog.exec()
 
     def find(self, with_replace=False):
         """Opens the find bar on the current editor, seeded with the selection."""
@@ -1328,7 +1430,8 @@ class StudioWindow(QMainWindow):
             app.setStyleSheet(stylesheet(self.theme))
 
         for panel in (self.project_panel, self.structure_panel, self.problems_panel,
-                      self.console, self.terminal, self.changes_panel, self.debug_panel):
+                      self.console, self.terminal, self.changes_panel, self.debug_panel,
+                      self.find_panel):
             panel.apply_theme(self.theme)
 
         for area in self.tabs.values():

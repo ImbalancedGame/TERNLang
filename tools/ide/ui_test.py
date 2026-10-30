@@ -266,6 +266,39 @@ def main():
                  str(recent.list.currentItem().data(Qt.UserRole)))
     recent.deleteLater()
 
+    # ------------------------------------------------------ find in path
+    window.show_find_in_path("classify")
+    pump(app, 700)
+    checks.check("Find in Path searches the project",
+                 window.find_panel.results.topLevelItemCount() > 0,
+                 window.find_panel.summary.text())
+    checks.check("the summary counts the matches", "match" in window.find_panel.summary.text(),
+                 window.find_panel.summary.text())
+
+    first_hit = window.find_panel.results.topLevelItem(0)
+    hit_path, hit_line, hit_column = first_hit.data(0, Qt.UserRole)
+    window._goto_line_column(hit_path, hit_line, hit_column)
+    pump(app, 400)
+    checks.check("a match opens at its line",
+                 window._editor() is not None
+                 and window._editor().path == hit_path
+                 and window._editor().textCursor().blockNumber() + 1 == hit_line,
+                 f"{hit_path}:{hit_line}")
+    window.tabs_widget.setCurrentWidget(window.tabs[editor.path])
+    pump(app, 200)
+
+    # A non-TERN file opens as plain text and is not handed to the analyser.
+    markdown = os.path.join(ROOT, "docs", "language.md")
+    window.open_file(markdown)
+    pump(app, 600)
+    markdown_editor = window._editor()
+    checks.check("a Markdown file opens", markdown_editor is not None
+                 and markdown_editor.path == markdown)
+    checks.check("a non-TERN file gets no diagnostics", markdown_editor.problems == [],
+                 str(markdown_editor.problems[:3]))
+    window.tabs_widget.setCurrentWidget(window.tabs[editor.path])
+    pump(app, 200)
+
     # -------------------------------------------------------- debugging
     # A breakpoint, a stop, the stack, the locals, a step, and the program's
     # output — through the window, not the protocol client.

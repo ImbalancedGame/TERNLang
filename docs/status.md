@@ -26,7 +26,7 @@ caveats below.
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (36) |
-| TERN Studio, the desktop IDE | complete for editing, running, navigating, committing | `tools/ide/ui_test.py` (60) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, debugging | `tools/ide/ui_test.py` (65) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints, stepping, stack, locals, evaluate | `tools/debug_test.py` (35) |
 
 Every suite runs before a commit, and the working tree is expected to be green

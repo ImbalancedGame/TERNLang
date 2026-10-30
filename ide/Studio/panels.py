@@ -6,13 +6,13 @@ signals and never reaches into a list of items.
 
 import os
 
-from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
+from PySide6.QtCore import QDir, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileSystemModel,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPlainTextEdit, QPushButton,
-                               QTreeView, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog,
+                               QFileSystemModel, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QPlainTextEdit,
+                               QPushButton, QTreeView, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .theme import colour, monospace
 from .vcs import Repository
@@ -793,3 +793,188 @@ class DebugPanel(QWidget):
 
     def set_evaluated(self, text):
         self.evaluated.setText(text)
+
+
+class FindInPathPanel(QWidget):
+    """Project-wide text search: the results list, with the query on top.
+
+    Searching is done here rather than by the language server because it is a
+    text search, not a language one: every file, any extension, no index. It is
+    fast enough to run on every keystroke for a project of this size, and a
+    slower implementation would need a background index to do better.
+    """
+
+    openRequested = Signal(str, int, int)       # path, line, column
+
+    SKIP = {".git", "build", "obj", "bin", "node_modules", ".venv", "__pycache__", ".idea"}
+
+    def __init__(self, root, theme, parent=None):
+        super().__init__(parent)
+        self.root = root
+        self.theme = theme
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(180)
+        self._timer.timeout.connect(self.run_search)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(4)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.query = QLineEdit()
+        self.query.setPlaceholderText("Search the project (a regular expression, if it parses)")
+        self.query.textChanged.connect(lambda _text: self._timer.start())
+        self.query.returnPressed.connect(self.run_search)
+        row.addWidget(self.query, 1)
+
+        self.scope = QComboBox()
+        self.scope.addItems(["Whole project", "Current file"])
+        self.scope.setFixedWidth(130)
+        self.scope.currentIndexChanged.connect(lambda _index: self.run_search())
+        row.addWidget(self.scope)
+        layout.addLayout(row)
+
+        self.summary = QLabel("Type to search")
+        layout.addWidget(self.summary)
+
+        self.results = QTreeWidget()
+        self.results.setHeaderLabels(["Match", "File", "Line"])
+        self.results.setColumnWidth(0, 420)
+        self.results.setColumnWidth(1, 220)
+        self.results.setColumnWidth(2, 60)
+        self.results.itemActivated.connect(self._open)
+        layout.addWidget(self.results, 1)
+
+        self.apply_theme(theme)
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        self.query.setStyleSheet(
+            f"background: {theme['bg']}; color: {theme['fg']};"
+            f" border: 1px solid {theme['border']}; padding: 3px 6px;")
+        self.summary.setStyleSheet(f"color: {theme['fg_dim']};")
+        self.results.setStyleSheet(
+            f"QTreeWidget {{ background: {theme['panel']}; color: {theme['fg']}; border: none; }}"
+            f"QTreeWidget::item:selected {{ background: {theme['accent']}; color: #ffffff; }}")
+
+    # -------------------------------------------------------------- searching
+
+    def files(self):
+        for directory, subdirectories, names in os.walk(self.root):
+            subdirectories[:] = [name for name in subdirectories if name not in self.SKIP]
+            for name in names:
+                if name.endswith((".tern", ".md", ".json", ".txt")):
+                    yield os.path.join(directory, name)
+
+    def run_search(self):
+        """Fills the list. Case-insensitive; a regex when one parses."""
+        import re
+
+        text = self.query.text()
+        self.results.clear()
+        if not text:
+            self.summary.setText("Type to search")
+            return
+
+        try:
+            pattern = re.compile(text, re.IGNORECASE)
+        except re.error:
+            pattern = re.compile(re.escape(text), re.IGNORECASE)
+
+        limit = 500
+        total = 0
+        found_files = set()
+        for path in self.files():
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                    lines = handle.read().splitlines()
+            except OSError:
+                continue
+            for number, line in enumerate(lines, start=1):
+                match = pattern.search(line)
+                if match is None:
+                    continue
+                total += 1
+                found_files.add(path)
+                item = QTreeWidgetItem([
+                    line.strip()[:160],
+                    os.path.relpath(path, self.root),
+                    str(number),
+                ])
+                item.setData(0, Qt.UserRole, (path, number, match.start()))
+                item.setToolTip(0, line)
+                self.results.addTopLevelItem(item)
+                if total >= limit:
+                    break
+            if total >= limit:
+                break
+
+        if total == 0:
+            self.summary.setText("Nothing found")
+        elif total >= limit:
+            self.summary.setText(f"{limit}+ matches in {len(found_files)} files (showing the first {limit})")
+        else:
+            self.summary.setText(f"{total} match{'es' if total != 1 else ''} in "
+                                 f"{len(found_files)} file{'s' if len(found_files) != 1 else ''}")
+
+    def _open(self, item, _column=0):
+        path, line, column = item.data(0, Qt.UserRole)
+        self.openRequested.emit(path, line, column)
+
+
+class SymbolDialog(QDialog):
+    """A filterable list of one file's declarations (Ctrl+F12)."""
+
+    def __init__(self, labels, theme, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Go to Symbol")
+        self.resize(520, 380)
+        self.chosen = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText("Symbol name")
+        layout.addWidget(self.filter)
+
+        self.list = QListWidget()
+        for index, label in enumerate(labels):
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, index)
+            self.list.addItem(item)
+        layout.addWidget(self.list, 1)
+
+        self.setStyleSheet(
+            f"QDialog {{ background: {theme['panel']}; }}"
+            f"QLineEdit {{ background: {theme['bg']}; color: {theme['fg']};"
+            f" border: 1px solid {theme['border']}; padding: 3px 5px; }}"
+            f"QListWidget {{ background: {theme['panel']}; color: {theme['fg']}; border: none; }}"
+            f"QListWidget::item:selected {{ background: {theme['accent']}; color: #ffffff; }}")
+
+        self._labels = list(labels)
+        self.filter.textChanged.connect(self._fill)
+        self.filter.returnPressed.connect(self._accept_current)
+        self.list.itemActivated.connect(lambda _item: self._accept_current())
+        self._fill()
+
+    def _fill(self):
+        needle = self.filter.text().strip().lower()
+        self.list.clear()
+        for index, label in enumerate(self._labels):
+            if needle and needle not in label.lower():
+                continue
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, index)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _accept_current(self):
+        item = self.list.currentItem()
+        if item is not None:
+            self.chosen = item.data(Qt.UserRole)
+            self.accept()

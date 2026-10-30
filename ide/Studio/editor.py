@@ -184,7 +184,8 @@ class Editor(QPlainTextEdit):
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.setCursorWidth(2)
 
-        self.highlighter = TernHighlighter(self.document(), theme)
+        self.highlighter = (TernHighlighter(self.document(), theme)
+                            if str(path).endswith(".tern") else None)
         self.setPlainText(text)
 
         self.gutter = LineNumberArea(self)
@@ -204,7 +205,8 @@ class Editor(QPlainTextEdit):
 
     def apply_theme(self, theme):
         self.theme = theme
-        self.highlighter.set_theme(theme)
+        if self.highlighter is not None:
+            self.highlighter.set_theme(theme)
         self._on_cursor()
         self.strip.update()
 
@@ -213,7 +215,10 @@ class Editor(QPlainTextEdit):
         return 16 + QFontMetrics(self.font()).horizontalAdvance("9") * digits
 
     def _update_margins(self):
-        self.setViewportMargins(self.gutter_width(), 0, 10, 0)
+        # Nothing to update before the widget has a size; doing it during
+        # construction lays out a zero-width gutter and Qt then relayouts twice.
+        if self.isVisible() or self.width() > 0:
+            self.setViewportMargins(self.gutter_width(), 0, 10, 0)
 
     def _update_gutter(self, rect, dy):
         if dy:
@@ -722,7 +727,9 @@ class Editor(QPlainTextEdit):
         self.strip.update()
         self.gutter.update()
 
-        selections = list(self.extraSelections())
+        # A fresh list every time: reusing the old selections and appending to
+        # them leaked the Qt-owned ones, which PySide6 then freed twice.
+        selections = []
         for severity, line, message in problems:
             block = self.document().findBlockByNumber(line)
             if not block.isValid():
