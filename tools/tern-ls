@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Runs the TERN syntax server (Language Server Protocol over stdio).
+#
+#   tools/tern-ls                    normal use; an editor spawns this
+#   tools/tern-ls --log=/tmp/ls.log  trace every message
+#
+# Point any LSP-capable editor at this script; it is not tied to TERN Studio.
+# The server reads and writes Content-Length framed JSON-RPC on stdin/stdout
+# and keeps its diagnostics on stderr, so the protocol stream stays clean.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export DOTNET_ROOT="${TERN_TOOLCHAIN_DIR:-/tmp/tern-toolchain}/dotnet"
+
+if [[ ! -f "$HERE/build/TERN.Ide.dll" ]]; then
+  echo "tern-ls: building the syntax server..." >&2
+  "$HERE/tools/build.py" --ide >&2 || exit 1
+fi
+
+# build/dotnet is the runtime copied next to the assemblies by
+# tools/setup-toolchain.sh; a machine with the .NET SDK has it on PATH instead.
+if [[ -x "$HERE/build/dotnet" ]]; then
+  exec "$HERE/build/dotnet" "$HERE/build/TERN.Ide.dll" "$@"
+fi
+
+if [[ -x "${DOTNET_ROOT}/dotnet" ]]; then
+  exec "${DOTNET_ROOT}/dotnet" "$HERE/build/TERN.Ide.dll" "$@"
+fi
+
+if command -v dotnet >/dev/null 2>&1; then
+  exec dotnet "$HERE/build/TERN.Ide.dll" "$@"
+fi
+
+echo "tern-ls: no .NET runtime found; run tools/setup-toolchain.sh" >&2
+exit 127

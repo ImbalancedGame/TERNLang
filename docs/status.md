@@ -25,18 +25,21 @@ caveats below.
 | `d3d12` (device, target, HLSL, PSO, draw) | complete against a mock driver | `tools/test-d3d12.sh` |
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
+| Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (36) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating | `tools/ide/ui_test.py` (23) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       36 passed
+./tools/test.sh                                       38 passed
 python3 native/run_tests.py                           32 passed
 python3 native/parity.py                              42 compared, 0 differing
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
 bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
+bash tools/test-ide.sh                                36 passed
 python3 tools/gen-reference.py --check                278 pages up to date
 ```
 
@@ -75,6 +78,24 @@ starts in 2 ms against 112 ms for the interpreter.
   draw calls, readback and PNG encoding are unmeasured on real hardware.
 * **Start-up.** The 2 ms against 112 ms figure above is a hello world; how much
   of that 112 ms is JIT, and how it scales with script size, is not measured.
+
+## The IDE
+
+`docs/ide.md` has the detail; the short version is that the analysis lives in a
+separate process and the window is a client of it, so the IDE reports exactly
+what `tools/tern run` reports.
+
+* **Language server** (`ide/Server`, 384 KB) — LSP 3.17 over stdio with
+  Content-Length framing: `initialize`, full-text sync, diagnostics,
+  completion (members, built-ins, imports, keywords; `.` and `"` triggers),
+  hover, definition, references, document/workspace symbols, formatting,
+  rename with `prepareRename`.
+* **Studio** (`ide/Studio`, PySide6) — Rider-shaped shell: menu bar, toolbar,
+  Project and Structure docks, Run/Problems/Terminal tabified at the bottom,
+  breadcrumbs, status bar, Darcula and light themes, remembered state.
+* **Not there**: a debugger (the compiler has no breakpoint hook), a VCS panel,
+  a project model beyond "a directory", and multi-file *background* analysis.
+  None of these are blocked by the sandbox; they are simply not written.
 
 ## What still needs fixing
 
