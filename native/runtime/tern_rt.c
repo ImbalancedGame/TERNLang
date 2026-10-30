@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <string.h>
 #include <strings.h>
@@ -17,6 +18,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <wctype.h>
 #include <time.h>
 #include <unistd.h>
@@ -7579,6 +7581,424 @@ static Value n_rcon_execute(int argc, Value *argv) {
     return v_nil();
 }
 
+
+// -------------------------------------------------------------------- sftp
+//
+// File transfer over SSH, driven through the OpenSSH client in batch mode: the
+// commands go to sftp's standard input, the answer comes back on its output and
+// BatchMode=yes makes a missing key fail instead of waiting for a password.
+// Writing the SSH transport by hand is not on the table, so this is the same
+// choice the interpreter makes.
+
+#define SFTP_DEFAULT_TIMEOUT 30000
+#define SFTP_MAX_ARGUMENTS 16
+
+typedef struct {
+    const char *host;
+    const char *user;
+    const char *key;
+    int port;
+    int timeout;
+} SftpOptions;
+
+static const char *sftp_arg_text(Value v, const char *what) {
+    return net_arg_text(v, what);
+}
+
+static void sftp_parse_options(Value v, const char *operation, SftpOptions *options) {
+    options->host = NULL;
+    options->user = NULL;
+    options->key = NULL;
+    options->port = 22;
+    options->timeout = SFTP_DEFAULT_TIMEOUT;
+
+    if (!v_is_map(v)) {
+        tern_panic("TypeError", "%s() options must be a map, not %s", operation, tern_type_name(v));
+    }
+
+    Map *map = (Map *)v.as.o;
+    Value found;
+    if (map_get(map, str_from_cstr("host"), &found)) {
+        options->host = sftp_arg_text(found, "option 'host'");
+    }
+    if (map_get(map, str_from_cstr("user"), &found)) {
+        options->user = sftp_arg_text(found, "option 'user'");
+    }
+    if (map_get(map, str_from_cstr("key"), &found)) {
+        options->key = sftp_arg_text(found, "option 'key'");
+    }
+    if (map_get(map, str_from_cstr("port"), &found)) {
+        double port = net_arg_number(found, "option 'port'");
+        if (port < 1 || port > 65535) {
+            tern_panic("ArgumentError", "option 'port' must be between 1 and 65535");
+        }
+        options->port = (int)port;
+    }
+    if (map_get(map, str_from_cstr("timeout"), &found)) {
+        double milliseconds = net_arg_number(found, "option 'timeout'");
+        if (milliseconds < 0) {
+            tern_panic("ArgumentError", "option 'timeout' must not be negative");
+        }
+        options->timeout = (int)milliseconds;
+    }
+
+    if (!options->host || options->host[0] == '\0') {
+        tern_panic("ArgumentError", "option 'host' is required");
+    }
+    if (!options->user || options->user[0] == '\0') {
+        tern_panic("ArgumentError", "option 'user' is required");
+    }
+}
+
+/// Splits a list of batch commands, refusing anything that is not one line.
+static List *sftp_commands(Value v) {
+    if (!v_is_list(v)) {
+        tern_panic("TypeError", "expected a list of commands, not %s", tern_type_name(v));
+    }
+
+    List *list = (List *)v.as.o;
+    for (int i = 0; i < list->count; i++) {
+        Value item = list->items[i];
+        if (!v_is_str(item)) {
+            tern_panic("TypeError", "command %d must be a string, not %s", i, tern_type_name(item));
+        }
+        Str *text = (Str *)item.as.o;
+        if (strpbrk(text->chars, "\r\n") != NULL) {
+            tern_panic("SftpError", "command %d contains a line break", i);
+        }
+    }
+    return list;
+}
+
+/// sftp has no escaping of its own, so a path with a space is quoted.
+static void sftp_quote(const char *path, ByteBuf *out) {
+    bool needs_quotes = strpbrk(path, " \t") != NULL;
+    if (!needs_quotes) {
+        bb_add_text(out, path);
+        return;
+    }
+
+    bb_add_text(out, "\"");
+    for (const char *p = path; *p; p++) {
+        if (*p == '"') {
+            bb_add_text(out, "\\\"");
+        } else {
+            bb_add(out, p, 1);
+        }
+    }
+    bb_add_text(out, "\"");
+}
+
+/// The batch file text: one command per line.
+static void sftp_batch_text(List *commands, ByteBuf *out) {
+    for (int i = 0; i < commands->count; i++) {
+        Str *text = (Str *)commands->items[i].as.o;
+        bb_add(out, text->chars, (size_t)text->len);
+        bb_add_text(out, "\n");
+    }
+}
+
+/// The argv sftp is started with, in one place so command/run/tests agree.
+static int sftp_argv(SftpOptions *options, char *port_text, size_t port_size,
+                     const char *argv[SFTP_MAX_ARGUMENTS]) {
+    snprintf(port_text, port_size, "%d", options->port);
+
+    char *target = (char *)malloc(strlen(options->user) + strlen(options->host) + 2);
+    sprintf(target, "%s@%s", options->user, options->host);
+
+    int at = 0;
+    argv[at++] = "sftp";
+    argv[at++] = "-b";
+    argv[at++] = "-";
+    argv[at++] = "-P";
+    argv[at++] = port_text;
+    if (options->key) {
+        argv[at++] = "-i";
+        argv[at++] = options->key;
+    }
+    argv[at++] = "-o";
+    argv[at++] = "BatchMode=yes";
+    argv[at++] = "-o";
+    argv[at++] = "StrictHostKeyChecking=accept-new";
+    argv[at++] = target;
+    argv[at] = NULL;
+    return at;
+}
+
+/// Runs sftp with `batch` on its input. Returns the exit status, or -1 with a
+/// message in `why` when the program could not be started or timed out.
+static int sftp_exec(char *const argv[], const char *batch, size_t batch_length,
+                     int timeout_ms, ByteBuf *out, ByteBuf *err, char *why, size_t why_size) {
+    int to_child[2];
+    int from_child[2];
+    int errors[2];
+    if (pipe(to_child) != 0 || pipe(from_child) != 0 || pipe(errors) != 0) {
+        snprintf(why, why_size, "cannot run sftp: %s", strerror(errno));
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        snprintf(why, why_size, "cannot run sftp: %s", strerror(errno));
+        return -1;
+    }
+
+    if (pid == 0) {
+        dup2(to_child[0], STDIN_FILENO);
+        dup2(from_child[1], STDOUT_FILENO);
+        dup2(errors[1], STDERR_FILENO);
+        close(to_child[0]); close(to_child[1]);
+        close(from_child[0]); close(from_child[1]);
+        close(errors[0]); close(errors[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    close(to_child[0]);
+    close(from_child[1]);
+    close(errors[1]);
+
+    size_t written = 0;
+    while (written < batch_length) {
+        ssize_t n = write(to_child[1], batch + written, batch_length - written);
+        if (n <= 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        written += (size_t)n;
+    }
+    close(to_child[1]);
+
+    struct pollfd waiting[2];
+    waiting[0].fd = from_child[0];
+    waiting[0].events = POLLIN;
+    waiting[0].revents = 0;
+    waiting[1].fd = errors[0];
+    waiting[1].events = POLLIN;
+    waiting[1].revents = 0;
+
+    struct timespec started;
+    clock_gettime(CLOCK_MONOTONIC, &started);
+    int open_pipes = 2;
+
+    while (open_pipes > 0) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long elapsed = (now.tv_sec - started.tv_sec) * 1000 +
+                       (now.tv_nsec - started.tv_nsec) / 1000000;
+        long remaining = (long)timeout_ms - elapsed;
+        if (remaining <= 0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            snprintf(why, why_size, "sftp timed out after %d ms", timeout_ms);
+            return -1;
+        }
+
+        int ready = poll(waiting, 2, (int)remaining);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            snprintf(why, why_size, "cannot run sftp: %s", strerror(errno));
+            return -1;
+        }
+
+        for (int i = 0; i < 2 && open_pipes > 0; i++) {
+            if (waiting[i].fd < 0 || !(waiting[i].revents & (POLLIN | POLLHUP | POLLERR))) {
+                continue;
+            }
+
+            unsigned char chunk[4096];
+            ssize_t n = read(waiting[i].fd, chunk, sizeof chunk);
+            if (n > 0) {
+                bb_add(i == 0 ? out : err, chunk, (size_t)n);
+            } else if (n == 0 || (errno != EINTR && errno != EAGAIN)) {
+                close(waiting[i].fd);
+                waiting[i].fd = -1;
+                open_pipes--;
+            }
+        }
+    }
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
+}
+
+/// Every batch call funnels through here: build the batch, run it, report.
+static Value sftp_run_batch(Value options_value, const char *operation, List *commands, bool raise) {
+    SftpOptions options;
+    sftp_parse_options(options_value, operation, &options);
+    if (options.key && access(options.key, R_OK) != 0) {
+        tern_panic("SftpError", "cannot read the key file '%s'", options.key);
+    }
+
+    ByteBuf batch = { 0 };
+    sftp_batch_text(commands, &batch);
+    bb_add(&batch, "", 1);
+
+    char port_text[16];
+    const char *argv[SFTP_MAX_ARGUMENTS];
+    sftp_argv(&options, port_text, sizeof port_text, argv);
+
+    ByteBuf out = { 0 };
+    ByteBuf err = { 0 };
+    char why[128];
+    why[0] = '\0';
+
+    int status = sftp_exec((char *const *)argv, (const char *)batch.data, batch.len,
+                           options.timeout, &out, &err, why, sizeof why);
+    bb_free(&batch);
+
+    if (status < 0) {
+        bb_free(&out);
+        bb_free(&err);
+        tern_panic("SftpError", "%s", why[0] ? why : "sftp failed");
+    }
+
+    if (status == 127) {
+        bb_free(&out);
+        bb_free(&err);
+        tern_panic("SftpError", "cannot run sftp: is the OpenSSH client installed?");
+    }
+
+    if (status != 0 && raise) {
+        // The first non-empty line of stderr is the useful part of the message.
+        size_t start = 0;
+        for (size_t i = 0; i <= err.len; i++) {
+            if (i == err.len || err.data[i] == '\n') {
+                size_t begin = start;
+                while (begin < i && (err.data[begin] == ' ' || err.data[begin] == '\t')) begin++;
+                size_t end = i;
+                while (end > begin && (err.data[end - 1] == '\r' || err.data[end - 1] == ' ')) end--;
+                if (end > begin) {
+                    char *text = (char *)malloc(end - begin + 1);
+                    memcpy(text, err.data + begin, end - begin);
+                    text[end - begin] = '\0';
+                    tern_panic("SftpError", "sftp failed with status %d: %s", status, text);
+                }
+                start = i + 1;
+            }
+        }
+        tern_panic("SftpError", "sftp failed with status %d", status);
+    }
+
+    Map *report = map_new();
+    map_set(report, str_from_cstr("status"), v_int(status));
+    map_set(report, str_from_cstr("output"), v_obj((Obj *)str_from((const char *)out.data, out.len)));
+    map_set(report, str_from_cstr("error"), v_obj((Obj *)str_from((const char *)err.data, err.len)));
+    bb_free(&out);
+    bb_free(&err);
+    return v_obj((Obj *)report);
+}
+
+static Value n_sftp_batch(int argc, Value *argv) {
+    (void)argc;
+    List *commands = sftp_commands(argv[0]);
+    ByteBuf text = { 0 };
+    sftp_batch_text(commands, &text);
+    Value result = v_obj((Obj *)str_from(text.data ? (const char *)text.data : "", text.len));
+    bb_free(&text);
+    return result;
+}
+
+static Value n_sftp_command(int argc, Value *argv) {
+    (void)argc;
+    SftpOptions options;
+    sftp_parse_options(argv[0], "command", &options);
+
+    char port_text[16];
+    const char *argv2[SFTP_MAX_ARGUMENTS];
+    int count = sftp_argv(&options, port_text, sizeof port_text, argv2);
+
+    List *parts = list_new(count);
+    for (int i = 0; i < count; i++) {
+        list_push(parts, str_from_cstr(argv2[i]));
+    }
+    return v_obj((Obj *)parts);
+}
+
+static Value n_sftp_upload(int argc, Value *argv) {
+    const char *local = sftp_arg_text(argv[0], "local");
+    const char *remote = sftp_arg_text(argv[1], "remote");
+
+    if (access(local, R_OK) != 0) {
+        tern_panic("SftpError", "local file '%s' does not exist", local);
+    }
+
+    ByteBuf line = { 0 };
+    bb_add_text(&line, "put ");
+    sftp_quote(local, &line);
+    bb_add_text(&line, " ");
+    sftp_quote(remote, &line);
+
+    List *commands = list_new(1);
+    list_push(commands, v_obj((Obj *)str_from((const char *)line.data, line.len)));
+    bb_free(&line);
+
+    sftp_run_batch(argc > 2 ? argv[2] : v_nil(), "upload", commands, true);
+    return v_nil();
+}
+
+static Value n_sftp_download(int argc, Value *argv) {
+    const char *remote = sftp_arg_text(argv[0], "remote");
+    const char *local = sftp_arg_text(argv[1], "local");
+
+    ByteBuf line = { 0 };
+    bb_add_text(&line, "get ");
+    sftp_quote(remote, &line);
+    bb_add_text(&line, " ");
+    sftp_quote(local, &line);
+
+    List *commands = list_new(1);
+    list_push(commands, v_obj((Obj *)str_from((const char *)line.data, line.len)));
+    bb_free(&line);
+
+    sftp_run_batch(argc > 2 ? argv[2] : v_nil(), "download", commands, true);
+    return v_nil();
+}
+
+static Value n_sftp_list(int argc, Value *argv) {
+    const char *remote = sftp_arg_text(argv[0], "remote");
+
+    ByteBuf line = { 0 };
+    bb_add_text(&line, "ls -1 ");
+    sftp_quote(remote, &line);
+
+    List *commands = list_new(1);
+    list_push(commands, v_obj((Obj *)str_from((const char *)line.data, line.len)));
+    bb_free(&line);
+
+    Value report = sftp_run_batch(argc > 1 ? argv[1] : v_nil(), "list", commands, true);
+    Map *map = (Map *)report.as.o;
+    Value output = v_nil();
+    map_get(map, str_from_cstr("output"), &output);
+
+    Str *text = (Str *)output.as.o;
+    List *names = list_new(8);
+    size_t start = 0;
+    for (size_t i = 0; i <= (size_t)text->len; i++) {
+        if (i == (size_t)text->len || text->chars[i] == '\n') {
+            size_t end = i;
+            while (end > start && text->chars[end - 1] == '\r') end--;
+            if (end > start) {
+                list_push(names, v_obj((Obj *)str_from(text->chars + start, end - start)));
+            }
+            start = i + 1;
+        }
+    }
+    return v_obj((Obj *)names);
+}
+
+static Value n_sftp_run(int argc, Value *argv) {
+    (void)argc;
+    List *commands = sftp_commands(argv[0]);
+    return sftp_run_batch(argv[1], "run", commands, false);
+}
+
 static Value namespace_map(const char *ns) {
     Map *map = map_new();
 
@@ -7749,6 +8169,23 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+    if (strcmp(ns, "sftp") == 0) {
+        // The argument counts mirror TERN/Builtins/Sftp.cs.
+        map_set(map, str_from_cstr("upload"),
+                make_native_arity("upload", n_sftp_upload, 2, 3));
+        map_set(map, str_from_cstr("download"),
+                make_native_arity("download", n_sftp_download, 2, 3));
+        map_set(map, str_from_cstr("list"),
+                make_native_arity("list", n_sftp_list, 1, 2));
+        map_set(map, str_from_cstr("run"),
+                make_native_arity("run", n_sftp_run, 2, 2));
+        map_set(map, str_from_cstr("batch"),
+                make_native_arity("batch", n_sftp_batch, 1, 1));
+        map_set(map, str_from_cstr("command"),
+                make_native_arity("command", n_sftp_command, 1, 1));
+        return v_obj((Obj *)map);
+    }
+
     if (strcmp(ns, "random") == 0) {
         map_set(map, str_from_cstr("seed"), make_native_arity("seed", rnd_seed, 1, 1));
         map_set(map, str_from_cstr("float"), make_native_arity("float", rnd_float, 0, 2));
@@ -7774,7 +8211,7 @@ static Value namespace_map(const char *ns) {
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
     static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists",
-                                  "fs", "net", "http", "rcon", NULL};
+                                  "fs", "net", "http", "rcon", "sftp", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -7797,7 +8234,8 @@ Value tern_lookup_global(const char *name) {
         strcmp(name, "json") == 0 || strcmp(name, "os") == 0 ||
         strcmp(name, "random") == 0 || strcmp(name, "text") == 0 ||
         strcmp(name, "lists") == 0 || strcmp(name, "net") == 0 ||
-        strcmp(name, "http") == 0 || strcmp(name, "rcon") == 0) {
+        strcmp(name, "http") == 0 || strcmp(name, "rcon") == 0 ||
+        strcmp(name, "sftp") == 0) {
         return namespace_map(name);
     }
 

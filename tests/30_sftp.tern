@@ -1,0 +1,32 @@
+// SFTP runs the OpenSSH client in batch mode: these are the parts a test can
+// pin down without a server — the batch text, the command line and every option
+// check. The transfer itself is a real sftp process, tested against a refused
+// connection by hand.
+import "std:sftp";
+
+fn kind(block) {
+    try {
+        block();
+        return "ok";
+    } catch (e) {
+        return str(e);
+    }
+}
+
+println(str(sftp.batch(["put a.txt b.txt", "ls -1 /tmp", "get x y"])));
+println(sftp.command({"host": "example.com", "user": "me"}));
+println(sftp.command({"host": "example.com", "user": "me", "port": 2222, "key": "/k/id_ed25519"}));
+println(str(sftp.batch(["put \"a b.txt\" c.txt"])));
+
+println(kind(fn() { sftp.batch("nope"); }));
+println(kind(fn() { sftp.batch([1]); }));
+println(kind(fn() { sftp.batch(["two\nlines"]); }));
+println(kind(fn() { sftp.command("nope"); }));
+println(kind(fn() { sftp.command({}); }));
+println(kind(fn() { sftp.command({"host": "example.com"}); }));
+println(kind(fn() { sftp.command({"host": "example.com", "user": 5}); }));
+println(kind(fn() { sftp.command({"host": "example.com", "user": "me", "port": 0}); }));
+println(kind(fn() { sftp.command({"host": "example.com", "user": "me", "timeout": -1}); }));
+println(kind(fn() { sftp.upload("/nope/file.txt", "/remote", {"host": "h", "user": "u"}); }));
+println(kind(fn() { sftp.upload(1, "x", {"host": "h", "user": "u"}); }));
+println(kind(fn() { sftp.download("/x", "/y", {"host": "h", "user": "u", "key": "/nope/key"}); }));

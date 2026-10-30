@@ -526,9 +526,9 @@ Importing a file executes it once (results are cached per engine) and makes its
 top level bindings available.
 
 Standard modules: `std:math`, `std:json`, `std:fs`, `std:os`, `std:time`,
-`std:random`, `std:text`, `std:lists`, `std:net`, `std:http`, `std:rcon`. Their
-members are also exposed as namespaces (`math.sqrt`, `json.parse`, ...), so
-importing is optional.
+`std:random`, `std:text`, `std:lists`, `std:net`, `std:http`, `std:rcon`,
+`std:sftp`. Their members are also exposed as namespaces (`math.sqrt`,
+`json.parse`, ...), so importing is optional.
 
 ```tern
 import "std:json";
@@ -570,6 +570,7 @@ abs min max copy sleep
 | `net` | `encode decode listen accept connect send receive sendBytes receiveBytes maxFrame udpListen udpSend udpReceive close timeout port peer` |
 | `http` | `request get post encodeRequest decodeResponse exchange` |
 | `rcon` | `connect attach execute close` |
+| `sftp` | `upload download list run batch command` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
 
@@ -636,6 +637,36 @@ it then says `needs a connection handle, not an rcon session`. `rcon.execute`
 runs one command and returns everything the server sent, joining responses that
 arrive in several packets (the 4096-byte split is common). `rcon.close` closes
 the socket. The only option is `timeout` (milliseconds, default 5000).
+
+### SFTP
+
+FTP transfers passwords in clear text; SFTP is the same job over SSH, and it is
+what `std:sftp` speaks. There is no SFTP library to link against here, and
+implementing SSH by hand is out of the question, so the namespace drives the
+OpenSSH client in batch mode: the commands go to `sftp`'s standard input and
+`BatchMode=yes` makes a missing key fail instead of prompting.
+
+```tern
+import "std:sftp";
+
+let server = {"host": "example.com", "user": "deploy", "key": "/home/me/.ssh/id_ed25519"};
+sftp.upload("build/app.tar.gz", "/srv/app.tar.gz", server);
+sftp.download("/var/log/app.log", "app.log", server);
+println(sftp.list("/srv", server));
+```
+
+Options are `host` and `user` (both required), `key` (a private key file),
+`port` (default 22) and `timeout` (milliseconds, default 30000). A local file
+that is missing, or a key that cannot be read, is reported before anything is
+started. `sftp.run(commands, options)` runs your own batch commands and returns
+`{"status", "output", "error"}` without raising, which is what `upload`,
+`download` and `list` are built on — they raise `SftpError` when `sftp` exits
+non-zero, with the first line of its error output. `sftp.batch(commands)` and
+`sftp.command(options)` return the batch text and the command line, so a script
+can print exactly what would run. Paths with spaces are quoted.
+
+The `sftp` program must be installed (OpenSSH client) and the host must accept
+key-based authentication: there is no password prompt to drive.
 
 ---
 

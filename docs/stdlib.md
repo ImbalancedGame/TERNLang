@@ -176,6 +176,17 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `connect` | `connect(arg, arg, arg, [arg])` | Connects and logs in: rcon.connect(host, port, password[, options]). |
 | `execute` | `execute(arg, arg)` | Runs one command and returns everything the server sent back. |
 
+## `sftp`
+
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `batch` | `batch(arg)` | The batch file text for a list of commands. |
+| `command` | `command(arg)` | The command line sftp is started with, as a list of strings. |
+| `download` | `download(arg, arg, [arg])` | Copies a file from the server: sftp.download(remote, local[, options]). |
+| `list` | `list(arg, [arg])` | Lists a remote directory: sftp.list(remote[, options]). |
+| `run` | `run(arg, arg)` | Runs batch commands and reports {status, output, error} without raising. |
+| `upload` | `upload(arg, arg, [arg])` | Copies a local file to the server: sftp.upload(local, remote[, options]). |
+
 ## `text`
 
 | Name | Signature | Notes |
@@ -208,6 +219,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 * `std:os`
 * `std:random`
 * `std:rcon`
+* `std:sftp`
 * `std:text`
 * `std:time`
 
