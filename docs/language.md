@@ -613,8 +613,9 @@ import "std:net";
 
 struct Ping { from = "", n = 0 }
 
-let server = net.listen("127.0.0.1", 8080);
-let client = net.connect("127.0.0.1", net.port(server));
+let server = net.listen("127.0.0.1", 8080, {"token": "s3cret"});
+let client = net.connect("127.0.0.1", net.port(server),
+                         {"token": "s3cret", "timeout": 5000});
 let peer = net.accept(server);
 
 net.timeout(peer, 5000);          // milliseconds; 0 waits forever
@@ -627,6 +628,33 @@ net.close(server);
 ```
 
 `net.listen(0)` binds an ephemeral port; read it back with `net.port(handle)`.
+
+Both `listen` and `connect` take an optional options map:
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `token` | Shared secret the peer must present before the connection is handed to the script | no token |
+| `maxFrame` | Largest frame this socket will accept, in bytes (1 .. 64 MiB) | 1 MiB |
+| `timeout` | Connect, send and receive timeout in milliseconds; `0` waits forever | no timeout |
+
+`maxFrame` is a memory guard, not a wire setting: the length in a frame header is
+compared with the limit before the payload is read, so four bytes from a peer
+cannot make the process allocate 64 MiB. Raise it with `net.maxFrame(handle, n)`
+when a protocol needs bigger messages.
+
+Every connection opens with a hello frame: one version byte, the token as a
+length-prefixed string, and nothing else yet (the rest is reserved). `connect`
+sends it and `accept` reads it, so a listener created with a token refuses a
+mismatched peer by sending the reason back and closing, before the script sees
+the socket; `net.accept` then raises `AuthenticationError`. The handshake is
+compared in constant time and gives up after five seconds (or the listener's own
+`timeout`, when that is shorter). A peer that vanishes mid-handshake is a
+`ConnectionError`.
+
+`net.sendBytes(socket, bytes)` and `net.receiveBytes(socket, count)` move raw
+bytes with no frame header, for protocols layered on top of `net` (HTTP, RCON,
+anything with its own framing). Byte lists use integers in 0..255 and are
+rejected otherwise.
 
 Any value can travel: `nil`, booleans, integers, floats, strings, lists, maps,
 ranges and structs. Integers and floats keep their type and exact bits, map

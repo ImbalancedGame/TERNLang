@@ -20,11 +20,38 @@ true first
 [0, "frame"]
 [1, "frame"]
 [2, "frame"]
-listen() expects 1 to 2 argument(s) but got 0
-listen() expects 1 to 2 argument(s) but got 3
-connect() expects 2 argument(s) but got 1
+listen() expects 1 to 3 argument(s) but got 0
+host must be a string, not int
+connect() expects 2 to 3 argument(s) but got 1
 timeout() expects 2 argument(s) but got 3
 accept() needs a server handle from listen()
 send() needs a connection handle, not a server
 closed: connection closed by the other side
 no open socket with handle 3
+option 'maxFrame' must be between 1 and 67108864 bytes
+option 'maxFrame' must be between 1 and 67108864 bytes
+option 'timeout' must not be negative
+option 'token' must not be empty
+option 'token' must be a string, not int
+listen() options must be a map, not string
+host must be a string, not int
+port must be a number, not string
+connect() options must be a map, not string
+token: trusted
+refused: token rejected
+refusal text: [116]
+refused again: token rejected
+too big: frame of 203 bytes is larger than this socket's limit of 32
+maxFrame() must be between 0 and 67108864 bytes
+maxFrame() must be between 0 and 67108864 bytes
+limit raised: frame of 96993656 bytes is larger than this socket's limit of 4096
+[120, 120, 120, 120]
+[104, 105]
+expected a list of bytes, not string
+byte 1 is not an integer in 0..255
+byte 1 is not an integer in 0..255
+receiveBytes() needs a count of 0 or more
+count must be a number, not string
+read timeout: no error
+frame timeout: frame timed out
+no timeout: no error

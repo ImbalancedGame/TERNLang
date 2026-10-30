@@ -3,7 +3,9 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -5243,13 +5245,20 @@ static Value wire_decode(Value bytes) {
 //
 // Sockets, addressed by small integer handles so a script talks to the same
 // API in both back ends. Frames are a 4 byte big endian length followed by an
-// encoded value.
+// encoded value, and every connection opens with a hello frame so a listener
+// with a token can refuse a peer before the script ever sees it.
 
 #define NET_MAX_HANDLES 128
 #define NET_MAX_FRAME (64 * 1024 * 1024)
+#define NET_DEFAULT_MAX_FRAME (1024 * 1024)
+#define NET_HANDSHAKE_TIMEOUT_MS 5000
+#define NET_PROTOCOL_VERSION 1
 
 static int net_fds[NET_MAX_HANDLES];
 static int net_is_listener[NET_MAX_HANDLES];
+static int net_max_frames[NET_MAX_HANDLES];
+static int net_timeouts[NET_MAX_HANDLES];
+static char *net_tokens[NET_MAX_HANDLES];
 
 static int net_slot(int handle) {
     if (handle < 1 || handle > NET_MAX_HANDLES || net_fds[handle - 1] < 0) {
@@ -5263,6 +5272,9 @@ static int net_store(int fd, int listener) {
         if (net_fds[i] < 0) {
             net_fds[i] = fd;
             net_is_listener[i] = listener;
+            net_max_frames[i] = NET_DEFAULT_MAX_FRAME;
+            net_timeouts[i] = 0;
+            net_tokens[i] = NULL;
             return i + 1;
         }
     }
@@ -5292,6 +5304,14 @@ static int net_arg_int(Value v, const char *what) {
     return (int)v.as.i;
 }
 
+// A number that may be an int or a float, for millisecond arguments.
+static double net_arg_number(Value v, const char *what) {
+    if (v.tag == T_INT) return (double)v.as.i;
+    if (v.tag == T_FLOAT) return v.as.f;
+    tern_panic("TypeError", "%s must be a number, not %s", what, tern_type_name(v));
+    return 0;
+}
+
 static Value n_net_encode(int argc, Value *argv) {
     (void)argc;
     return wire_encode(argv[0]);
@@ -5306,6 +5326,42 @@ static void net_fail(const char *what) {
     tern_panic("NetError", "%s: %s", what, strerror(errno));
 }
 
+// --- raw byte plumbing ----------------------------------------------------
+
+/// Writes every byte or raises. `what` names the operation in the message.
+static void net_write_all(int fd, const void *data, size_t length, const char *what) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t n = send(fd, bytes + sent, length - sent, MSG_NOSIGNAL);
+        if (n <= 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                tern_panic("NetError", "%s() timed out", what);
+            }
+            tern_panic("NetError", "%s() failed: %s", what, strerror(errno));
+        }
+        sent += (size_t)n;
+    }
+}
+
+/// Reads exactly `length` bytes into `buffer`. Returns the number of bytes read:
+/// less than `length` only at end of stream, and -1 on a socket error.
+static ssize_t net_read_raw(int fd, unsigned char *buffer, size_t length) {
+    size_t got = 0;
+    while (got < length) {
+        ssize_t n = recv(fd, buffer + got, length - got, 0);
+        if (n == 0) {
+            return (ssize_t)got;
+        }
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        got += (size_t)n;
+    }
+    return (ssize_t)got;
+}
+
 static int net_bound_port(int fd) {
     struct sockaddr_in address;
     socklen_t length = sizeof address;
@@ -5315,26 +5371,211 @@ static int net_bound_port(int fd) {
     return ntohs(address.sin_port);
 }
 
+// --- the hello frame ------------------------------------------------------
+
+/// Version byte, then the token as a length-prefixed UTF-8 string (length 0 for
+/// "no token"). Trailing bytes are reserved for later versions to negotiate.
+static void net_send_hello(int fd, const char *token) {
+    size_t token_length = token ? strlen(token) : 0;
+    unsigned char payload[16];
+    size_t at = 0;
+    payload[at++] = NET_PROTOCOL_VERSION;
+
+    size_t remaining = token_length;
+    do {
+        unsigned char chunk = (unsigned char)(remaining & 0x7F);
+        remaining >>= 7;
+        payload[at++] = remaining ? (unsigned char)(chunk | 0x80) : chunk;
+    } while (remaining);
+
+    unsigned char header[4];
+    uint32_t total = (uint32_t)(at + token_length);
+    header[0] = (unsigned char)(total >> 24);
+    header[1] = (unsigned char)(total >> 16);
+    header[2] = (unsigned char)(total >> 8);
+    header[3] = (unsigned char)total;
+
+    net_write_all(fd, header, 4, "connect");
+    net_write_all(fd, payload, at, "connect");
+    if (token_length) {
+        net_write_all(fd, token, token_length, "connect");
+    }
+}
+
+static bool net_const_time_equal(const char *expected, const unsigned char *presented, size_t length) {
+    size_t expected_length = strlen(expected);
+    unsigned int difference = (unsigned int)(expected_length ^ length);
+    for (size_t i = 0; i < expected_length; i++) {
+        unsigned char other = i < length ? presented[i] : 0;
+        difference |= (unsigned int)((unsigned char)expected[i] ^ other);
+    }
+    return difference == 0;
+}
+
+typedef enum {
+    NET_HELLO_ACCEPTED = 0,
+    NET_HELLO_CLOSED = 1,
+    NET_HELLO_REFUSED = 2,
+} NetHelloResult;
+
+/// Reads a peer's hello: a 4 byte big endian length, then a payload of one
+/// version byte, the token length as a varint and the token itself.
+static NetHelloResult net_check_hello(int fd, const char *expected, char *scratch, size_t scratch_size) {
+    unsigned char header[4];
+    if (net_read_raw(fd, header, 4) <= 0) {
+        return NET_HELLO_CLOSED;
+    }
+
+    uint32_t length = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16) |
+                      ((uint32_t)header[2] << 8) | (uint32_t)header[3];
+    if (length < 1 || length > NET_MAX_FRAME) {
+        snprintf(scratch, scratch_size, "hello of %u bytes is out of range", (unsigned)length);
+        return NET_HELLO_REFUSED;
+    }
+
+    unsigned char *payload = (unsigned char *)malloc(length);
+    if (net_read_raw(fd, payload, length) <= 0) {
+        free(payload);
+        return NET_HELLO_CLOSED;
+    }
+
+    if (payload[0] != NET_PROTOCOL_VERSION) {
+        snprintf(scratch, scratch_size, "unsupported protocol version %d", (int)payload[0]);
+        free(payload);
+        return NET_HELLO_REFUSED;
+    }
+
+    size_t at = 1;
+    long token_length = 0;
+    int shift = 0;
+    bool malformed = false;
+    for (;;) {
+        if (at >= length) {
+            malformed = true;
+            break;
+        }
+        unsigned char byte = payload[at++];
+        token_length |= (long)(byte & 0x7F) << shift;
+        if (!(byte & 0x80)) break;
+        shift += 7;
+        if (shift > 28) {
+            malformed = true;
+            break;
+        }
+    }
+
+    if (!malformed && (token_length < 0 || (size_t)token_length != (size_t)length - at)) {
+        malformed = true;
+    }
+
+    if (malformed) {
+        snprintf(scratch, scratch_size, "hello length is not a valid number");
+        free(payload);
+        return NET_HELLO_REFUSED;
+    }
+
+    bool accepted = !expected || net_const_time_equal(expected, payload + at, (size_t)token_length);
+    free(payload);
+    if (!accepted) {
+        snprintf(scratch, scratch_size, "token rejected");
+        return NET_HELLO_REFUSED;
+    }
+
+    return NET_HELLO_ACCEPTED;
+}
+
+// --- options --------------------------------------------------------------
+
+typedef struct NetOptions {
+    const char *token;
+    int max_frame;
+    int timeout;
+} NetOptions;
+
+static NetOptions net_options(Value v, const char *operation) {
+    NetOptions options = { NULL, NET_DEFAULT_MAX_FRAME, 0 };
+    if (v.tag == T_NIL || v.tag == T_MISSING) {
+        return options;
+    }
+    if (!v_is_map(v)) {
+        tern_panic("TypeError", "%s() options must be a map, not %s", operation, tern_type_name(v));
+    }
+
+    Map *map = (Map *)v.as.o;
+    Value found;
+    if (map_get(map, str_from_cstr("token"), &found)) {
+        if (!v_is_str(found)) {
+            tern_panic("TypeError", "option 'token' must be a string, not %s", tern_type_name(found));
+        }
+        Str *token = (Str *)found.as.o;
+        if (token->len == 0) {
+            tern_panic("ArgumentError", "option 'token' must not be empty");
+        }
+        options.token = token->chars;
+    }
+
+    if (map_get(map, str_from_cstr("maxFrame"), &found)) {
+        double limit = net_arg_number(found, "maxFrame");
+        if (limit <= 0 || limit > NET_MAX_FRAME) {
+            tern_panic("NetError", "option 'maxFrame' must be between 1 and %d bytes", NET_MAX_FRAME);
+        }
+        options.max_frame = (int)limit;
+    }
+
+    if (map_get(map, str_from_cstr("timeout"), &found)) {
+        double milliseconds = net_arg_number(found, "timeout");
+        if (milliseconds < 0) {
+            tern_panic("ArgumentError", "option 'timeout' must not be negative");
+        }
+        options.timeout = (int)milliseconds;
+    }
+
+    return options;
+}
+
+/// Resolves `host` into an IPv4 address, accepting a literal address as given.
+static void net_resolve(const char *host, struct sockaddr_in *address, int port) {
+    memset(address, 0, sizeof *address);
+    address->sin_family = AF_INET;
+    address->sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &address->sin_addr) == 1) {
+        return;
+    }
+
+    struct addrinfo hints;
+    struct addrinfo *found = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    int status = getaddrinfo(host, NULL, &hints, &found);
+    if (status != 0) {
+        tern_panic("NetError", "cannot resolve '%s': %s", host, gai_strerror(status));
+    }
+    if (!found) {
+        tern_panic("NetError", "cannot resolve '%s'", host);
+    }
+    address->sin_addr = ((struct sockaddr_in *)found->ai_addr)->sin_addr;
+    freeaddrinfo(found);
+}
+
+// --- the socket calls -----------------------------------------------------
+
 static Value n_net_listen(int argc, Value *argv) {
-    const char *host = argc > 1 ? net_arg_text(argv[0], "host") : "127.0.0.1";
-    int port = net_arg_int(argv[argc > 1 ? 1 : 0], "port");
+    // listen(port) | listen(port, options) | listen(host, port, options).
+    const char *host = "127.0.0.1";
+    Value port_value = argv[0];
+    Value options_value = argc > 1 && argv[1].tag != T_INT ? argv[1] : v_nil();
+    if (argc > 1 && argv[1].tag == T_INT) {
+        host = net_arg_text(argv[0], "host");
+        port_value = argv[1];
+        options_value = argc > 2 ? argv[2] : v_nil();
+    }
+
+    NetOptions options = net_options(options_value, "listen");
+    int port = net_arg_int(port_value, "port");
 
     struct sockaddr_in address;
-    memset(&address, 0, sizeof address);
-    address.sin_family = AF_INET;
-    address.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &address.sin_addr) != 1) {
-        struct addrinfo hints;
-        struct addrinfo *found = NULL;
-        memset(&hints, 0, sizeof hints);
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        if (getaddrinfo(host, NULL, &hints, &found) != 0 || !found) {
-            tern_panic("NetError", "cannot resolve '%s'", host);
-        }
-        address.sin_addr = ((struct sockaddr_in *)found->ai_addr)->sin_addr;
-        freeaddrinfo(found);
-    }
+    net_resolve(host, &address, port);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -5345,16 +5586,31 @@ static Value n_net_listen(int argc, Value *argv) {
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse);
 
     if (bind(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        int error = errno;
         close(fd);
-        tern_panic("NetError", "cannot listen on %s:%d: %s", host, port, strerror(errno));
+        tern_panic("NetError", "cannot listen on %s:%d: %s", host, port, strerror(error));
     }
 
     if (listen(fd, 128) != 0) {
+        int error = errno;
         close(fd);
-        net_fail("cannot listen");
+        tern_panic("NetError", "cannot listen on %s:%d: %s", host, port, strerror(error));
     }
 
-    return v_int(net_store(fd, 1));
+    if (options.timeout > 0) {
+        struct timeval tv;
+        tv.tv_sec = options.timeout / 1000;
+        tv.tv_usec = (options.timeout % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    }
+
+    int handle = net_store(fd, 1);
+    net_max_frames[handle - 1] = options.max_frame;
+    net_timeouts[handle - 1] = options.timeout;
+    if (options.token) {
+        net_tokens[handle - 1] = strdup(options.token);
+    }
+    return v_int(handle);
 }
 
 static Value n_net_accept(int argc, Value *argv) {
@@ -5364,9 +5620,14 @@ static Value n_net_accept(int argc, Value *argv) {
         tern_panic("NetError", "accept() needs a server handle from listen()");
     }
 
+    int listener = net_fds[slot];
+    char *expected = net_tokens[slot];
+    int inherited_max = net_max_frames[slot];
+    int handshake_ms = net_timeouts[slot] > 0 ? net_timeouts[slot] : NET_HANDSHAKE_TIMEOUT_MS;
+
     struct sockaddr_in peer;
     socklen_t length = sizeof peer;
-    int fd = accept(net_fds[slot], (struct sockaddr *)&peer, &length);
+    int fd = accept(listener, (struct sockaddr *)&peer, &length);
     if (fd < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             tern_panic("NetError", "accept() timed out");
@@ -5376,44 +5637,112 @@ static Value n_net_accept(int argc, Value *argv) {
 
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-    return v_int(net_store(fd, 0));
+
+    // The peer must say hello before the script sees the socket. The wait is
+    // bounded so one silent peer cannot hold the server forever.
+    struct timeval handshake;
+    handshake.tv_sec = handshake_ms / 1000;
+    handshake.tv_usec = (handshake_ms % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &handshake, sizeof handshake);
+
+    char scratch[96];
+    NetHelloResult result = net_check_hello(fd, expected, scratch, sizeof scratch);
+
+    // The handshake wait is not the script's timeout, so the connection starts
+    // without one no matter what the listener used.
+    struct timeval none = { 0, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);
+
+    if (result == NET_HELLO_CLOSED) {
+        close(fd);
+        tern_panic("ConnectionError", "connection closed during the handshake");
+    }
+
+    if (result == NET_HELLO_REFUSED) {
+        // Say why, then close: a rejected peer gets no second chance.
+        send(fd, scratch, strlen(scratch), MSG_NOSIGNAL);
+        close(fd);
+        tern_panic("AuthenticationError", "%s", scratch);
+    }
+
+    int handle = net_store(fd, 0);
+    net_max_frames[handle - 1] = inherited_max;
+    return v_int(handle);
 }
 
 static Value n_net_connect(int argc, Value *argv) {
     (void)argc;
     const char *host = net_arg_text(argv[0], "host");
     int port = net_arg_int(argv[1], "port");
+    NetOptions options = net_options(argc > 2 ? argv[2] : v_nil(), "connect");
 
     struct sockaddr_in address;
-    memset(&address, 0, sizeof address);
-    address.sin_family = AF_INET;
-    address.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &address.sin_addr) != 1) {
-        struct addrinfo hints;
-        struct addrinfo *found = NULL;
-        memset(&hints, 0, sizeof hints);
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        if (getaddrinfo(host, NULL, &hints, &found) != 0 || !found) {
-            tern_panic("NetError", "cannot resolve '%s'", host);
-        }
-        address.sin_addr = ((struct sockaddr_in *)found->ai_addr)->sin_addr;
-        freeaddrinfo(found);
-    }
+    net_resolve(host, &address, port);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         net_fail("cannot create a socket");
     }
 
-    if (connect(fd, (struct sockaddr *)&address, sizeof address) != 0) {
-        close(fd);
-        tern_panic("NetError", "cannot connect to %s:%d: %s", host, port, strerror(errno));
+    if (options.timeout <= 0) {
+        if (connect(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+            int error = errno;
+            close(fd);
+            tern_panic("NetError", "cannot connect to %s:%d: %s", host, port, strerror(error));
+        }
+    } else {
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int rc = connect(fd, (struct sockaddr *)&address, sizeof address);
+        if (rc != 0 && errno != EINPROGRESS) {
+            int error = errno;
+            close(fd);
+            tern_panic("NetError", "cannot connect to %s:%d: %s", host, port, strerror(error));
+        }
+
+        if (rc != 0) {
+            struct pollfd waiting = { fd, POLLOUT, 0 };
+            int ready = poll(&waiting, 1, options.timeout);
+            if (ready == 0) {
+                close(fd);
+                tern_panic("NetError", "cannot connect to %s:%d: timed out after %d ms",
+                           host, port, options.timeout);
+            }
+            if (ready < 0) {
+                int error = errno;
+                close(fd);
+                tern_panic("NetError", "cannot connect to %s:%d: %s", host, port, strerror(error));
+            }
+
+            int error = 0;
+            socklen_t error_size = sizeof error;
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_size);
+            if (error != 0) {
+                close(fd);
+                tern_panic("NetError", "cannot connect to %s:%d: %s", host, port, strerror(error));
+            }
+        }
+
+        fcntl(fd, F_SETFL, flags);
     }
 
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-    return v_int(net_store(fd, 0));
+
+    if (options.timeout > 0) {
+        struct timeval tv;
+        tv.tv_sec = options.timeout / 1000;
+        tv.tv_usec = (options.timeout % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    }
+
+    net_send_hello(fd, options.token);
+
+    int handle = net_store(fd, 0);
+    net_max_frames[handle - 1] = options.max_frame;
+    net_timeouts[handle - 1] = options.timeout;
+    return v_int(handle);
 }
 
 static int net_connection_arg(Value v, const char *operation) {
@@ -5426,79 +5755,71 @@ static int net_connection_arg(Value v, const char *operation) {
 
 static Value n_net_send(int argc, Value *argv) {
     (void)argc;
-    int fd = net_connection_arg(argv[0], "send");
+    int slot = net_slot(net_handle_arg(argv[0]));
+    if (net_is_listener[slot]) {
+        tern_panic("NetError", "send() needs a connection handle, not a server");
+    }
+    int fd = net_fds[slot];
+
     Value encoded = wire_encode(argv[1]);
     List *payload = (List *)encoded.as.o;
     if (payload->count > NET_MAX_FRAME) {
         tern_panic("NetError", "value is larger than %d bytes", NET_MAX_FRAME);
     }
 
-    unsigned char header[4];
     uint32_t length = (uint32_t)payload->count;
-    header[0] = (unsigned char)(length >> 24);
-    header[1] = (unsigned char)(length >> 16);
-    header[2] = (unsigned char)(length >> 8);
-    header[3] = (unsigned char)length;
-
     unsigned char *frame = (unsigned char *)malloc((size_t)length + 4);
-    memcpy(frame, header, 4);
+    frame[0] = (unsigned char)(length >> 24);
+    frame[1] = (unsigned char)(length >> 16);
+    frame[2] = (unsigned char)(length >> 8);
+    frame[3] = (unsigned char)length;
     for (int32_t i = 0; i < payload->count; i++) {
         frame[4 + i] = (unsigned char)payload->items[i].as.i;
     }
 
-    size_t sent = 0;
-    size_t total = (size_t)length + 4;
-    while (sent < total) {
-        ssize_t n = send(fd, frame + sent, total - sent, 0);
-        if (n <= 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                free(frame);
-                tern_panic("NetError", "send() timed out");
-            }
-            free(frame);
-            net_fail("send() failed");
-        }
-        sent += (size_t)n;
-    }
-
+    net_write_all(fd, frame, (size_t)length + 4, "send");
     free(frame);
     return v_nil();
 }
 
 static void net_read_exactly(int fd, unsigned char *buffer, size_t length, bool first) {
-    size_t read_total = 0;
-    while (read_total < length) {
-        ssize_t n = recv(fd, buffer + read_total, length - read_total, 0);
-        if (n == 0) {
-            tern_panic("ConnectionError", first
-                               ? "connection closed by the other side"
-                               : "connection closed in the middle of a frame");
+    ssize_t got = net_read_raw(fd, buffer, length);
+    if (got < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            tern_panic("NetError", "frame timed out");
         }
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                tern_panic("NetError", "receive() timed out");
-            }
-            net_fail("receive() failed");
-        }
-        read_total += (size_t)n;
+        tern_panic("NetError", "receive() failed: %s", strerror(errno));
+    }
+    if ((size_t)got < length) {
+        tern_panic("ConnectionError", first
+                           ? "connection closed by the other side"
+                           : "connection closed in the middle of a frame");
     }
 }
 
 static Value n_net_receive(int argc, Value *argv) {
     (void)argc;
-    int fd = net_connection_arg(argv[0], "receive");
+    int slot = net_slot(net_handle_arg(argv[0]));
+    if (net_is_listener[slot]) {
+        tern_panic("NetError", "receive() needs a connection handle, not a server");
+    }
+    int fd = net_fds[slot];
+    int limit = net_max_frames[slot];
 
     unsigned char header[4];
     net_read_exactly(fd, header, 4, true);
 
     uint32_t length = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16) |
                       ((uint32_t)header[2] << 8) | (uint32_t)header[3];
-    if (length > NET_MAX_FRAME) {
-        tern_panic("NetError", "frame of %u bytes is out of range", (unsigned)length);
+    if (length > (uint32_t)limit) {
+        tern_panic("NetError", "frame of %u bytes is larger than this socket's limit of %d",
+                   (unsigned)length, limit);
     }
 
     unsigned char *payload = (unsigned char *)malloc(length > 0 ? length : 1);
-    net_read_exactly(fd, payload, length, false);
+    if (length > 0) {
+        net_read_exactly(fd, payload, length, false);
+    }
 
     List *bytes = list_new((int)length);
     for (uint32_t i = 0; i < length; i++) {
@@ -5507,6 +5828,58 @@ static Value n_net_receive(int argc, Value *argv) {
     free(payload);
 
     return wire_decode(v_obj((Obj *)bytes));
+}
+
+static List *net_bytes_arg(Value v) {
+    if (!v_is_list(v)) {
+        tern_panic("TypeError", "expected a list of bytes, not %s", tern_type_name(v));
+    }
+    return (List *)v.as.o;
+}
+
+static Value n_net_send_bytes(int argc, Value *argv) {
+    (void)argc;
+    int fd = net_connection_arg(argv[0], "sendBytes");
+    List *bytes = net_bytes_arg(argv[1]);
+
+    size_t length = (size_t)bytes->count;
+    unsigned char *buffer = (unsigned char *)malloc(length > 0 ? length : 1);
+    for (size_t i = 0; i < length; i++) {
+        Value byte = bytes->items[i];
+        if (byte.tag != T_INT || byte.as.i < 0 || byte.as.i > 255) {
+            free(buffer);
+            tern_panic("TypeError", "byte %d is not an integer in 0..255", (int)i);
+        }
+        buffer[i] = (unsigned char)byte.as.i;
+    }
+
+    net_write_all(fd, buffer, length, "sendBytes");
+    free(buffer);
+    return v_nil();
+}
+
+static Value n_net_receive_bytes(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_slot(net_handle_arg(argv[0]));
+    if (net_is_listener[slot]) {
+        tern_panic("NetError", "receiveBytes() needs a connection handle, not a server");
+    }
+    int count = net_arg_int(argv[1], "count");
+    if (count < 0) {
+        tern_panic("NetError", "receiveBytes() needs a count of 0 or more");
+    }
+
+    unsigned char *buffer = (unsigned char *)malloc(count > 0 ? (size_t)count : 1);
+    if (count > 0) {
+        net_read_exactly(net_fds[slot], buffer, (size_t)count, true);
+    }
+
+    List *bytes = list_new(count);
+    for (int i = 0; i < count; i++) {
+        list_push(bytes, v_int(buffer[i]));
+    }
+    free(buffer);
+    return v_obj((Obj *)bytes);
 }
 
 static Value n_net_close(int argc, Value *argv) {
@@ -5519,6 +5892,10 @@ static Value n_net_close(int argc, Value *argv) {
     close(net_fds[slot]);
     net_fds[slot] = -1;
     net_is_listener[slot] = 0;
+    net_max_frames[slot] = NET_DEFAULT_MAX_FRAME;
+    net_timeouts[slot] = 0;
+    free(net_tokens[slot]);
+    net_tokens[slot] = NULL;
     return v_nil();
 }
 
@@ -5535,6 +5912,18 @@ static Value n_net_timeout(int argc, Value *argv) {
     tv.tv_usec = (milliseconds % 1000) * 1000;
     setsockopt(net_fds[slot], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(net_fds[slot], SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    net_timeouts[slot] = milliseconds;
+    return v_nil();
+}
+
+static Value n_net_max_frame(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_slot(net_handle_arg(argv[0]));
+    double limit = net_arg_number(argv[1], "bytes");
+    if (limit < 0 || limit > NET_MAX_FRAME) {
+        tern_panic("NetError", "maxFrame() must be between 0 and %d bytes", NET_MAX_FRAME);
+    }
+    net_max_frames[slot] = (int)limit;
     return v_nil();
 }
 
@@ -5669,11 +6058,17 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("decode"),
                 make_native_arity("decode", n_net_decode, 1, 1));
         map_set(map, str_from_cstr("listen"),
-                make_native_arity("listen", n_net_listen, 1, 2));
+                make_native_arity("listen", n_net_listen, 1, 3));
         map_set(map, str_from_cstr("accept"),
                 make_native_arity("accept", n_net_accept, 1, 1));
         map_set(map, str_from_cstr("connect"),
-                make_native_arity("connect", n_net_connect, 2, 2));
+                make_native_arity("connect", n_net_connect, 2, 3));
+        map_set(map, str_from_cstr("sendBytes"),
+                make_native_arity("sendBytes", n_net_send_bytes, 2, 2));
+        map_set(map, str_from_cstr("receiveBytes"),
+                make_native_arity("receiveBytes", n_net_receive_bytes, 2, 2));
+        map_set(map, str_from_cstr("maxFrame"),
+                make_native_arity("maxFrame", n_net_max_frame, 2, 2));
         map_set(map, str_from_cstr("send"),
                 make_native_arity("send", n_net_send, 2, 2));
         map_set(map, str_from_cstr("receive"),
@@ -5768,6 +6163,9 @@ void tern_rt_init(void) {
     /* Socket handles are 1-based indexes; -1 marks a free slot. */
     for (int i = 0; i < NET_MAX_HANDLES; i++) {
         net_fds[i] = -1;
+        net_max_frames[i] = NET_DEFAULT_MAX_FRAME;
+        net_timeouts[i] = 0;
+        net_tokens[i] = NULL;
     }
 
     /* towupper/towlower need a UTF-8 locale to know about non-ASCII letters. */

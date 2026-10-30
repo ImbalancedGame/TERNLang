@@ -96,3 +96,79 @@ println("closed:", kind(fn() { net.receive(connection); }));
 net.close(connection);
 net.close(server);
 println(kind(fn() { net.receive(connection); }));
+
+// ---------------------------------------------------------------- handshake
+// Every connection opens with a hello frame, so a listener given a token can
+// refuse a peer before the script ever sees it.
+
+println(kind(fn() { net.listen(0, {"maxFrame": 0}); }));
+println(kind(fn() { net.listen(0, {"maxFrame": 70000000}); }));
+println(kind(fn() { net.listen(0, {"timeout": -1}); }));
+println(kind(fn() { net.listen(0, {"token": ""}); }));
+println(kind(fn() { net.listen(0, {"token": 5}); }));
+println(kind(fn() { net.listen(0, "nope"); }));
+println(kind(fn() { net.connect(1, 2); }));
+println(kind(fn() { net.connect("127.0.0.1", "port"); }));
+println(kind(fn() { net.connect("127.0.0.1", 1, "nope"); }));
+
+let guarded = net.listen(0, {"token": "s3cret", "maxFrame": 4096, "timeout": 2000});
+let guardedPort = net.port(guarded);
+
+let friend = net.connect("127.0.0.1", guardedPort, {"token": "s3cret"});
+let friendConn = net.accept(guarded);
+net.send(friend, "trusted");
+println("token:", net.receive(friendConn));
+
+// A peer without the token never becomes a connection.
+let stranger = net.connect("127.0.0.1", guardedPort, {"token": "wrong"});
+println("refused:", kind(fn() { net.accept(guarded); }));
+println("refusal text:", net.receiveBytes(stranger, 1));
+let silent = net.connect("127.0.0.1", guardedPort);
+println("refused again:", kind(fn() { net.accept(guarded); }));
+
+net.close(stranger);
+net.close(silent);
+net.close(friend);
+net.close(friendConn);
+net.close(guarded);
+
+// --------------------------------------------------------------- frame limits
+// A peer cannot make this side allocate more than its limit by claiming a huge
+// frame: the header is checked before the payload is read.
+
+let tiny = net.listen(0, {"maxFrame": 32});
+let tinyPort = net.port(tiny);
+let talker = net.connect("127.0.0.1", tinyPort);
+let tinyConn = net.accept(tiny);
+net.send(talker, "x".repeat(200));
+println("too big:", kind(fn() { net.receive(tinyConn); }));
+println(kind(fn() { net.maxFrame(tinyConn, 90000000); }));
+println(kind(fn() { net.maxFrame(tinyConn, -1); }));
+net.maxFrame(tinyConn, 4096);
+println("limit raised:", kind(fn() { net.receive(tinyConn); }));
+
+// ---------------------------------------------------------------- raw bytes
+// sendBytes/receiveBytes move bytes with no frame header, for protocols layered
+// on top of net.
+
+net.sendBytes(talker, [1, 2, 3, 255]);
+println(net.receiveBytes(tinyConn, 4));
+net.sendBytes(tinyConn, [104, 105]);
+println(net.receiveBytes(talker, 2));
+println(kind(fn() { net.sendBytes(talker, "text"); }));
+println(kind(fn() { net.sendBytes(talker, [1, 300]); }));
+println(kind(fn() { net.sendBytes(talker, [1, 2.5]); }));
+println(kind(fn() { net.receiveBytes(tinyConn, -1); }));
+println(kind(fn() { net.receiveBytes(tinyConn, "four"); }));
+
+// A timeout ends a silent read instead of hanging forever.
+net.timeout(tinyConn, 150);
+println("read timeout:", kind(fn() { net.receiveBytes(tinyConn, 8); }));
+net.timeout(talker, 150);
+println("frame timeout:", kind(fn() { net.receive(talker); }));
+net.timeout(talker, 0);
+println("no timeout:", kind(fn() { net.timeout(talker, 0); }));
+
+net.close(talker);
+net.close(tinyConn);
+net.close(tiny);
