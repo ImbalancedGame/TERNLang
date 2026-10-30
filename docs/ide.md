@@ -15,6 +15,11 @@ Server Protocol.
   ide/Studio  ──────────────────────────────────────────────►  ide/Server
   PySide6 window                                                TERN.Ide.dll
   (editor, docks, menus)                                        (.NET, owns the compiler)
+
+                    stdio (one JSON object per line)
+  ide/Studio  ──────────────────────────────────────────────►  ide/Debug
+  (Debug window, gutter breakpoints)                            TERN.Debug.dll
+                                                                (.NET, drives the VM)
 ```
 
 The split matters for more than tidiness. The server links the TERN compiler
@@ -28,8 +33,10 @@ the same answers because the protocol is the only interface.
   `Features.cs` (each request).
 * **`ide/Studio/`** — Python, PySide6. `window.py` (the shell), `editor.py`
   (edit control, gutter, completion popup), `panels.py` (tool windows),
-  `lsp.py` (the child process), `vcs.py` (git), `highlighter.py`, `theme.py`,
-  `main.py`.
+  `lsp.py` and `debugger.py` (the two child processes), `vcs.py` (git),
+  `highlighter.py`, `theme.py`, `main.py`.
+* **`ide/Debug/`** — C#, `build/TERN.Debug.dll`. The debugger: breakpoints,
+  stepping, frames, variables, over its own line protocol.
 
 ## Running it
 
