@@ -188,6 +188,33 @@ runs scripts; only `{"tls": true}` fails, with `TLS support is not available on
 this system`. SFTP runs the OpenSSH `sftp` client in batch mode from a
 `fork`/`exec` pair, so it needs `sftp` on the PATH and key-based authentication.
 
+## Windows builds
+
+The same bytecode can be built for Windows from any machine:
+
+```bash
+pip install ziglang                        # once; provides the cross compiler
+python3 native/ternc.py --target windows app.tern -o app.exe
+```
+
+Zig ships the mingw-w64 headers and the import libraries, so `--target windows`
+produces an x86-64 console executable with no toolchain from Microsoft and no
+Windows machine involved. `tools/test-windows.sh` builds the golden tests that
+way and checks each result really is a PE32+ x86-64 console image that links
+`KERNEL32.dll`; there is no Wine here, so the script proves the build, not the
+behaviour.
+
+The platform differences live in one file, [`runtime/tern_platform.h`](runtime/tern_platform.h):
+the CRT's names for the POSIX calls (`_mkdir`, `_unlink`, `_stricmp`), a
+`memmem`, directory iteration over `FindFirstFile`, and a monotonic clock over
+`GetTickCount64`. Everything else is the same C and the same bytecode.
+
+Windows builds currently carry the language and the `math`, `time`, `json`, `os`,
+`fs`, `text` and `lists` namespaces. `net`, `http`, `rcon`, `sftp` and `gl` need
+their Winsock and `LoadLibrary` translations and answer
+`UnsupportedError: this module is not part of the Windows build yet` until then.
+The next step is a Direct3D 12 backend, which is what the cross compiler is for.
+
 ## Limitations
 
 * The collector is conservative: an integer that happens to look like an object

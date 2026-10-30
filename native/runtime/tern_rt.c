@@ -1,27 +1,6 @@
 // TERN native runtime - implementation.
 #include "tern_rt.h"
-#include <arpa/inet.h>
-#include <dirent.h>
-#include <dlfcn.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <poll.h>
-#include <signal.h>
-#include <stdarg.h>
-#include <string.h>
-#include <strings.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-#include <locale.h>
-#include <math.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <wctype.h>
-#include <time.h>
-#include <unistd.h>
+#include "tern_platform.h"
 
 // A builtin method table entry. The argument counts include the receiver,
 // mirroring how the interpreter registers its methods.
@@ -2507,9 +2486,13 @@ static Value m_gcd(int argc, Value *argv) {
 }
 
 static double now_millis(void) {
+#ifdef _WIN32
+    return (double)GetTickCount64();
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+#endif
 }
 
 static Value t_millis(int argc, Value *argv) {
@@ -5572,6 +5555,8 @@ static ssize_t net_read_raw(int fd, unsigned char *buffer, size_t length) {
     }
     return (ssize_t)got;
 }
+
+#ifndef _WIN32
 
 // --- TLS ------------------------------------------------------------------
 //
@@ -8955,6 +8940,36 @@ static Value n_gl_close(int argc, Value *argv) {
     return v_nil();
 }
 
+#else
+
+// Windows builds carry the language, `fs`, `os`, `time`, `math`, `json`, `text`
+// and `lists`. The socket, file-transfer and graphics modules need the Winsock
+// and dlopen translations that come next, so they answer instead of vanishing:
+// a script that calls one gets a sentence, not "nil has no method 'send'".
+
+static Value n_module_missing(int argc, Value *argv) {
+    (void)argc;
+    (void)argv;
+    tern_panic("UnsupportedError", "this module is not part of the Windows build yet");
+    return v_nil();
+}
+
+static void add_missing_members(Map *map, const char *const *names) {
+    for (int i = 0; names[i]; i++) {
+        map_set(map, str_from_cstr(names[i]),
+                make_native_arity(names[i], n_module_missing, 0, -1));
+    }
+}
+
+static Value missing_module(const char *module, const char *const *names) {
+    (void)module;
+    Map *map = map_new();
+    add_missing_members(map, names);
+    return v_obj((Obj *)map);
+}
+
+#endif
+
 static Value namespace_map(const char *ns) {
     Map *map = map_new();
 
@@ -9062,6 +9077,34 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+#ifdef _WIN32
+    if (strcmp(ns, "net") == 0) {
+        static const char *names[] = { "encode", "decode", "listen", "accept", "connect",
+                                       "send", "receive", "sendBytes", "receiveBytes",
+                                       "maxFrame", "udpListen", "udpSend", "udpReceive",
+                                       "close", "timeout", "port", "peer", NULL };
+        return missing_module("net", names);
+    }
+    if (strcmp(ns, "http") == 0) {
+        static const char *names[] = { "request", "get", "post", "encodeRequest",
+                                       "decodeResponse", "exchange", NULL };
+        return missing_module("http", names);
+    }
+    if (strcmp(ns, "rcon") == 0) {
+        static const char *names[] = { "connect", "attach", "execute", "close", NULL };
+        return missing_module("rcon", names);
+    }
+    if (strcmp(ns, "sftp") == 0) {
+        static const char *names[] = { "upload", "download", "list", "run", "batch",
+                                       "command", NULL };
+        return missing_module("sftp", names);
+    }
+    if (strcmp(ns, "gl") == 0) {
+        static const char *names[] = { "available", "info", "create", "clear", "program",
+                                       "draw", "pixels", "save", "size", "close", NULL };
+        return missing_module("gl", names);
+    }
+#else
     if (strcmp(ns, "net") == 0) {
         // The argument counts mirror TERN/Builtins/Net.cs, so a wrong call fails
         // the same way in both back ends.
@@ -9173,6 +9216,8 @@ static Value namespace_map(const char *ns) {
                 make_native_arity("command", n_sftp_command, 1, 1));
         return v_obj((Obj *)map);
     }
+
+#endif
 
     if (strcmp(ns, "random") == 0) {
         map_set(map, str_from_cstr("seed"), make_native_arity("seed", rnd_seed, 1, 1));

@@ -931,6 +931,25 @@ def load(path):
         return json.load(handle)
 
 
+def find_zig():
+    """The Zig compiler used for cross builds: TERN_ZIG, `zig`, or pip's ziglang."""
+    configured = os.environ.get("TERN_ZIG")
+    if configured:
+        return configured
+    found = shutil.which("zig")
+    if found:
+        return found
+    try:
+        import ziglang
+
+        candidate = os.path.join(os.path.dirname(ziglang.__file__), "zig")
+        if os.path.exists(candidate):
+            return candidate
+    except ImportError:
+        pass
+    return None
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Compile TERN bytecode to C/native.")
     parser.add_argument("input", help="bytecode JSON (from `tern emit`) or a .tern script")
@@ -938,6 +957,9 @@ def main(argv):
     parser.add_argument("--cc", default="cc", help="C compiler (default: cc)")
     parser.add_argument("--cflags", default="-O2", help="extra compiler flags")
     parser.add_argument("--keep-c", action="store_true", help="keep generated C next to the binary")
+    parser.add_argument("--target", default="native",
+                        help="'native' compiles for this machine with --cc; 'windows' cross builds a "
+                             ".exe with Zig's mingw-w64 toolchain (pip install ziglang)")
     parser.add_argument("--no-traces", action="store_true",
                         help="drop call-stack bookkeeping (about 10% faster on call-heavy code; "
                              "uncaught errors then report a single line)")
@@ -981,7 +1003,18 @@ def main(argv):
         c_path = os.path.join(build, "app.c")
         with open(c_path, "w", encoding="utf-8") as handle:
             handle.write(code)
-        command = [args.cc, "-O2", "-I", RUNTIME] + args.cflags.split() + [c_path, "-o", args.output, "-lm"]
+        if args.target == "windows":
+            # Zig ships the mingw-w64 headers and the d3d12/dxgi import
+            # libraries, so a Windows binary can be built anywhere.
+            zig = find_zig()
+            if not zig:
+                sys.stderr.write("ternc: no Zig for --target windows; run `pip install ziglang` "
+                                 "or set TERN_ZIG to the compiler\n")
+                return 1
+            command = [zig, "cc", "-target", "x86_64-windows-gnu", "-O2", "-I", RUNTIME]
+            command += args.cflags.split() + [c_path, "-o", args.output]
+        else:
+            command = [args.cc, "-O2", "-I", RUNTIME] + args.cflags.split() + [c_path, "-o", args.output, "-lm"]
         result = subprocess.run(command)
         if result.returncode != 0:
             return result.returncode
