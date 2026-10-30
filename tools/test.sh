@@ -41,7 +41,7 @@ done
 
 # The generated standard library reference must match the code.
 if [[ -f "$HERE/docs/stdlib.md" ]]; then
-  if diff -q <(cd "$HERE" && "$TERN" docs) "$HERE/docs/stdlib.md" >/dev/null 2>&1; then
+  if diff -q <(cd "$HERE" && timeout 120 "$TERN" docs) "$HERE/docs/stdlib.md" >/dev/null 2>&1; then
     pass=$((pass+1))
   else
     echo "FAIL docs/stdlib.md is stale (run tools/gen-docs.sh)"
@@ -51,7 +51,7 @@ fi
 
 # So must every page of the MSDN-style reference.
 if [[ -d "$HERE/docs/msdn" ]]; then
-  if python3 "$HERE/tools/gen-reference.py" --check >/dev/null 2>&1; then
+  if timeout 300 python3 "$HERE/tools/gen-reference.py" --check >/dev/null 2>&1; then
     pass=$((pass+1))
   else
     echo "FAIL docs/msdn is stale (run tools/gen-docs.sh)"
@@ -64,7 +64,9 @@ fi
 # absent, so a bare checkout can still run the language tests.
 if [[ $UPDATE -eq 0 && -f "$HERE/tools/test-ide.sh" ]]; then
   if [[ -f "$HERE/build/TERN.Ide.dll" ]]; then
-    if ide_output="$(bash "$HERE/tools/test-ide.sh" 2>&1)"; then
+    # Every IDE suite gets a hard limit: a hung child holding the pipe open
+    # would otherwise stall the whole run with no output at all.
+    if ide_output="$(timeout 300 bash "$HERE/tools/test-ide.sh" 2>&1)"; then
       echo "ok    ide-server  $(tail -1 <<<"$ide_output")"
       pass=$((pass+1))
     else
@@ -78,7 +80,7 @@ if [[ $UPDATE -eq 0 && -f "$HERE/tools/test-ide.sh" ]]; then
 fi
 
 if [[ $UPDATE -eq 0 && -f "$HERE/tools/debug_test.py" && -f "$HERE/build/TERN.Debug.dll" ]]; then
-  if debug_output="$($(bash "$HERE/tools/tern-python") "$HERE/tools/debug_test.py" 2>&1)"; then
+  if debug_output="$(timeout 300 "$(bash "$HERE/tools/tern-python")" "$HERE/tools/debug_test.py" 2>&1)"; then
     echo "ok    debugger    $(tail -1 <<<"$debug_output")"
     pass=$((pass+1))
   else
@@ -100,7 +102,7 @@ if [[ $UPDATE -eq 0 && -f "$HERE/tools/ide/ui_test.py" ]]; then
 
   if [[ -n "$ide_python" && -f "$HERE/build/TERN.Ide.dll" ]]; then
     [[ -d "$HERE/build/qt-stubs" ]] || "$ide_python" "$HERE/tools/ide/qt_stubs.py" >/dev/null 2>&1 || true
-    if ui_output="$(cd "$HERE" && QT_QPA_PLATFORM=offscreen \
+    if ui_output="$(cd "$HERE" && timeout 900 env QT_QPA_PLATFORM=offscreen \
         LD_LIBRARY_PATH="$HERE/build/qt-stubs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         "$ide_python" "$HERE/tools/ide/ui_test.py" 2>&1)"; then
       echo "ok    ide-ui      $(grep -E '^passed:' <<<"$ui_output" | tail -1)"
