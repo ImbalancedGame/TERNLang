@@ -112,7 +112,10 @@ else is truthy. `bool(v)` converts explicitly.
   evenly (`7 / 2` → `3.5`, `8 / 2` → `4`).
 * Any operation mixing `int` and `float` promotes to `float`.
 * `1 == 1.0` is `true`; `1 < 2.5` compares numerically.
-* Division by zero raises a runtime `ZeroDivisionError`.
+* Integer `+ - *` promote to `float` instead of wrapping when the result does
+  not fit in 64 bits: `9223372036854775807 + 1` is `9.223372036854776E+18`.
+  `**`, `<<` and `>>` wrap, so bit tricks keep working on the full word.
+* Division by zero raises a runtime `DivisionByZero` error.
 * `%` follows C# semantics (truncated toward zero).
 
 ---
@@ -561,6 +564,11 @@ abs min max copy sleep
 | `net` | `encode decode listen accept connect send receive close timeout port peer` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
+
+`json.parse` raises a `JsonError` naming the problem and the offset in the text
+(`expected ':' at offset 4`); `json.tryParse` returns its fallback instead of
+raising. Documents nested deeper than 512 levels are refused rather than
+overflowing the stack, and `json.stringify` writes map keys in insertion order.
 
 ---
 

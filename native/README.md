@@ -210,10 +210,12 @@ it.
   argument(s) but got 0", "clamp() expects 3 argument(s) but got 2"). Missing
   arguments are therefore an error instead of a `nil` that crashes inside the
   builtin.
-* Error text matches the interpreter except for JSON syntax errors, where the
-  interpreter forwards the .NET parser's wording ("expected a string key at
-  offset 1") and the native runtime says "invalid JSON at offset N" with the
-  same offset.
+* Error text matches the interpreter, JSON syntax errors included: the native
+  parser reports the same sentence at the same offset ("expected a string key
+  at offset 1", "invalid escape '\q'"). Documents nesting more than 512 levels
+  are refused by both back ends instead of overflowing the stack, and a
+  surrogate pair in a `\u` escape decodes to one code point while a lone
+  surrogate becomes U+FFFD.
 * Recursion is limited to 10 000 frames, the same as the interpreter. The limit
   is high enough to stay inside the C stack (~3 MB per thread) and raises a
   catchable `StackOverflow` error rather than crashing.
