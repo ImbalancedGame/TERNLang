@@ -172,3 +172,48 @@ println("no timeout:", kind(fn() { net.timeout(talker, 0); }));
 net.close(talker);
 net.close(tinyConn);
 net.close(tiny);
+
+// ---------------------------------------------------------------- datagrams
+// UDP keeps message boundaries: every send is exactly one receive, and a
+// timeout returns nil instead of raising, because a missing datagram is normal.
+
+let ping = net.udpListen(0);
+let pong = net.udpListen("127.0.0.1", 0);
+println("bound:", net.port(ping) > 0, net.port(pong) > 0, net.port(ping) != net.port(pong));
+
+net.udpSend(ping, "127.0.0.1", net.port(pong), [1, 2, 3]);
+let datagram = net.udpReceive(pong);
+println("from:", datagram["from"].startsWith("127.0.0.1:"), datagram["data"]);
+
+net.udpSend(pong, "127.0.0.1", net.port(ping), "h\u00e9llo");
+println(net.udpReceive(ping)["data"]);
+
+net.udpSend(ping, "127.0.0.1", net.port(pong), "one");
+net.udpSend(ping, "127.0.0.1", net.port(pong), "two");
+println(net.udpReceive(pong)["data"], net.udpReceive(pong)["data"]);
+
+net.timeout(ping, 150);
+println("nothing:", net.udpReceive(ping));
+
+// A short buffer truncates the datagram, as UDP does.
+net.udpSend(pong, "127.0.0.1", net.port(ping), [1, 2, 3, 4, 5, 6, 7, 8]);
+println(net.udpReceive(ping, 3)["data"]);
+
+println(kind(fn() { net.udpSend(pong, "127.0.0.1", 1, true); }));
+println(kind(fn() { net.udpSend(pong, 1, 2, [1]); }));
+println(kind(fn() { net.udpSend(pong, "127.0.0.1", 1, [1, 300]); }));
+println(kind(fn() { net.udpListen(0, {"timeout": -1}); }));
+println(kind(fn() { net.udpReceive(pong, 70000); }));
+println(kind(fn() { net.udpReceive(pong, -1); }));
+
+// Handles keep their kind: datagram calls reject streams and the other way round.
+println(kind(fn() { net.receive(ping); }));
+println(kind(fn() { net.send(ping, 1); }));
+let stream = net.listen(0);
+println(kind(fn() { net.udpSend(stream, "127.0.0.1", 1, "x"); }));
+println(kind(fn() { net.udpReceive(stream); }));
+net.close(stream);
+
+net.close(ping);
+net.close(pong);
+println(kind(fn() { net.udpReceive(ping); }));

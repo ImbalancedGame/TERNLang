@@ -5254,8 +5254,9 @@ static Value wire_decode(Value bytes) {
 #define NET_HANDSHAKE_TIMEOUT_MS 5000
 #define NET_PROTOCOL_VERSION 1
 
+// 0 = stream connection, 1 = listening stream socket, 2 = bound datagram socket.
 static int net_fds[NET_MAX_HANDLES];
-static int net_is_listener[NET_MAX_HANDLES];
+static int net_kinds[NET_MAX_HANDLES];
 static int net_max_frames[NET_MAX_HANDLES];
 static int net_timeouts[NET_MAX_HANDLES];
 static char *net_tokens[NET_MAX_HANDLES];
@@ -5267,11 +5268,11 @@ static int net_slot(int handle) {
     return handle - 1;
 }
 
-static int net_store(int fd, int listener) {
+static int net_store(int fd, int kind) {
     for (int i = 0; i < NET_MAX_HANDLES; i++) {
         if (net_fds[i] < 0) {
             net_fds[i] = fd;
-            net_is_listener[i] = listener;
+            net_kinds[i] = kind;
             net_max_frames[i] = NET_DEFAULT_MAX_FRAME;
             net_timeouts[i] = 0;
             net_tokens[i] = NULL;
@@ -5616,7 +5617,7 @@ static Value n_net_listen(int argc, Value *argv) {
 static Value n_net_accept(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
-    if (!net_is_listener[slot]) {
+    if (net_kinds[slot] != 1) {
         tern_panic("NetError", "accept() needs a server handle from listen()");
     }
 
@@ -5747,17 +5748,31 @@ static Value n_net_connect(int argc, Value *argv) {
 
 static int net_connection_arg(Value v, const char *operation) {
     int slot = net_slot(net_handle_arg(v));
-    if (net_is_listener[slot]) {
+    if (net_kinds[slot] == 1) {
         tern_panic("NetError", "%s() needs a connection handle, not a server", operation);
     }
+    if (net_kinds[slot] != 0) {
+        tern_panic("NetError", "%s() needs a connection handle, not a datagram socket", operation);
+    }
     return net_fds[slot];
+}
+
+static int net_datagram_slot(Value v, const char *operation) {
+    int slot = net_slot(net_handle_arg(v));
+    if (net_kinds[slot] != 2) {
+        tern_panic("NetError", "%s() needs a datagram handle from udpListen()", operation);
+    }
+    return slot;
 }
 
 static Value n_net_send(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
-    if (net_is_listener[slot]) {
+    if (net_kinds[slot] == 1) {
         tern_panic("NetError", "send() needs a connection handle, not a server");
+    }
+    if (net_kinds[slot] != 0) {
+        tern_panic("NetError", "send() needs a connection handle, not a datagram socket");
     }
     int fd = net_fds[slot];
 
@@ -5800,8 +5815,11 @@ static void net_read_exactly(int fd, unsigned char *buffer, size_t length, bool 
 static Value n_net_receive(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
-    if (net_is_listener[slot]) {
+    if (net_kinds[slot] == 1) {
         tern_panic("NetError", "receive() needs a connection handle, not a server");
+    }
+    if (net_kinds[slot] != 0) {
+        tern_panic("NetError", "receive() needs a connection handle, not a datagram socket");
     }
     int fd = net_fds[slot];
     int limit = net_max_frames[slot];
@@ -5861,8 +5879,11 @@ static Value n_net_send_bytes(int argc, Value *argv) {
 static Value n_net_receive_bytes(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
-    if (net_is_listener[slot]) {
+    if (net_kinds[slot] == 1) {
         tern_panic("NetError", "receiveBytes() needs a connection handle, not a server");
+    }
+    if (net_kinds[slot] != 0) {
+        tern_panic("NetError", "receiveBytes() needs a connection handle, not a datagram socket");
     }
     int count = net_arg_int(argv[1], "count");
     if (count < 0) {
@@ -5882,6 +5903,144 @@ static Value n_net_receive_bytes(int argc, Value *argv) {
     return v_obj((Obj *)bytes);
 }
 
+// --- datagrams ------------------------------------------------------------
+
+#define NET_DATAGRAM_CEILING 65507
+
+/// udpListen(port) | udpListen(port, options) | udpListen(host, port, options).
+static Value n_net_udp_listen(int argc, Value *argv) {
+    const char *host = "127.0.0.1";
+    Value port_value = argv[0];
+    Value options_value = argc > 1 && argv[1].tag != T_INT ? argv[1] : v_nil();
+    if (argc > 1 && argv[1].tag == T_INT) {
+        host = net_arg_text(argv[0], "host");
+        port_value = argv[1];
+        options_value = argc > 2 ? argv[2] : v_nil();
+    }
+
+    NetOptions options = net_options(options_value, "udpListen");
+    int port = net_arg_int(port_value, "port");
+
+    struct sockaddr_in address;
+    net_resolve(host, &address, port);
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        net_fail("cannot create a socket");
+    }
+
+    int reuse = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse);
+
+    if (bind(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        int error = errno;
+        close(fd);
+        tern_panic("NetError", "cannot listen on %s:%d: %s", host, port, strerror(error));
+    }
+
+    if (options.timeout > 0) {
+        struct timeval tv;
+        tv.tv_sec = options.timeout / 1000;
+        tv.tv_usec = (options.timeout % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    }
+
+    int handle = net_store(fd, 2);
+    net_timeouts[handle - 1] = options.timeout;
+    return v_int(handle);
+}
+
+static Value n_net_udp_send(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_datagram_slot(argv[0], "udpSend");
+    const char *host = net_arg_text(argv[1], "host");
+    int port = net_arg_int(argv[2], "port");
+
+    Value payload = argv[3];
+    unsigned char *buffer = NULL;
+    size_t length = 0;
+    bool owns = true;
+
+    if (v_is_str(payload)) {
+        Str *text = (Str *)payload.as.o;
+        length = (size_t)text->len;
+        buffer = (unsigned char *)text->chars;
+        owns = false;
+    } else if (v_is_list(payload)) {
+        List *bytes = net_bytes_arg(payload);
+        length = (size_t)bytes->count;
+        buffer = (unsigned char *)malloc(length > 0 ? length : 1);
+        for (size_t i = 0; i < length; i++) {
+            Value byte = bytes->items[i];
+            if (byte.tag != T_INT || byte.as.i < 0 || byte.as.i > 255) {
+                free(buffer);
+                tern_panic("TypeError", "byte %d is not an integer in 0..255", (int)i);
+            }
+            buffer[i] = (unsigned char)byte.as.i;
+        }
+    } else {
+        tern_panic("TypeError", "expected a string or a list of bytes, not %s",
+                   tern_type_name(payload));
+    }
+
+    if (length > NET_DATAGRAM_CEILING) {
+        if (owns) free(buffer);
+        tern_panic("NetError", "datagram of %d bytes is larger than %d",
+                   (int)length, NET_DATAGRAM_CEILING);
+    }
+
+    struct sockaddr_in address;
+    net_resolve(host, &address, port);
+
+    ssize_t sent = sendto(net_fds[slot], buffer, length, MSG_NOSIGNAL,
+                          (struct sockaddr *)&address, sizeof address);
+    if (owns) free(buffer);
+    if (sent < 0) {
+        tern_panic("NetError", "udpSend() failed: %s", strerror(errno));
+    }
+
+    return v_nil();
+}
+
+static Value n_net_udp_receive(int argc, Value *argv) {
+    int slot = net_datagram_slot(argv[0], "udpReceive");
+    int size = argc > 1 ? net_arg_int(argv[1], "size") : NET_DATAGRAM_CEILING;
+    if (size < 0 || size > NET_DATAGRAM_CEILING) {
+        tern_panic("NetError", "udpReceive() size must be between 0 and %d bytes",
+                   NET_DATAGRAM_CEILING);
+    }
+
+    unsigned char *buffer = (unsigned char *)malloc(size > 0 ? (size_t)size : 1);
+    struct sockaddr_in from;
+    socklen_t from_size = sizeof from;
+    ssize_t got = recvfrom(net_fds[slot], buffer, (size_t)size, 0,
+                           (struct sockaddr *)&from, &from_size);
+    if (got < 0) {
+        free(buffer);
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // A datagram that never arrives is normal traffic, not an error.
+            return v_nil();
+        }
+        tern_panic("NetError", "udpReceive() failed: %s", strerror(errno));
+    }
+
+    char text[64];
+    char address[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &from.sin_addr, address, sizeof address);
+    snprintf(text, sizeof text, "%s:%d", address, ntohs(from.sin_port));
+
+    List *bytes = list_new((int)got);
+    for (ssize_t i = 0; i < got; i++) {
+        list_push(bytes, v_int(buffer[i]));
+    }
+    free(buffer);
+
+    Map *datagram = map_new();
+    map_set(datagram, str_from_cstr("from"), str_from_cstr(text));
+    map_set(datagram, str_from_cstr("data"), v_obj((Obj *)bytes));
+    return v_obj((Obj *)datagram);
+}
+
 static Value n_net_close(int argc, Value *argv) {
     (void)argc;
     int handle = net_handle_arg(argv[0]);
@@ -5891,7 +6050,7 @@ static Value n_net_close(int argc, Value *argv) {
     }
     close(net_fds[slot]);
     net_fds[slot] = -1;
-    net_is_listener[slot] = 0;
+    net_kinds[slot] = 0;
     net_max_frames[slot] = NET_DEFAULT_MAX_FRAME;
     net_timeouts[slot] = 0;
     free(net_tokens[slot]);
@@ -6073,6 +6232,12 @@ static Value namespace_map(const char *ns) {
                 make_native_arity("send", n_net_send, 2, 2));
         map_set(map, str_from_cstr("receive"),
                 make_native_arity("receive", n_net_receive, 1, 1));
+        map_set(map, str_from_cstr("udpListen"),
+                make_native_arity("udpListen", n_net_udp_listen, 1, 3));
+        map_set(map, str_from_cstr("udpSend"),
+                make_native_arity("udpSend", n_net_udp_send, 4, 4));
+        map_set(map, str_from_cstr("udpReceive"),
+                make_native_arity("udpReceive", n_net_udp_receive, 1, 2));
         map_set(map, str_from_cstr("close"),
                 make_native_arity("close", n_net_close, 1, 1));
         map_set(map, str_from_cstr("timeout"),
@@ -6163,6 +6328,7 @@ void tern_rt_init(void) {
     /* Socket handles are 1-based indexes; -1 marks a free slot. */
     for (int i = 0; i < NET_MAX_HANDLES; i++) {
         net_fds[i] = -1;
+        net_kinds[i] = 0;
         net_max_frames[i] = NET_DEFAULT_MAX_FRAME;
         net_timeouts[i] = 0;
         net_tokens[i] = NULL;

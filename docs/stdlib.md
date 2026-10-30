@@ -129,6 +129,9 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `send` | `send(arg, arg)` | Encodes a value and sends it as one frame. |
 | `sendBytes` | `sendBytes(arg, arg)` | Sends raw bytes (no frame header). Used by protocols layered on net. |
 | `timeout` | `timeout(arg, arg)` | Sets the receive/send timeout in milliseconds (0 waits forever). |
+| `udpListen` | `udpListen(arg, [arg], [arg])` | Binds a UDP socket and returns its handle. Options: timeout. |
+| `udpReceive` | `udpReceive(arg, [arg])` | Receives one datagram as {from, data}, or nil when a timeout expires. |
+| `udpSend` | `udpSend(arg, arg, arg, arg)` | Sends one datagram: udpSend(socket, host, port, data). |
 
 ## `os`
 

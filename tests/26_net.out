@@ -55,3 +55,20 @@ count must be a number, not string
 read timeout: no error
 frame timeout: frame timed out
 no timeout: no error
+bound: true true true
+from: true [1, 2, 3]
+[104, 195, 169, 108, 108, 111]
+[111, 110, 101] [116, 119, 111]
+nothing: nil
+[1, 2, 3]
+expected a string or a list of bytes, not bool
+host must be a string, not int
+byte 1 is not an integer in 0..255
+option 'timeout' must not be negative
+udpReceive() size must be between 0 and 65507 bytes
+udpReceive() size must be between 0 and 65507 bytes
+receive() needs a connection handle, not a datagram socket
+send() needs a connection handle, not a datagram socket
+udpSend() needs a datagram handle from udpListen()
+udpReceive() needs a datagram handle from udpListen()
+no open socket with handle 1

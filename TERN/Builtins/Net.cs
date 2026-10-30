@@ -9,17 +9,32 @@ using TERN.Runtime;
 
 namespace TERN.Builtins
 {
+    /// <summary>What a handle refers to. Scripts see one integer type for all three.</summary>
+    internal enum NetKind
+    {
+        /// <summary>A connected stream socket from connect() or accept().</summary>
+        Stream,
+
+        /// <summary>A listening stream socket from listen().</summary>
+        Listener,
+
+        /// <summary>A bound datagram socket from udpListen().</summary>
+        Datagram,
+    }
+
     /// <summary>One open socket, addressed from a script by a small integer handle.</summary>
     internal sealed class NetEndpoint
     {
-        public NetEndpoint(Socket socket, bool listener)
+        public NetEndpoint(Socket socket, NetKind kind)
         {
             Socket = socket;
-            Listener = listener;
+            Kind = kind;
         }
 
         public Socket Socket { get; }
-        public bool Listener { get; }
+        public NetKind Kind { get; }
+
+        public bool Listener => Kind == NetKind.Listener;
 
         /// <summary>Receive/send timeout in milliseconds; 0 waits forever.</summary>
         public int TimeoutMs { get; set; }
@@ -38,12 +53,20 @@ namespace TERN.Builtins
     internal sealed class NetRegistry
     {
         private readonly Dictionary<long, NetEndpoint> _endpoints = new();
-        private long _next = 1;
 
-        public long Add(Socket socket, bool listener)
+        /// <summary>
+        /// Hands out the lowest free handle, which is what the C runtime does:
+        /// both back ends must report the same handle in the same message.
+        /// </summary>
+        public long Add(Socket socket, NetKind kind)
         {
-            var handle = _next++;
-            _endpoints[handle] = new NetEndpoint(socket, listener);
+            var handle = 1L;
+            while (_endpoints.ContainsKey(handle))
+            {
+                handle++;
+            }
+
+            _endpoints[handle] = new NetEndpoint(socket, kind);
             return handle;
         }
 
@@ -162,7 +185,7 @@ namespace TERN.Builtins
                     throw vm.Error("NetError", $"cannot listen on {host}:{port}: {error.Message}");
                 }
 
-                var handle = engine.Net.Add(socket, listener: true);
+                var handle = engine.Net.Add(socket, NetKind.Listener);
                 var endpoint = engine.Net.Require(vm, handle);
                 endpoint.Token = options.Token;
                 endpoint.MaxFrame = options.MaxFrame;
@@ -197,7 +220,7 @@ namespace TERN.Builtins
 
                 Authenticate(vm, connection, endpoint);
 
-                var handle = engine.Net.Add(connection, listener: false);
+                var handle = engine.Net.Add(connection, NetKind.Stream);
                 engine.Net.Require(vm, handle).MaxFrame = endpoint.MaxFrame;
                 return new Value(handle);
             }, "Waits for one connection, checks its hello, and returns its handle.");
@@ -237,7 +260,7 @@ namespace TERN.Builtins
                     throw;
                 }
 
-                var handle = engine.Net.Add(socket, listener: false);
+                var handle = engine.Net.Add(socket, NetKind.Stream);
                 var endpoint = engine.Net.Require(vm, handle);
                 endpoint.TimeoutMs = options.Timeout;
                 endpoint.MaxFrame = options.MaxFrame;
@@ -293,6 +316,112 @@ namespace TERN.Builtins
                 ReadExactly(vm, endpoint.Socket, buffer, endpoint.MaxFrame);
                 return Value.Of(Wire.ToList(buffer));
             }, "Reads exactly n bytes (no frame header).");
+
+            Add(map, "udpListen", 1, 3, (vm, a) =>
+            {
+                RequireNetwork(vm);
+
+                // Same shapes as listen(): port | (port, options) | (host, port, options).
+                string host = "127.0.0.1";
+                var portValue = a[0];
+                var optionsValue = a.Length > 1 && a[1].Kind != ValueKind.Int ? a[1] : Value.Nil;
+                if (a.Length > 1 && a[1].Kind == ValueKind.Int)
+                {
+                    host = Text(vm, a[0], "host");
+                    portValue = a[1];
+                    optionsValue = a.Length > 2 ? a[2] : Value.Nil;
+                }
+
+                var options = ParseOptions(vm, optionsValue, "udpListen");
+                var port = (int)Number(vm, portValue, "port");
+                var address = Resolve(vm, host);
+                var socket = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+                try
+                {
+                    socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    socket.Bind(new IPEndPoint(address, port));
+                }
+                catch (SocketException error)
+                {
+                    socket.Dispose();
+                    throw vm.Error("NetError", $"cannot listen on {host}:{port}: {error.Message}");
+                }
+
+                var handle = engine.Net.Add(socket, NetKind.Datagram);
+                var endpoint = engine.Net.Require(vm, handle);
+                endpoint.TimeoutMs = options.Timeout;
+                if (options.Timeout > 0)
+                {
+                    socket.ReceiveTimeout = options.Timeout;
+                }
+
+                return new Value(handle);
+            }, "Binds a UDP socket and returns its handle. Options: timeout.");
+
+            Add(map, "udpSend", 4, 4, (vm, a) =>
+            {
+                RequireNetwork(vm);
+
+                var endpoint = Datagram(vm, engine, a[0], "udpSend");
+                var host = Text(vm, a[1], "host");
+                var port = (int)Number(vm, a[2], "port");
+                var data = DatagramBytes(vm, a[3]);
+                if (data.Length > DatagramCeiling)
+                {
+                    throw vm.Error("NetError", $"datagram of {data.Length} bytes is larger than {DatagramCeiling}");
+                }
+
+                try
+                {
+                    endpoint.Socket.SendTo(data, new IPEndPoint(Resolve(vm, host), port));
+                }
+                catch (SocketException error)
+                {
+                    throw vm.Error("NetError", $"udpSend() failed: {error.Message}");
+                }
+                catch (ObjectDisposedException)
+                {
+                    throw vm.Error("NetError", "socket is closed");
+                }
+
+                return Value.Nil;
+            }, "Sends one datagram: udpSend(socket, host, port, data).");
+
+            Add(map, "udpReceive", 1, 2, (vm, a) =>
+            {
+                var endpoint = Datagram(vm, engine, a[0], "udpReceive");
+                var size = a.Length > 1 ? (int)Number(vm, a[1], "size") : DatagramCeiling;
+                if (size < 0 || size > DatagramCeiling)
+                {
+                    throw vm.Error("NetError", $"udpReceive() size must be between 0 and {DatagramCeiling} bytes");
+                }
+
+                var buffer = new byte[size];
+                EndPoint from = new IPEndPoint(IPAddress.Any, 0);
+                int read;
+                try
+                {
+                    read = endpoint.Socket.ReceiveFrom(buffer, ref from);
+                }
+                catch (SocketException error) when (error.SocketErrorCode == SocketError.TimedOut)
+                {
+                    // A datagram that never arrives is normal traffic, not an error.
+                    return Value.Nil;
+                }
+                catch (SocketException error)
+                {
+                    throw vm.Error("NetError", $"udpReceive() failed: {error.Message}");
+                }
+                catch (ObjectDisposedException)
+                {
+                    throw vm.Error("NetError", "socket is closed");
+                }
+
+                var datagram = new TernMap();
+                datagram.Set(Value.Str("from"), Value.Str(from?.ToString() ?? "0.0.0.0:0"));
+                datagram.Set(Value.Str("data"), Value.Of(Wire.ToList(buffer.AsSpan(0, read))));
+                return Value.Of(datagram);
+            }, "Receives one datagram as {from, data}, or nil when a timeout expires.");
 
             Add(map, "close", 1, 1, (vm, a) =>
             {
@@ -771,6 +900,27 @@ namespace TERN.Builtins
             return value.AsString();
         }
 
+        /// <summary>The largest payload a single UDP datagram can carry.</summary>
+        private const int DatagramCeiling = 65507;
+
+        /// <summary>Datagram payloads may be given as text (UTF-8) or as a byte list.</summary>
+        private static byte[] DatagramBytes(VM vm, in Value value)
+        {
+            if (value.Kind == ValueKind.Str)
+            {
+                var text = Encoding.UTF8.GetBytes(value.AsString());
+                return text;
+            }
+
+            if (value.Kind == ValueKind.List)
+            {
+                return Wire.FromList(vm, value);
+            }
+
+            throw vm.Error("TypeError",
+                $"expected a string or a list of bytes, not {vm.TypeName(value)}");
+        }
+
         internal static double Number(VM vm, in Value value, string what)
         {
             if (value.Kind == ValueKind.Int)
@@ -820,9 +970,25 @@ namespace TERN.Builtins
         private static NetEndpoint Connection(VM vm, TernEngine engine, in Value handle, string operation)
         {
             var endpoint = engine.Net.Require(vm, Handle(vm, handle));
-            if (endpoint.Listener)
+            if (endpoint.Kind == NetKind.Listener)
             {
                 throw vm.Error("NetError", $"{operation}() needs a connection handle, not a server");
+            }
+
+            if (endpoint.Kind != NetKind.Stream)
+            {
+                throw vm.Error("NetError", $"{operation}() needs a connection handle, not a datagram socket");
+            }
+
+            return endpoint;
+        }
+
+        private static NetEndpoint Datagram(VM vm, TernEngine engine, in Value handle, string operation)
+        {
+            var endpoint = engine.Net.Require(vm, Handle(vm, handle));
+            if (endpoint.Kind != NetKind.Datagram)
+            {
+                throw vm.Error("NetError", $"{operation}() needs a datagram handle from udpListen()");
             }
 
             return endpoint;

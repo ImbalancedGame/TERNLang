@@ -656,6 +656,25 @@ bytes with no frame header, for protocols layered on top of `net` (HTTP, RCON,
 anything with its own framing). Byte lists use integers in 0..255 and are
 rejected otherwise.
 
+Datagrams are separate handles from `net.udpListen`:
+
+```tern
+let socket = net.udpListen(9000);            // or udpListen("0.0.0.0", 9000)
+net.udpSend(socket, "127.0.0.1", 9001, [0x10, 0x20]);
+
+let packet = net.udpReceive(socket);          // {"from": "127.0.0.1:9001", "data": [...]}
+if packet != nil {
+    println(packet["from"], len(packet["data"]));
+}
+```
+
+`udpSend` takes text (sent as UTF-8) or a byte list and moves at most 65507
+bytes per datagram. `udpReceive` returns one datagram as a map with `from` and
+`data`, or `nil` when a `net.timeout` expires — unlike a stream, a datagram that
+never arrives is ordinary traffic rather than an error. A smaller size argument
+truncates the datagram. UDP is unreliable by definition: ordering, duplicates
+and retries belong in the script (the runtime will not add a reliable layer).
+
 Any value can travel: `nil`, booleans, integers, floats, strings, lists, maps,
 ranges and structs. Integers and floats keep their type and exact bits, map
 insertion order is preserved, and a range keeps its step and whether its end is
