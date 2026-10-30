@@ -561,7 +561,7 @@ abs min max copy sleep
 | --------- | ------- |
 | `math` | `abs ceil floor round trunc sqrt cbrt pow exp log log2 log10 sin cos tan asin acos atan atan2 min max clamp sign hypot gcd lcm isInteger isNaN toRadians toDegrees` + `pi e tau infinity nan` |
 | `json` | `parse stringify tryParse` |
-| `fs` | `read readBytes write append exists size remove list mkdir isFile isDir` |
+| `fs` | `read readBytes write append exists size remove list mkdir isFile isDir open readChunk readAt seek position fileSize close` |
 | `os` | `env setEnv cwd platform args joinPath lineSeparator` |
 | `time` | `now millis sleep iso` |
 | `random` | `seed float int bool choice shuffle` |
@@ -573,6 +573,35 @@ abs min max copy sleep
 | `sftp` | `upload download list run batch command` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
+
+### Files
+
+`fs.read` reads a whole file, which is the wrong tool for a log that is still
+growing. `fs.open` returns a handle that remembers its position, and
+`fs.readChunk` returns the next piece:
+
+```tern
+let handle = fs.open("/var/log/huge.log");
+let offset = 0;
+while (true) {
+    let chunk = fs.readChunk(handle, 10 * 1024 * 1024);
+    if (chunk == "") { break; }
+    offset = fs.position(handle);      // byte offset to resume from
+    process(chunk);
+}
+fs.close(handle);
+```
+
+Offsets and lengths are bytes, and a chunk that would end in the middle of a
+multi-byte character is extended by the two or three bytes the character still
+needs, so chunks concatenate back into the file and nothing is decoded twice.
+`fs.readAt(path, offset[, length])` does the same read without a handle, for
+random access: reading the header of a 4 GiB archive costs one system call and
+the bytes actually returned. A read at or past the end of the file is `""`, not
+an error, which is what ends the loop above; `length` defaults to the rest of
+the file and is capped at 1 GiB per call. `fs.seek`, `fs.position` and
+`fs.fileSize` round out the handle, and `fs.close` releases it — a second close,
+or a read on a handle that is not open, raises `IOError`.
 
 `json.parse` raises a `JsonError` naming the problem and the offset in the text
 (`expected ':' at offset 4`); `json.tryParse` returns its fallback instead of

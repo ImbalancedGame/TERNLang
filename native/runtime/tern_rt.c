@@ -4533,6 +4533,205 @@ static Value fs_readbytes(int argc, Value *argv) {
     return v_obj((Obj *)list);
 }
 
+// Reading a file in pieces. The interpreter keeps a FileStream per handle and
+// this keeps a FILE*; both hand out small integers and both refuse to split a
+// multi-byte character across two chunks, so the two back ends return the same
+// text for the same offsets.
+
+#define FS_MAX_HANDLES 64
+#define FS_MAX_CHUNK 1073741824
+
+static FILE *fs_handles[FS_MAX_HANDLES];
+static char *fs_paths[FS_MAX_HANDLES];
+
+static int fs_slot_arg(Value v) {
+    if (v.tag != T_INT) {
+        tern_panic("TypeError", "expected a file handle, not %s", tern_type_name(v));
+    }
+    int handle = (int)v.as.i;
+    if (handle < 1 || handle > FS_MAX_HANDLES || !fs_handles[handle - 1]) {
+        tern_panic("IOError", "no open file with handle %d", handle);
+    }
+    return handle - 1;
+}
+
+static long fs_offset_arg(Value v, const char *function, int index) {
+    int64_t offset = need_int(v, function, index);
+    if (offset < 0) {
+        tern_panic("ArgumentError", "offset must not be negative");
+    }
+    return (long)offset;
+}
+
+static int fs_length_arg(Value v, const char *function, int index) {
+    int64_t length = need_int(v, function, index);
+    if (length < 1 || length > FS_MAX_CHUNK) {
+        tern_panic("ArgumentError", "length must be between 1 and %d", FS_MAX_CHUNK);
+    }
+    return (int)length;
+}
+
+/// How many bytes the character at the end of the buffer still needs, read from
+/// its lead byte. Zero means the chunk ends on a boundary.
+static int fs_missing_continuation(const unsigned char *buffer, size_t length) {
+    for (size_t back = 1; back <= 4 && back <= length; back++) {
+        unsigned char c = buffer[length - back];
+        if ((c & 0xC0) == 0x80) {
+            continue;
+        }
+        int need = c < 0x80 ? 1
+            : (c & 0xE0) == 0xC0 ? 2
+            : (c & 0xF0) == 0xE0 ? 3
+            : (c & 0xF8) == 0xF0 ? 4
+            : 1;
+        return need > (int)back ? need - (int)back : 0;
+    }
+    return 0;
+}
+
+/// Reads at most `length` bytes at the handle's position into a malloc'd buffer
+/// and returns how many bytes it holds. NULL means nothing was read.
+static char *fs_read_chunk(FILE *handle, int length, size_t *count) {
+    *count = 0;
+    off_t position = ftello(handle);
+    struct stat info;
+    if (position < 0 || fstat(fileno(handle), &info) != 0) {
+        return NULL;
+    }
+
+    off_t remaining = info.st_size > position ? info.st_size - position : 0;
+    size_t take = (size_t)(remaining < (off_t)length ? remaining : (off_t)length);
+    if (take == 0) {
+        return NULL;
+    }
+
+    // Room for the three continuation bytes a trailing character may need.
+    char *buffer = (char *)malloc(take + 3);
+    if (!buffer) {
+        tern_panic("IOError", "cannot read %zu bytes: out of memory", take);
+    }
+
+    size_t read = fread(buffer, 1, take, handle);
+    if (read == take) {
+        int extra = fs_missing_continuation((const unsigned char *)buffer, read);
+        if (extra > 0) {
+            read += fread(buffer + read, 1, (size_t)extra, handle);
+        }
+    }
+
+    *count = read;
+    return buffer;
+}
+
+static Value fs_open(int argc, Value *argv) {
+    const char *path = path_arg(argc, argv, 0);
+    int slot = -1;
+    for (int i = 0; i < FS_MAX_HANDLES; i++) {
+        if (!fs_handles[i]) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        tern_panic("IOError", "too many open files (%d)", FS_MAX_HANDLES);
+    }
+
+    FILE *handle = fopen(path, "rb");
+    if (!handle) {
+        tern_panic("IOError", "cannot open '%s': %s", path, strerror(errno));
+    }
+
+    char *copy = (char *)malloc(strlen(path) + 1);
+    if (!copy) {
+        fclose(handle);
+        tern_panic("IOError", "cannot open '%s': out of memory", path);
+    }
+    strcpy(copy, path);
+
+    fs_handles[slot] = handle;
+    fs_paths[slot] = copy;
+    return v_int(slot + 1);
+}
+
+static Value fs_readchunk(int argc, Value *argv) {
+    int slot = fs_slot_arg(argv[0]);
+    int length = fs_length_arg(arg(argc, argv, 1), "readChunk", 2);
+
+    size_t count = 0;
+    char *data = fs_read_chunk(fs_handles[slot], length, &count);
+    if (!data) {
+        return str_value("", 0);
+    }
+    Value text = str_value(data, count);
+    free(data);
+    return text;
+}
+
+static Value fs_readat(int argc, Value *argv) {
+    const char *path = path_arg(argc, argv, 0);
+    long offset = fs_offset_arg(arg(argc, argv, 1), "readAt", 2);
+    int length = argc > 2 ? fs_length_arg(argv[2], "readAt", 3) : FS_MAX_CHUNK;
+
+    FILE *handle = fopen(path, "rb");
+    if (!handle) {
+        tern_panic("IOError", "cannot open '%s': %s", path, strerror(errno));
+    }
+    if (fseeko(handle, (off_t)offset, SEEK_SET) != 0) {
+        int error = errno;
+        fclose(handle);
+        tern_panic("IOError", "cannot seek '%s': %s", path, strerror(error));
+    }
+
+    size_t count = 0;
+    char *data = fs_read_chunk(handle, length, &count);
+    fclose(handle);
+    if (!data) {
+        return str_value("", 0);
+    }
+    Value text = str_value(data, count);
+    free(data);
+    return text;
+}
+
+static Value fs_seek(int argc, Value *argv) {
+    int slot = fs_slot_arg(argv[0]);
+    long offset = fs_offset_arg(arg(argc, argv, 1), "seek", 2);
+    if (fseeko(fs_handles[slot], (off_t)offset, SEEK_SET) != 0) {
+        tern_panic("IOError", "cannot seek '%s': %s", fs_paths[slot], strerror(errno));
+    }
+    return v_int((int64_t)ftello(fs_handles[slot]));
+}
+
+static Value fs_position(int argc, Value *argv) {
+    (void)argc;
+    int slot = fs_slot_arg(argv[0]);
+    off_t position = ftello(fs_handles[slot]);
+    if (position < 0) {
+        tern_panic("IOError", "cannot seek '%s': %s", fs_paths[slot], strerror(errno));
+    }
+    return v_int((int64_t)position);
+}
+
+static Value fs_filesize(int argc, Value *argv) {
+    (void)argc;
+    int slot = fs_slot_arg(argv[0]);
+    struct stat info;
+    if (fstat(fileno(fs_handles[slot]), &info) != 0) {
+        tern_panic("IOError", "cannot stat '%s': %s", fs_paths[slot], strerror(errno));
+    }
+    return v_int((int64_t)info.st_size);
+}
+
+static Value fs_close(int argc, Value *argv) {
+    (void)argc;
+    int slot = fs_slot_arg(argv[0]);
+    fclose(fs_handles[slot]);
+    fs_handles[slot] = NULL;
+    free(fs_paths[slot]);
+    fs_paths[slot] = NULL;
+    return v_nil();
+}
+
 static Value fs_write_file(int argc, Value *argv, const char *mode) {
     const char *path = path_arg(argc, argv, 0);
     Value rendered = tern_to_string(arg(argc, argv, 1));
@@ -8139,6 +8338,13 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("remove"), make_native_arity("remove", fs_remove, 1, 1));
         map_set(map, str_from_cstr("list"), make_native_arity("list", fs_list, 1, 1));
         map_set(map, str_from_cstr("mkdir"), make_native_arity("mkdir", fs_mkdir, 1, 1));
+        map_set(map, str_from_cstr("open"), make_native_arity("open", fs_open, 1, 1));
+        map_set(map, str_from_cstr("readChunk"), make_native_arity("readChunk", fs_readchunk, 2, 2));
+        map_set(map, str_from_cstr("readAt"), make_native_arity("readAt", fs_readat, 2, 3));
+        map_set(map, str_from_cstr("seek"), make_native_arity("seek", fs_seek, 2, 2));
+        map_set(map, str_from_cstr("position"), make_native_arity("position", fs_position, 1, 1));
+        map_set(map, str_from_cstr("fileSize"), make_native_arity("fileSize", fs_filesize, 1, 1));
+        map_set(map, str_from_cstr("close"), make_native_arity("close", fs_close, 1, 1));
         map_set(map, str_from_cstr("isFile"), make_native_arity("isFile", fs_isfile, 1, 1));
         map_set(map, str_from_cstr("isDir"), make_native_arity("isDir", fs_isdir, 1, 1));
         return v_obj((Obj *)map);

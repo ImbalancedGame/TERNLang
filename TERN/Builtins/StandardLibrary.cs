@@ -614,6 +614,60 @@ namespace TERN.Builtins
             Add(map, "isFile", 1, 1, (vm, a) => Value.Bool(File.Exists(RequirePath(vm, a[0]))), "True for a regular file.");
             Add(map, "isDir", 1, 1, (vm, a) => Value.Bool(Directory.Exists(RequirePath(vm, a[0]))), "True for a directory.");
 
+            // --------------------------------------------------- reading in pieces
+            // A log or an archive can be far larger than memory. `open` hands out
+            // a handle that remembers where it is, so a script reads a chunk,
+            // works on it, and asks for the next one; `readAt` is the same read
+            // with the offset written out, for random access.
+
+            var files = new OpenFiles();
+
+            Add(map, "open", 1, 1, (vm, a) =>
+            {
+                var path = RequirePath(vm, a[0]);
+                var stream = Io(vm, "open", path, () =>
+                    new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
+                return new Value(files.Add(vm, path, stream));
+            }, "Opens a file for reading and returns a handle that keeps its position.");
+            Add(map, "readChunk", 2, 2, (vm, a) =>
+            {
+                var entry = files.Get(vm, a[0]);
+                var length = ChunkLength(vm, a[1], "readChunk", 1);
+                return Value.Str(Io(vm, "read", entry.Path, () => ReadChunk(entry.Stream, length)));
+            }, "Reads up to n bytes from a handle's position and advances it.");
+            Add(map, "readAt", 2, 3, (vm, a) =>
+            {
+                var path = RequirePath(vm, a[0]);
+                var offset = ChunkOffset(vm, a[1], "readAt", 1);
+                var length = a.Length > 2 ? ChunkLength(vm, a[2], "readAt", 2) : MaxChunk;
+                using var stream = Io(vm, "open", path, () =>
+                    new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
+                Io(vm, "seek", path, () => stream.Seek(offset, SeekOrigin.Begin));
+                return Value.Str(Io(vm, "read", path, () => ReadChunk(stream, length)));
+            }, "Reads up to n bytes at a byte offset without opening a handle.");
+            Add(map, "seek", 2, 2, (vm, a) =>
+            {
+                var entry = files.Get(vm, a[0]);
+                var offset = ChunkOffset(vm, a[1], "seek", 1);
+                return new Value(Io(vm, "seek", entry.Path, () => entry.Stream.Seek(offset, SeekOrigin.Begin)));
+            }, "Moves a handle's position to a byte offset and returns it.");
+            Add(map, "position", 1, 1, (vm, a) =>
+            {
+                var entry = files.Get(vm, a[0]);
+                return new Value(Io(vm, "seek", entry.Path, () => entry.Stream.Position));
+            }, "The byte offset the next read on a handle starts at.");
+            Add(map, "fileSize", 1, 1, (vm, a) =>
+            {
+                var entry = files.Get(vm, a[0]);
+                return new Value(Io(vm, "stat", entry.Path, () => entry.Stream.Length));
+            }, "Size of an open file in bytes.");
+            Add(map, "close", 1, 1, (vm, a) =>
+            {
+                var entry = files.Remove(vm, a[0]);
+                entry.Stream.Dispose();
+                return Value.Nil;
+            }, "Closes a file handle.");
+
             engine.RegisterValue("fs", Value.Of(map));
             engine.RegisterStdModule(new StdModule
             {
@@ -651,6 +705,13 @@ namespace TERN.Builtins
                 throw vm.Error("PermissionError", "file system access is disabled for this script");
             }
 
+            // A non-string path used to reach Path.Combine as a null, which threw
+            // a host exception instead of a catchable TERN one.
+            if (value.Kind != ValueKind.Str)
+            {
+                throw vm.Error("TypeError", $"path must be a string, got {vm.TypeName(value)}");
+            }
+
             var path = value.AsString();
             if (Path.IsPathRooted(path))
             {
@@ -658,6 +719,164 @@ namespace TERN.Builtins
             }
 
             return Path.GetFullPath(Path.Combine(engine.WorkingDirectory, path));
+        }
+
+        // ------------------------------------------------------------ file handles
+
+        private const int MaxChunk = 1 << 30;
+        private const int MaxOpenFiles = 64;
+
+        /// <summary>
+        /// The handles a script has open, with the path each one came from so a
+        /// read failure can name the file. One table per engine: two engines in
+        /// the same process must not share handles.
+        /// </summary>
+        private sealed class OpenFiles
+        {
+            private readonly Dictionary<int, Entry> _entries = new();
+            private int _next = 1;
+
+            public sealed class Entry
+            {
+                public Entry(string path, FileStream stream)
+                {
+                    Path = path;
+                    Stream = stream;
+                }
+
+                public string Path { get; }
+                public FileStream Stream { get; }
+            }
+
+            public int Add(VM vm, string path, FileStream stream)
+            {
+                if (_entries.Count >= MaxOpenFiles)
+                {
+                    stream.Dispose();
+                    throw vm.Error("IOError", $"too many open files ({MaxOpenFiles})");
+                }
+
+                var handle = _next++;
+                _entries[handle] = new Entry(path, stream);
+                return handle;
+            }
+
+            public Entry Get(VM vm, in Value value)
+            {
+                if (value.Kind != ValueKind.Int)
+                {
+                    throw vm.Error("TypeError", $"expected a file handle, not {vm.TypeName(value)}");
+                }
+
+                var handle = value.AsInt();
+                if (_entries.TryGetValue((int)handle, out var entry))
+                {
+                    return entry;
+                }
+
+                throw vm.Error("IOError", $"no open file with handle {handle}");
+            }
+
+            public Entry Remove(VM vm, in Value value)
+            {
+                var entry = Get(vm, value);
+                _entries.Remove((int)value.AsInt());
+                return entry;
+            }
+        }
+
+        private static long ChunkOffset(VM vm, in Value value, string function, int index)
+        {
+            var offset = BuiltinMethods.RequireInt(value, function, index);
+            if (offset < 0)
+            {
+                throw vm.Error("ArgumentError", "offset must not be negative");
+            }
+
+            return offset;
+        }
+
+        private static int ChunkLength(VM vm, in Value value, string function, int index)
+        {
+            var length = BuiltinMethods.RequireInt(value, function, index);
+            if (length < 1 || length > MaxChunk)
+            {
+                throw vm.Error("ArgumentError", $"length must be between 1 and {MaxChunk}");
+            }
+
+            return (int)length;
+        }
+
+        /// <summary>
+        /// Reads at most <paramref name="length"/> bytes and returns them as text.
+        /// A chunk that would end inside a multi-byte character is extended by the
+        /// bytes the character still needs, so chunks never split one and can be
+        /// concatenated back into the file.
+        /// </summary>
+        private static string ReadChunk(FileStream stream, int length)
+        {
+            var remaining = Math.Max(0, stream.Length - stream.Position);
+            var take = (int)Math.Min(length, remaining);
+            if (take == 0)
+            {
+                return string.Empty;
+            }
+
+            var buffer = new byte[take + 3];
+            var read = Fill(stream, buffer.AsSpan(0, take), take);
+            if (read == take)
+            {
+                var extra = MissingContinuationBytes(buffer, read);
+                if (extra > 0)
+                {
+                    read += Fill(stream, buffer.AsSpan(read), extra);
+                }
+            }
+
+            return Encoding.UTF8.GetString(buffer, 0, read);
+        }
+
+        private static int Fill(FileStream stream, Span<byte> buffer, int count)
+        {
+            var read = 0;
+            while (read < count)
+            {
+                var got = stream.Read(buffer.Slice(read, count - read));
+                if (got == 0)
+                {
+                    break;
+                }
+
+                read += got;
+            }
+
+            return read;
+        }
+
+        /// <summary>
+        /// How many bytes the character at the end of the buffer still needs, by
+        /// its lead byte. Zero means the buffer ends on a boundary (or the tail is
+        /// not valid UTF-8, which is left for the decoder to report).
+        /// </summary>
+        private static int MissingContinuationBytes(byte[] buffer, int length)
+        {
+            for (var back = 1; back <= 4 && back <= length; back++)
+            {
+                var c = buffer[length - back];
+                if ((c & 0xC0) == 0x80)
+                {
+                    continue;
+                }
+
+                var need = c < 0x80 ? 1
+                    : (c & 0xE0) == 0xC0 ? 2
+                    : (c & 0xF0) == 0xE0 ? 3
+                    : (c & 0xF8) == 0xF0 ? 4
+                    : 1;
+                return need > back ? need - back : 0;
+            }
+
+            return 0;
         }
 
         private static void EnsureDirectory(string path)

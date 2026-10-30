@@ -41,14 +41,21 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | Name | Signature | Notes |
 | ---- | --------- | ----- |
 | `append` | `append(arg, arg)` | Appends text to a file. |
+| `close` | `close(arg)` | Closes a file handle. |
 | `exists` | `exists(arg)` | True when the path exists. |
+| `fileSize` | `fileSize(arg)` | Size of an open file in bytes. |
 | `isDir` | `isDir(arg)` | True for a directory. |
 | `isFile` | `isFile(arg)` | True for a regular file. |
 | `list` | `list(arg)` | Directory entries as a list. |
 | `mkdir` | `mkdir(arg)` | Creates a directory and its parents. |
+| `open` | `open(arg)` | Opens a file for reading and returns a handle that keeps its position. |
+| `position` | `position(arg)` | The byte offset the next read on a handle starts at. |
 | `read` | `read(arg)` | Reads a whole file as text. |
+| `readAt` | `readAt(arg, arg, [arg])` | Reads up to n bytes at a byte offset without opening a handle. |
 | `readBytes` | `readBytes(arg)` | Reads a file as a list of byte values. |
+| `readChunk` | `readChunk(arg, arg)` | Reads up to n bytes from a handle's position and advances it. |
 | `remove` | `remove(arg)` | Deletes a file or a directory tree. |
+| `seek` | `seek(arg, arg)` | Moves a handle's position to a byte offset and returns it. |
 | `size` | `size(arg)` | Size of a file in bytes. |
 | `write` | `write(arg, arg)` | Writes text, replacing the file. |
 
