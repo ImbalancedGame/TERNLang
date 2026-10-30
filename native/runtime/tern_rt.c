@@ -8243,6 +8243,718 @@ static Value n_sftp_run(int argc, Value *argv) {
     return sftp_run_batch(argv[1], "run", commands, false);
 }
 
+// --- gl: OpenGL through libEGL ---------------------------------------------
+//
+// The same shape as the interpreter's binding: libEGL is opened at run time with
+// dlopen, a surfaceless pbuffer gives a context with no display server, and the
+// GL entry points come from eglGetProcAddress. Nothing is linked into the
+// binary, so a program that never renders does not need a driver.
+
+#define GL_MAX_CONTEXTS 8
+#define GL_MAX_PROGRAMS 64
+#define GL_VERTEX_FLOATS 6
+
+#define EGL_NONE 0x3038
+#define EGL_SURFACE_TYPE 0x3033
+#define EGL_PBUFFER_BIT 0x0001
+#define EGL_RENDERABLE_TYPE 0x3040
+#define EGL_OPENGL_BIT 0x0008
+#define EGL_RED_SIZE 0x3024
+#define EGL_GREEN_SIZE 0x3023
+#define EGL_BLUE_SIZE 0x3022
+#define EGL_ALPHA_SIZE 0x3021
+#define EGL_DEPTH_SIZE 0x3025
+#define EGL_WIDTH 0x3057
+#define EGL_HEIGHT 0x3056
+#define EGL_CONTEXT_MAJOR_VERSION 0x3098
+#define EGL_CONTEXT_MINOR_VERSION 0x30FB
+#define EGL_CONTEXT_OPENGL_PROFILE_MASK 0x30FD
+#define EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT 0x0001
+#define EGL_OPENGL_API 0x30A2
+#define EGL_PLATFORM_SURFACELESS 0x313D
+
+#define GL_COLOR_BUFFER_BIT 0x00004000u
+#define GL_DEPTH_BUFFER_BIT 0x00000100u
+#define GL_ARRAY_BUFFER 0x8892u
+#define GL_STATIC_DRAW 0x88E4u
+#define GL_FLOAT 0x1406u
+#define GL_TRIANGLES 0x0004u
+#define GL_VERTEX_SHADER 0x8B31u
+#define GL_FRAGMENT_SHADER 0x8B30u
+#define GL_COMPILE_STATUS 0x8B81u
+#define GL_LINK_STATUS 0x8B82u
+#define GL_RGBA 0x1908u
+#define GL_UNSIGNED_BYTE 0x1401u
+#define GL_VENDOR 0x1F00u
+#define GL_RENDERER 0x1F01u
+#define GL_VERSION 0x1F02u
+#define GL_SHADING_LANGUAGE_VERSION 0x8B8Cu
+
+typedef void (*GlClearColorFn)(float, float, float, float);
+typedef void (*GlClearFn)(unsigned);
+typedef void (*GlViewportFn)(int, int, int, int);
+typedef unsigned (*GlCreateShaderFn)(unsigned);
+typedef void (*GlShaderSourceFn)(unsigned, int, const char *const *, const int *);
+typedef void (*GlCompileShaderFn)(unsigned);
+typedef void (*GlGetShaderivFn)(unsigned, unsigned, int *);
+typedef void (*GlGetShaderInfoLogFn)(unsigned, int, int *, char *);
+typedef unsigned (*GlCreateProgramFn)(void);
+typedef void (*GlAttachShaderFn)(unsigned, unsigned);
+typedef void (*GlLinkProgramFn)(unsigned);
+typedef void (*GlGetProgramivFn)(unsigned, unsigned, int *);
+typedef void (*GlGetProgramInfoLogFn)(unsigned, int, int *, char *);
+typedef void (*GlUseProgramFn)(unsigned);
+typedef void (*GlGenVertexArraysFn)(int, unsigned *);
+typedef void (*GlBindVertexArrayFn)(unsigned);
+typedef void (*GlGenBuffersFn)(int, unsigned *);
+typedef void (*GlBindBufferFn)(unsigned, unsigned);
+typedef void (*GlBufferDataFn)(unsigned, ptrdiff_t, const void *, unsigned);
+typedef void (*GlEnableVertexAttribArrayFn)(unsigned);
+typedef void (*GlVertexAttribPointerFn)(unsigned, int, unsigned, unsigned char, int, const void *);
+typedef void (*GlDrawArraysFn)(unsigned, int, int);
+typedef void (*GlReadPixelsFn)(int, int, int, int, unsigned, unsigned, void *);
+typedef const unsigned char *(*GlGetStringFn)(unsigned);
+typedef void (*GlFinishFn)(void);
+typedef void (*GlDeleteProgramFn)(unsigned);
+typedef void (*GlDeleteShaderFn)(unsigned);
+typedef void (*GlDeleteBuffersFn)(int, const unsigned *);
+typedef void (*GlDeleteVertexArraysFn)(int, const unsigned *);
+
+typedef struct {
+    void *library;
+    void *(*get_display)(void *);
+    void *(*get_platform_display)(unsigned, void *, const int *);
+    int (*initialize)(void *, int *, int *);
+    int (*bind_api)(unsigned);
+    int (*choose_config)(void *, const int *, void **, int, int *);
+    void *(*create_context)(void *, void *, void *, const int *);
+    void *(*create_pbuffer_surface)(void *, void *, const int *);
+    int (*make_current)(void *, void *, void *, void *);
+    void *(*get_proc_address)(const char *);
+    void (*destroy_surface)(void *, void *);
+    void (*destroy_context)(void *, void *);
+    int ready;
+} GlDriver;
+
+typedef struct {
+    void *display;
+    void *surface;
+    void *context;
+    int width, height;
+    unsigned buffer, array;
+    unsigned programs[GL_MAX_PROGRAMS];
+    int program_count;
+
+    GlClearColorFn clear_color;
+    GlClearFn clear;
+    GlViewportFn viewport;
+    GlCreateShaderFn create_shader;
+    GlShaderSourceFn shader_source;
+    GlCompileShaderFn compile_shader;
+    GlGetShaderivFn get_shaderiv;
+    GlGetShaderInfoLogFn get_shader_info_log;
+    GlCreateProgramFn create_program;
+    GlAttachShaderFn attach_shader;
+    GlLinkProgramFn link_program;
+    GlGetProgramivFn get_programiv;
+    GlGetProgramInfoLogFn get_program_info_log;
+    GlUseProgramFn use_program;
+    GlGenVertexArraysFn gen_vertex_arrays;
+    GlBindVertexArrayFn bind_vertex_array;
+    GlGenBuffersFn gen_buffers;
+    GlBindBufferFn bind_buffer;
+    GlBufferDataFn buffer_data;
+    GlEnableVertexAttribArrayFn enable_vertex_attrib_array;
+    GlVertexAttribPointerFn vertex_attrib_pointer;
+    GlDrawArraysFn draw_arrays;
+    GlReadPixelsFn read_pixels;
+    GlGetStringFn get_string;
+    GlFinishFn gl_finish;
+    GlDeleteProgramFn delete_program;
+    GlDeleteShaderFn delete_shader;
+    GlDeleteBuffersFn delete_buffers;
+    GlDeleteVertexArraysFn delete_vertex_arrays;
+} GlContext;
+
+static GlDriver gl_driver;
+static int gl_driver_tried;
+static GlContext *gl_contexts[GL_MAX_CONTEXTS];
+
+static GlDriver *gl_driver_get(void) {
+    if (gl_driver_tried) {
+        return gl_driver.ready ? &gl_driver : NULL;
+    }
+    gl_driver_tried = 1;
+
+    const char *names[3];
+    int count = 0;
+    // TERN_GL_LIBRARY names the library and suppresses the fallback, so a test
+    // can ask for a driver that is not there and see the failure.
+    const char *configured = getenv("TERN_GL_LIBRARY");
+    if (configured && configured[0]) {
+        names[count++] = configured;
+    } else {
+        names[count++] = "libEGL.so.1";
+        names[count++] = "libEGL.so";
+    }
+
+    for (int i = 0; i < count; i++) {
+        void *library = dlopen(names[i], RTLD_NOW | RTLD_LOCAL);
+        if (!library) {
+            continue;
+        }
+
+        gl_driver.library = library;
+        *(void **)(&gl_driver.get_display) = dlsym(library, "eglGetDisplay");
+        *(void **)(&gl_driver.get_platform_display) = dlsym(library, "eglGetPlatformDisplayEXT");
+        *(void **)(&gl_driver.initialize) = dlsym(library, "eglInitialize");
+        *(void **)(&gl_driver.bind_api) = dlsym(library, "eglBindAPI");
+        *(void **)(&gl_driver.choose_config) = dlsym(library, "eglChooseConfig");
+        *(void **)(&gl_driver.create_context) = dlsym(library, "eglCreateContext");
+        *(void **)(&gl_driver.create_pbuffer_surface) = dlsym(library, "eglCreatePbufferSurface");
+        *(void **)(&gl_driver.make_current) = dlsym(library, "eglMakeCurrent");
+        *(void **)(&gl_driver.get_proc_address) = dlsym(library, "eglGetProcAddress");
+        *(void **)(&gl_driver.destroy_surface) = dlsym(library, "eglDestroySurface");
+        *(void **)(&gl_driver.destroy_context) = dlsym(library, "eglDestroyContext");
+
+        gl_driver.ready = gl_driver.initialize && gl_driver.choose_config
+            && gl_driver.create_context && gl_driver.create_pbuffer_surface
+            && gl_driver.make_current && gl_driver.get_proc_address
+            && (gl_driver.get_display || gl_driver.get_platform_display);
+        if (gl_driver.ready) {
+            return &gl_driver;
+        }
+    }
+    return NULL;
+}
+
+static int gl_arg_dimension(Value v, const char *what, int index) {
+    int64_t size = need_int(v, "create", index);
+    if (size < 1 || size > 8192) {
+        tern_panic("ArgumentError", "%s must be between 1 and 8192", what);
+    }
+    return (int)size;
+}
+
+static double gl_arg_unit(Value v, const char *what) {
+    if (!v_is_num(v)) {
+        tern_panic("TypeError", "%s must be a number, not %s", what, tern_type_name(v));
+    }
+    double number = v_as_double(v);
+    if (number < 0 || number > 1) {
+        tern_panic("ArgumentError", "%s must be between 0 and 1", what);
+    }
+    return number;
+}
+
+static void gl_load_entry_points(GlContext *ctx, const char *operation) {
+    void *(*proc)(const char *) = gl_driver.get_proc_address;
+    *(void **)(&ctx->clear_color) = proc("glClearColor");
+    *(void **)(&ctx->clear) = proc("glClear");
+    *(void **)(&ctx->viewport) = proc("glViewport");
+    *(void **)(&ctx->create_shader) = proc("glCreateShader");
+    *(void **)(&ctx->shader_source) = proc("glShaderSource");
+    *(void **)(&ctx->compile_shader) = proc("glCompileShader");
+    *(void **)(&ctx->get_shaderiv) = proc("glGetShaderiv");
+    *(void **)(&ctx->get_shader_info_log) = proc("glGetShaderInfoLog");
+    *(void **)(&ctx->create_program) = proc("glCreateProgram");
+    *(void **)(&ctx->attach_shader) = proc("glAttachShader");
+    *(void **)(&ctx->link_program) = proc("glLinkProgram");
+    *(void **)(&ctx->get_programiv) = proc("glGetProgramiv");
+    *(void **)(&ctx->get_program_info_log) = proc("glGetProgramInfoLog");
+    *(void **)(&ctx->use_program) = proc("glUseProgram");
+    *(void **)(&ctx->gen_vertex_arrays) = proc("glGenVertexArrays");
+    *(void **)(&ctx->bind_vertex_array) = proc("glBindVertexArray");
+    *(void **)(&ctx->gen_buffers) = proc("glGenBuffers");
+    *(void **)(&ctx->bind_buffer) = proc("glBindBuffer");
+    *(void **)(&ctx->buffer_data) = proc("glBufferData");
+    *(void **)(&ctx->enable_vertex_attrib_array) = proc("glEnableVertexAttribArray");
+    *(void **)(&ctx->vertex_attrib_pointer) = proc("glVertexAttribPointer");
+    *(void **)(&ctx->draw_arrays) = proc("glDrawArrays");
+    *(void **)(&ctx->read_pixels) = proc("glReadPixels");
+    *(void **)(&ctx->get_string) = proc("glGetString");
+    *(void **)(&ctx->gl_finish) = proc("glFinish");
+    *(void **)(&ctx->delete_program) = proc("glDeleteProgram");
+    *(void **)(&ctx->delete_shader) = proc("glDeleteShader");
+    *(void **)(&ctx->delete_buffers) = proc("glDeleteBuffers");
+    *(void **)(&ctx->delete_vertex_arrays) = proc("glDeleteVertexArrays");
+
+    if (!ctx->clear || !ctx->clear_color || !ctx->viewport || !ctx->create_shader
+        || !ctx->shader_source || !ctx->compile_shader || !ctx->get_shaderiv
+        || !ctx->create_program || !ctx->attach_shader || !ctx->link_program
+        || !ctx->get_programiv || !ctx->use_program || !ctx->gen_vertex_arrays
+        || !ctx->bind_vertex_array || !ctx->gen_buffers || !ctx->bind_buffer
+        || !ctx->buffer_data || !ctx->enable_vertex_attrib_array
+        || !ctx->vertex_attrib_pointer || !ctx->draw_arrays || !ctx->read_pixels
+        || !ctx->gl_finish) {
+        tern_panic("GLError", "OpenGL is not available on this system: the driver is missing what %s needs",
+                   operation);
+    }
+}
+
+static GlContext *gl_context_make(int width, int height, const char *operation) {
+    GlDriver *driver = gl_driver_get();
+    if (!driver) {
+        tern_panic("GLError", "OpenGL is not available on this system: libEGL could not be loaded");
+    }
+
+    void *display = NULL;
+    if (driver->get_platform_display) {
+        display = driver->get_platform_display(EGL_PLATFORM_SURFACELESS, NULL, NULL);
+    }
+    if (!display && driver->get_display) {
+        display = driver->get_display(NULL);
+    }
+    if (!display) {
+        tern_panic("GLError", "OpenGL is not available on this system: no EGL display");
+    }
+    if (driver->initialize(display, NULL, NULL) == 0) {
+        tern_panic("GLError", "OpenGL is not available on this system: eglInitialize failed");
+    }
+    if (driver->bind_api && driver->bind_api(EGL_OPENGL_API) == 0) {
+        tern_panic("GLError", "OpenGL is not available on this system: EGL has no OpenGL support");
+    }
+
+    const int config_attributes[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 24,
+        EGL_NONE,
+    };
+    void *config = NULL;
+    int count = 0;
+    if (driver->choose_config(display, config_attributes, &config, 1, &count) == 0 || count < 1) {
+        tern_panic("GLError", "OpenGL is not available on this system: no matching EGL config");
+    }
+
+    const int context_attributes[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_NONE,
+    };
+    void *context = driver->create_context(display, config, NULL, context_attributes);
+    if (!context) {
+        tern_panic("GLError", "OpenGL is not available on this system: cannot create an OpenGL 3.3 context");
+    }
+
+    const int surface_attributes[] = { EGL_WIDTH, width, EGL_HEIGHT, height, EGL_NONE };
+    void *surface = driver->create_pbuffer_surface(display, config, surface_attributes);
+    if (!surface) {
+        tern_panic("GLError", "OpenGL is not available on this system: cannot create a %dx%d surface", width, height);
+    }
+    if (driver->make_current(display, surface, surface, context) == 0) {
+        tern_panic("GLError", "OpenGL is not available on this system: cannot make the context current");
+    }
+
+    GlContext *made = (GlContext *)calloc(1, sizeof(GlContext));
+    if (!made) {
+        tern_panic("GLError", "OpenGL is not available on this system: out of memory");
+    }
+    made->display = display;
+    made->surface = surface;
+    made->context = context;
+    made->width = width;
+    made->height = height;
+
+    gl_load_entry_points(made, operation);
+    made->viewport(0, 0, width, height);
+    made->gen_vertex_arrays(1, &made->array);
+    made->bind_vertex_array(made->array);
+    made->gen_buffers(1, &made->buffer);
+    made->bind_buffer(GL_ARRAY_BUFFER, made->buffer);
+    if (made->array == 0 || made->buffer == 0) {
+        tern_panic("GLError", "OpenGL is not available on this system: cannot prepare %s", operation);
+    }
+    return made;
+}
+
+static void gl_context_free(GlContext *ctx) {
+    if (!ctx) {
+        return;
+    }
+    for (int i = 0; i < ctx->program_count; i++) {
+        if (ctx->delete_program) ctx->delete_program(ctx->programs[i]);
+    }
+    if (ctx->buffer && ctx->delete_buffers) ctx->delete_buffers(1, &ctx->buffer);
+    if (ctx->array && ctx->delete_vertex_arrays) ctx->delete_vertex_arrays(1, &ctx->array);
+    if (gl_driver.make_current) gl_driver.make_current(ctx->display, NULL, NULL, NULL);
+    if (ctx->surface && gl_driver.destroy_surface) gl_driver.destroy_surface(ctx->display, ctx->surface);
+    if (ctx->context && gl_driver.destroy_context) gl_driver.destroy_context(ctx->display, ctx->context);
+    free(ctx);
+}
+
+static int gl_slot_arg(Value v) {
+    if (v.tag != T_INT) {
+        tern_panic("TypeError", "expected a context handle, not %s", tern_type_name(v));
+    }
+    int handle = (int)v.as.i;
+    if (handle < 1 || handle > GL_MAX_CONTEXTS || !gl_contexts[handle - 1]) {
+        tern_panic("GLError", "no open context with handle %d", handle);
+    }
+    return handle - 1;
+}
+
+static unsigned gl_program_arg(GlContext *ctx, Value v) {
+    if (v.tag != T_INT) {
+        tern_panic("TypeError", "expected a program handle, not %s", tern_type_name(v));
+    }
+    int handle = (int)v.as.i;
+    if (handle < 1 || handle > ctx->program_count) {
+        tern_panic("GLError", "no shader program with handle %d", handle);
+    }
+    return ctx->programs[handle - 1];
+}
+
+static const char *gl_string(GlContext *ctx, unsigned name) {
+    if (!ctx->get_string) {
+        return "";
+    }
+    const unsigned char *text = ctx->get_string(name);
+    return text ? (const char *)text : "";
+}
+
+static Value n_gl_available(int argc, Value *argv) {
+    (void)argc;
+    (void)argv;
+    return v_bool(gl_driver_get() != NULL);
+}
+
+static Value n_gl_info(int argc, Value *argv) {
+    (void)argc;
+    (void)argv;
+    GlContext *ctx = gl_context_make(16, 16, "info");
+    Map *report = map_new();
+    map_set(report, str_from_cstr("vendor"), str_from_cstr(gl_string(ctx, GL_VENDOR)));
+    map_set(report, str_from_cstr("renderer"), str_from_cstr(gl_string(ctx, GL_RENDERER)));
+    map_set(report, str_from_cstr("version"), str_from_cstr(gl_string(ctx, GL_VERSION)));
+    map_set(report, str_from_cstr("glsl"), str_from_cstr(gl_string(ctx, GL_SHADING_LANGUAGE_VERSION)));
+    gl_context_free(ctx);
+    return v_obj((Obj *)report);
+}
+
+static Value n_gl_create(int argc, Value *argv) {
+    int width = gl_arg_dimension(argv[0], "width", 1);
+    int height = gl_arg_dimension(arg(argc, argv, 1), "height", 2);
+
+    int slot = -1;
+    for (int i = 0; i < GL_MAX_CONTEXTS; i++) {
+        if (!gl_contexts[i]) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        tern_panic("GLError", "too many OpenGL contexts (%d)", GL_MAX_CONTEXTS);
+    }
+
+    gl_contexts[slot] = gl_context_make(width, height, "create");
+    return v_int(slot + 1);
+}
+
+static Value n_gl_clear(int argc, Value *argv) {
+    GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
+    float r = (float)gl_arg_unit(arg(argc, argv, 1), "red");
+    float g = (float)gl_arg_unit(arg(argc, argv, 2), "green");
+    float b = (float)gl_arg_unit(arg(argc, argv, 3), "blue");
+    float a = (float)gl_arg_unit(arg(argc, argv, 4), "alpha");
+    ctx->clear_color(r, g, b, a);
+    ctx->clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    ctx->gl_finish();
+    return v_nil();
+}
+
+static unsigned gl_compile_shader(GlContext *ctx, unsigned kind, Str *source, const char *which) {
+    unsigned shader = ctx->create_shader(kind);
+    const char *text = source->chars;
+    int length = (int)source->len;
+    ctx->shader_source(shader, 1, &text, &length);
+    ctx->compile_shader(shader);
+
+    int compiled = 0;
+    ctx->get_shaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        char log[1024];
+        log[0] = '\0';
+        if (ctx->get_shader_info_log) {
+            int written = 0;
+            ctx->get_shader_info_log(shader, sizeof log, &written, log);
+            log[sizeof log - 1] = '\0';
+            for (char *p = log; *p; p++) {
+                if (*p == '\r' || *p == '\n') *p = ' ';
+            }
+            // Trim both ends the way the interpreter's InfoLog does.
+            char *start = log;
+            while (*start == ' ') start++;
+            size_t trimmed = strlen(start);
+            while (trimmed > 0 && start[trimmed - 1] == ' ') start[--trimmed] = '\0';
+            memmove(log, start, trimmed + 1);
+        }
+        ctx->delete_shader(shader);
+        if (log[0]) {
+            tern_panic("GLError", "the %s shader did not compile: %s", which, log);
+        }
+        tern_panic("GLError", "the %s shader did not compile", which);
+    }
+    return shader;
+}
+
+static Value n_gl_program(int argc, Value *argv) {
+    (void)argc;
+    GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
+    net_arg_text(argv[1], "vertex shader");
+    net_arg_text(argv[2], "fragment shader");
+    Str *vertex = (Str *)argv[1].as.o;
+    Str *fragment = (Str *)argv[2].as.o;
+
+    unsigned vertex_id = gl_compile_shader(ctx, GL_VERTEX_SHADER, vertex, "vertex");
+    unsigned fragment_id = gl_compile_shader(ctx, GL_FRAGMENT_SHADER, fragment, "fragment");
+
+    unsigned program = ctx->create_program();
+    ctx->attach_shader(program, vertex_id);
+    ctx->attach_shader(program, fragment_id);
+    ctx->link_program(program);
+
+    int linked = 0;
+    ctx->get_programiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024];
+        log[0] = '\0';
+        if (ctx->get_program_info_log) {
+            int written = 0;
+            ctx->get_program_info_log(program, sizeof log, &written, log);
+            log[sizeof log - 1] = '\0';
+            for (char *p = log; *p; p++) {
+                if (*p == '\r' || *p == '\n') *p = ' ';
+            }
+            char *start = log;
+            while (*start == ' ') start++;
+            size_t trimmed = strlen(start);
+            while (trimmed > 0 && start[trimmed - 1] == ' ') start[--trimmed] = '\0';
+            memmove(log, start, trimmed + 1);
+        }
+        ctx->delete_shader(vertex_id);
+        ctx->delete_shader(fragment_id);
+        if (log[0]) {
+            tern_panic("GLError", "the shader program did not link: %s", log);
+        }
+        tern_panic("GLError", "the shader program did not link");
+    }
+
+    ctx->delete_shader(vertex_id);
+    ctx->delete_shader(fragment_id);
+
+    if (ctx->program_count >= GL_MAX_PROGRAMS) {
+        tern_panic("GLError", "too many shader programs (%d)", GL_MAX_PROGRAMS);
+    }
+    ctx->programs[ctx->program_count++] = program;
+    return v_int(ctx->program_count);
+}
+
+static Value n_gl_draw(int argc, Value *argv) {
+    (void)argc;
+    GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
+    unsigned program = gl_program_arg(ctx, argv[1]);
+    Value value = argv[2];
+
+    if (!v_is_list(value)) {
+        tern_panic("TypeError", "expected a list of vertices, not %s", tern_type_name(value));
+    }
+    List *list = (List *)value.as.o;
+    if (list->count % GL_VERTEX_FLOATS != 0) {
+        tern_panic("ArgumentError",
+                   "vertices must be groups of %d numbers (x, y, r, g, b, a), not %d",
+                   GL_VERTEX_FLOATS, list->count);
+    }
+
+    float *vertices = (float *)malloc((size_t)list->count * sizeof(float) + 4);
+    if (!vertices) {
+        tern_panic("GLError", "cannot draw %d vertices: out of memory", list->count);
+    }
+    for (int32_t i = 0; i < list->count; i++) {
+        if (!v_is_num(list->items[i])) {
+            free(vertices);
+            tern_panic("TypeError", "vertex %d must be a number, not %s", i, tern_type_name(list->items[i]));
+        }
+        vertices[i] = (float)v_as_double(list->items[i]);
+    }
+
+    ctx->use_program(program);
+    ctx->bind_vertex_array(ctx->array);
+    ctx->bind_buffer(GL_ARRAY_BUFFER, ctx->buffer);
+    ctx->buffer_data(GL_ARRAY_BUFFER, (ptrdiff_t)list->count * (ptrdiff_t)sizeof(float),
+                     vertices, GL_STATIC_DRAW);
+    free(vertices);
+
+    int stride = GL_VERTEX_FLOATS * (int)sizeof(float);
+    ctx->enable_vertex_attrib_array(0);
+    ctx->vertex_attrib_pointer(0, 2, GL_FLOAT, 0, stride, (const void *)0);
+    ctx->enable_vertex_attrib_array(1);
+    ctx->vertex_attrib_pointer(1, 4, GL_FLOAT, 0, stride, (const void *)(2 * sizeof(float)));
+    ctx->draw_arrays(GL_TRIANGLES, 0, list->count / GL_VERTEX_FLOATS);
+    ctx->gl_finish();
+    return v_nil();
+}
+
+static unsigned char *gl_read_pixels(GlContext *ctx) {
+    size_t bytes = (size_t)ctx->width * (size_t)ctx->height * 4;
+    unsigned char *pixels = (unsigned char *)malloc(bytes ? bytes : 1);
+    if (!pixels) {
+        tern_panic("GLError", "cannot read %zu bytes: out of memory", bytes);
+    }
+    ctx->read_pixels(0, 0, ctx->width, ctx->height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    return pixels;
+}
+
+static Value n_gl_pixels(int argc, Value *argv) {
+    (void)argc;
+    GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
+    unsigned char *pixels = gl_read_pixels(ctx);
+    size_t bytes = (size_t)ctx->width * (size_t)ctx->height * 4;
+    List *list = list_new((int)bytes);
+    for (size_t i = 0; i < bytes; i++) {
+        list_push(list, v_int(pixels[i]));
+    }
+    free(pixels);
+    return v_obj((Obj *)list);
+}
+
+static uint32_t gl_crc_table[256];
+static int gl_crc_ready;
+
+static void gl_crc_init(void) {
+    if (gl_crc_ready) return;
+    for (uint32_t n = 0; n < 256; n++) {
+        uint32_t c = n;
+        for (int k = 0; k < 8; k++) {
+            c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+        }
+        gl_crc_table[n] = c;
+    }
+    gl_crc_ready = 1;
+}
+
+static void gl_write_u32(ByteBuf *buf, uint32_t value) {
+    unsigned char bytes[4] = {
+        (unsigned char)(value >> 24), (unsigned char)(value >> 16),
+        (unsigned char)(value >> 8), (unsigned char)value,
+    };
+    bb_add(buf, bytes, 4);
+}
+
+static void gl_png_chunk(ByteBuf *out, const char *type, const unsigned char *data, size_t length) {
+    gl_write_u32(out, (uint32_t)length);
+    uint32_t crc = 0xFFFFFFFFu;
+    for (int i = 0; i < 4; i++) {
+        unsigned char byte = (unsigned char)type[i];
+        bb_add(out, &byte, 1);
+        crc = gl_crc_table[(crc ^ byte) & 0xFF] ^ (crc >> 8);
+    }
+    if (length) {
+        bb_add(out, data, length);
+        for (size_t i = 0; i < length; i++) {
+            crc = gl_crc_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+        }
+    }
+    gl_write_u32(out, crc ^ 0xFFFFFFFFu);
+}
+
+static void gl_png_write(const char *path, int width, int height,
+                         const unsigned char *rgba, int flip) {
+    gl_crc_init();
+
+    size_t row = (size_t)width * 4;
+    unsigned char *raw = (unsigned char *)malloc((row + 1) * (size_t)height);
+    if (!raw) {
+        tern_panic("IOError", "cannot write '%s': out of memory", path);
+    }
+    for (int y = 0; y < height; y++) {
+        int source = flip ? height - 1 - y : y;
+        raw[y * (row + 1)] = 0;
+        memcpy(raw + y * (row + 1) + 1, rgba + (size_t)source * row, row);
+    }
+
+    ByteBuf idat = { 0 };
+    bb_add_text(&idat, "");
+    // zlib header, then stored deflate blocks (no compression, valid PNG).
+    unsigned char header[2] = { 0x78, 0x01 };
+    bb_add(&idat, header, 2);
+    size_t total = (row + 1) * (size_t)height;
+    size_t offset = 0;
+    do {
+        size_t length = total - offset;
+        if (length > 65535) length = 65535;
+        unsigned char block[5];
+        block[0] = (offset + length >= total) ? 1 : 0;
+        block[1] = (unsigned char)(length & 0xFF);
+        block[2] = (unsigned char)(length >> 8);
+        block[3] = (unsigned char)(~length & 0xFF);
+        block[4] = (unsigned char)((~length >> 8) & 0xFF);
+        bb_add(&idat, block, 5);
+        bb_add(&idat, raw + offset, length);
+        offset += length;
+    } while (offset < total);
+
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < total; i++) {
+        a = (a + raw[i]) % 65521;
+        b = (b + a) % 65521;
+    }
+    gl_write_u32(&idat, (b << 16) | a);
+    free(raw);
+
+    ByteBuf out = { 0 };
+    static const unsigned char signature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    bb_add(&out, signature, 8);
+
+    unsigned char ihdr[13];
+    ihdr[0] = (unsigned char)(width >> 24); ihdr[1] = (unsigned char)(width >> 16);
+    ihdr[2] = (unsigned char)(width >> 8);  ihdr[3] = (unsigned char)width;
+    ihdr[4] = (unsigned char)(height >> 24); ihdr[5] = (unsigned char)(height >> 16);
+    ihdr[6] = (unsigned char)(height >> 8);  ihdr[7] = (unsigned char)height;
+    ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    gl_png_chunk(&out, "IHDR", ihdr, sizeof ihdr);
+    gl_png_chunk(&out, "IDAT", idat.data, idat.len);
+    gl_png_chunk(&out, "IEND", NULL, 0);
+    bb_free(&idat);
+
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        bb_free(&out);
+        tern_panic("IOError", "cannot write '%s': %s", path, strerror(errno));
+    }
+    fwrite(out.data, 1, out.len, file);
+    fclose(file);
+    bb_free(&out);
+}
+
+static Value n_gl_save(int argc, Value *argv) {
+    (void)argc;
+    GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
+    const char *path = path_arg(argc, argv, 1);
+    unsigned char *pixels = gl_read_pixels(ctx);
+    gl_png_write(path, ctx->width, ctx->height, pixels, 1);
+    free(pixels);
+    return v_nil();
+}
+
+static Value n_gl_size(int argc, Value *argv) {
+    (void)argc;
+    GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
+    List *list = list_new(2);
+    list_push(list, v_int(ctx->width));
+    list_push(list, v_int(ctx->height));
+    return v_obj((Obj *)list);
+}
+
+static Value n_gl_close(int argc, Value *argv) {
+    (void)argc;
+    int slot = gl_slot_arg(argv[0]);
+    gl_context_free(gl_contexts[slot]);
+    gl_contexts[slot] = NULL;
+    return v_nil();
+}
+
 static Value namespace_map(const char *ns) {
     Map *map = map_new();
 
@@ -8420,6 +9132,31 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+    if (strcmp(ns, "gl") == 0) {
+        // The argument counts mirror TERN/Builtins/Gl.cs.
+        map_set(map, str_from_cstr("available"),
+                make_native_arity("available", n_gl_available, 0, 0));
+        map_set(map, str_from_cstr("info"),
+                make_native_arity("info", n_gl_info, 0, 0));
+        map_set(map, str_from_cstr("create"),
+                make_native_arity("create", n_gl_create, 2, 2));
+        map_set(map, str_from_cstr("clear"),
+                make_native_arity("clear", n_gl_clear, 5, 5));
+        map_set(map, str_from_cstr("program"),
+                make_native_arity("program", n_gl_program, 3, 3));
+        map_set(map, str_from_cstr("draw"),
+                make_native_arity("draw", n_gl_draw, 3, 3));
+        map_set(map, str_from_cstr("pixels"),
+                make_native_arity("pixels", n_gl_pixels, 1, 1));
+        map_set(map, str_from_cstr("save"),
+                make_native_arity("save", n_gl_save, 2, 2));
+        map_set(map, str_from_cstr("size"),
+                make_native_arity("size", n_gl_size, 1, 1));
+        map_set(map, str_from_cstr("close"),
+                make_native_arity("close", n_gl_close, 1, 1));
+        return v_obj((Obj *)map);
+    }
+
     if (strcmp(ns, "sftp") == 0) {
         // The argument counts mirror TERN/Builtins/Sftp.cs.
         map_set(map, str_from_cstr("upload"),
@@ -8462,7 +9199,7 @@ static Value namespace_map(const char *ns) {
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
     static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists",
-                                  "fs", "net", "http", "rcon", "sftp", NULL};
+                                  "fs", "net", "http", "rcon", "sftp", "gl", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -8486,7 +9223,7 @@ Value tern_lookup_global(const char *name) {
         strcmp(name, "random") == 0 || strcmp(name, "text") == 0 ||
         strcmp(name, "lists") == 0 || strcmp(name, "net") == 0 ||
         strcmp(name, "http") == 0 || strcmp(name, "rcon") == 0 ||
-        strcmp(name, "sftp") == 0) {
+        strcmp(name, "sftp") == 0 || strcmp(name, "gl") == 0) {
         return namespace_map(name);
     }
 

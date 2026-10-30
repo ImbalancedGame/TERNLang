@@ -571,6 +571,7 @@ abs min max copy sleep
 | `http` | `request get post encodeRequest decodeResponse exchange` |
 | `rcon` | `connect attach execute close` |
 | `sftp` | `upload download list run batch command` |
+| `gl` | `available info create clear program draw pixels save size close` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
 
@@ -712,6 +713,48 @@ end to end, so the alternatives were linking an SSH library — which would stop
 compiled programs from being self-contained — or writing the transport by hand,
 which this project does not do. Everything else in the networking stack,
 including TLS, is implemented in the two back ends themselves.
+
+### Graphics (OpenGL)
+
+`std:gl` renders with real OpenGL, but nothing is linked into the binary: libEGL
+is opened at run time with `dlopen`, a surfaceless pbuffer supplies a context
+with no window and no X server, and the GL entry points come from
+`eglGetProcAddress`. A script that never renders does not need a driver, and one
+that does gets `GLError` — not a crash — when there is none.
+
+```tern
+import "std:gl";
+
+let surface = gl.create(640, 480);
+gl.clear(surface, 0.1, 0.1, 0.15, 1);
+let program = gl.program(surface, vertexSource, fragmentSource);
+gl.draw(surface, program, [
+    -0.5, -0.5, 1, 0, 0, 1,     // x, y, r, g, b, a
+     0.5, -0.5, 0, 1, 0, 1,
+     0.0,  0.5, 0, 0, 1, 1,
+]);
+gl.save(surface, "triangle.png");
+gl.close(surface);
+```
+
+Vertices are six floats each and three make a triangle; attribute 0 receives the
+`vec2` position and attribute 1 the `vec4` colour, so a program is written the
+usual way (`layout(location = 0) in vec2 position;`). The context is OpenGL 3.3
+core, which is what the shaders are compiled against. `gl.pixels(handle)` reads
+the surface back as RGBA bytes with the bottom row first, like `glReadPixels`;
+`gl.save` writes the same pixels as a PNG (top row first, so the image is the
+right way up) with stored deflate blocks — no zlib, no image library.
+
+Two APIs are deliberately missing. DirectX is Windows-only and the compiled
+backend emits POSIX C, so it would need a Windows port first. DLSS is NVIDIA's
+proprietary NGX SDK: it needs a signed agreement, an RTX card and integration
+into a Direct3D or Vulkan renderer, so it cannot live in a dependency-free
+scripting language.
+
+`tools/test-gl.sh` builds `tools/gl/mock_driver.c` — a fake libEGL that answers
+the same calls — points `TERN_GL_LIBRARY` at it, runs the same program in both
+back ends, and decodes the PNG that comes out. That is how the binding is tested
+without a GPU; with a real driver the same script exercises the actual hardware.
 
 ---
 

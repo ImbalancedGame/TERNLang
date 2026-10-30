@@ -1,0 +1,11 @@
+!width must be between 1 and 8192
+!height must be between 1 and 8192
+!create() argument 2 must be an integer, got "tall"
+!create() argument 1 must be an integer, got "wide"
+!expected a context handle, not string
+!no open context with handle 9
+!no open context with handle 1
+!no open context with handle 1
+!no open context with handle 1
+!no open context with handle 3
+!no open context with handle 2

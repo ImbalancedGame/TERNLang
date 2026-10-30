@@ -59,6 +59,21 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `size` | `size(arg)` | Size of a file in bytes. |
 | `write` | `write(arg, arg)` | Writes text, replacing the file. |
 
+## `gl`
+
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `available` | `available()` | True when libEGL could be loaded, so a context can be asked for. |
+| `clear` | `clear(arg, arg, arg, arg, arg)` | Fills the whole surface: gl.clear(handle, r, g, b, a), each 0..1. |
+| `close` | `close(arg)` | Destroys a context and its programs. |
+| `create` | `create(arg, arg)` | Creates an offscreen context of the given size and returns a handle. |
+| `draw` | `draw(arg, arg, arg)` | Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. |
+| `info` | `info()` | Describes the driver: {vendor, renderer, version, glsl}. |
+| `pixels` | `pixels(arg)` | Reads the surface back as RGBA bytes, bottom row first, like glReadPixels. |
+| `program` | `program(arg, arg, arg)` | Compiles and links a shader program, returning a program handle. |
+| `save` | `save(arg, arg)` | Saves the surface as a PNG: gl.save(handle, path). |
+| `size` | `size(arg)` | The [width, height] of a context. |
+
 ## `http`
 
 | Name | Signature | Notes |
@@ -218,6 +233,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 ## `std:` modules
 
 * `std:fs`
+* `std:gl`
 * `std:http`
 * `std:json`
 * `std:lists`
