@@ -178,6 +178,16 @@ Struct values carry their type name and field names; the receiver looks the type
 up among its own globals and falls back to a plain map when it has not declared
 it.
 
+The rest of the networking stack is mirrored too: `net` handles frame limits,
+connect timeouts, a token handshake, raw byte I/O and UDP datagrams; `std:http`,
+`std:rcon` and `std:sftp` are byte-for-byte the same API. TLS is the one place
+where the two back ends use different libraries — `SslStream` in the interpreter
+and the system OpenSSL here — so `libssl` is loaded with `dlopen` at the first
+TLS connection instead of being linked. A machine without it still builds and
+runs scripts; only `{"tls": true}` fails, with `TLS support is not available on
+this system`. SFTP runs the OpenSSH `sftp` client in batch mode from a
+`fork`/`exec` pair, so it needs `sftp` on the PATH and key-based authentication.
+
 ## Limitations
 
 * The collector is conservative: an integer that happens to look like an object

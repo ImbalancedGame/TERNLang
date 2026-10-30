@@ -46,11 +46,16 @@ match tickets.length {
   catchable runtime errors and stack traces with exact line numbers, on both
   the interpreter and the compiled backend.
 * **Batteries included** — `math`, `json`, `fs`, `os`, `time`, `random`,
-  `text`, `lists` and `net` namespaces and rich methods on every built-in type.
+  `text`, `lists`, `net`, `http`, `rcon` and `sftp` namespaces and rich methods
+  on every built-in type.
 * **Networking** — `std:net` sends values, not bytes: `net.send` encodes and
   frames any value (structs included) and `net.receive` decodes it back. The
   wire format is shared with the compiled backend, so a native client can talk
-  to an interpreted server.
+  to an interpreted server. Connections can carry a token, cap the frame size,
+  time out and run over TLS; `std:http` is a client for `http://` and
+  `https://`, `std:rcon` speaks the Source RCON protocol, `std:sftp` moves files
+  over SSH by driving the OpenSSH client, and `net.udpListen`/`udpSend`/
+  `udpReceive` cover datagrams.
 * **Modules** — `import "lib/util.tern"` for files, `import "std:json"` for
   standard modules, with per-engine caching.
 * **A single dependency-free binary** — a bytecode VM with no runtime
