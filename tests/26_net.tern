@@ -217,3 +217,20 @@ net.close(stream);
 net.close(ping);
 net.close(pong);
 println(kind(fn() { net.udpReceive(ping); }));
+
+// ------------------------------------------------------------------- TLS
+// TLS is a transport for a connection, so every net call keeps working; the
+// options are checked here, and tools/test-tls.sh covers the handshake itself
+// against a real certificate.
+
+let plain = net.listen(0);
+println("listen tls:", kind(fn() { net.listen(0, {"tls": true}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"tls": "yes"}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"sni": 5}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"verify": 5}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"ca": 5}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"tls": true, "ca": "/nope/none.pem"}); }));
+println("handshake:", kind(fn() {
+    net.connect("127.0.0.1", net.port(plain), {"tls": true, "timeout": 1000});
+}));
+net.close(plain);

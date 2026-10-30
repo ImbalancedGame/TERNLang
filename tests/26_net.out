@@ -72,3 +72,10 @@ send() needs a connection handle, not a datagram socket
 udpSend() needs a datagram handle from udpListen()
 udpReceive() needs a datagram handle from udpListen()
 no open socket with handle 1
+listen tls: listen() cannot accept tls: server TLS is not supported
+option 'tls' must be a boolean, not string
+option 'sni' must be a string, not int
+option 'verify' must be a boolean, not int
+option 'ca' must be a string, not int
+cannot read the CA file '/nope/none.pem'
+handshake: TLS handshake failed

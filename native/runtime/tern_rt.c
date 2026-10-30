@@ -2,6 +2,7 @@
 #include "tern_rt.h"
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -5266,6 +5267,8 @@ static int net_kinds[NET_MAX_HANDLES];
 static int net_max_frames[NET_MAX_HANDLES];
 static int net_timeouts[NET_MAX_HANDLES];
 static char *net_tokens[NET_MAX_HANDLES];
+static void *net_ssl[NET_MAX_HANDLES];      // SSL* once a connection is encrypted
+static void *net_ssl_ctx[NET_MAX_HANDLES];  // the SSL_CTX* that SSL* belongs to
 
 static int net_slot(int handle) {
     if (handle < 1 || handle > NET_MAX_HANDLES || net_fds[handle - 1] < 0) {
@@ -5369,6 +5372,249 @@ static ssize_t net_read_raw(int fd, unsigned char *buffer, size_t length) {
     return (ssize_t)got;
 }
 
+// --- TLS ------------------------------------------------------------------
+//
+// OpenSSL is loaded at run time rather than linked: the headers are not needed
+// for these calls (every one takes opaque pointers and ints), and a build
+// machine without libssl can still produce a binary that runs everywhere else.
+// The signatures are the stable public ones of OpenSSL 1.1 and 3.x.
+
+typedef struct ssl_ctx_st SSL_CTX;
+typedef struct ssl_st SSL;
+typedef struct ssl_method_st SSL_METHOD;
+
+#define SSL_VERIFY_PEER 1
+#define SSL_CTRL_SET_TLSEXT_HOSTNAME 55
+#define TLSEXT_NAMETYPE_host_name 0
+#define SSL_ERROR_ZERO_RETURN 6
+#define SSL_ERROR_WANT_READ 2
+#define SSL_ERROR_WANT_WRITE 3
+#define SSL_ERROR_SYSCALL 5
+
+static void *tls_library = NULL;
+static int tls_state = 0;   // 0 = not tried, 1 = usable, -1 = unavailable
+
+static SSL_METHOD *(*tls_TLS_client_method)(void);
+static SSL_CTX *(*tls_SSL_CTX_new)(const SSL_METHOD *);
+static void (*tls_SSL_CTX_free)(SSL_CTX *);
+static int (*tls_SSL_CTX_set_default_verify_paths)(SSL_CTX *);
+static int (*tls_SSL_CTX_load_verify_locations)(SSL_CTX *, const char *, const char *);
+static SSL *(*tls_SSL_new)(SSL_CTX *);
+static void (*tls_SSL_free)(SSL *);
+static int (*tls_SSL_set_fd)(SSL *, int);
+static void (*tls_SSL_set_verify)(SSL *, int, void *);
+static long (*tls_SSL_ctrl)(SSL *, int, long, void *);
+static int (*tls_SSL_set1_host)(SSL *, const char *);
+static int (*tls_SSL_connect)(SSL *);
+static int (*tls_SSL_read)(SSL *, void *, int);
+static int (*tls_SSL_write)(SSL *, const void *, int);
+static int (*tls_SSL_get_error)(const SSL *, int);
+static int (*tls_SSL_shutdown)(SSL *);
+static long (*tls_SSL_get_verify_result)(const SSL *);
+
+static bool tls_load(void) {
+    if (tls_state != 0) {
+        return tls_state > 0;
+    }
+
+    static const char *names[] = { "libssl.so.3", "libssl.so.1.1", "libssl.so", NULL };
+    for (int i = 0; names[i] && !tls_library; i++) {
+        tls_library = dlopen(names[i], RTLD_NOW);
+    }
+
+    if (!tls_library) {
+        tls_state = -1;
+        return false;
+    }
+
+    *(void **)(&tls_TLS_client_method) = dlsym(tls_library, "TLS_client_method");
+    *(void **)(&tls_SSL_CTX_new) = dlsym(tls_library, "SSL_CTX_new");
+    *(void **)(&tls_SSL_CTX_free) = dlsym(tls_library, "SSL_CTX_free");
+    *(void **)(&tls_SSL_CTX_set_default_verify_paths) = dlsym(tls_library, "SSL_CTX_set_default_verify_paths");
+    *(void **)(&tls_SSL_CTX_load_verify_locations) = dlsym(tls_library, "SSL_CTX_load_verify_locations");
+    *(void **)(&tls_SSL_new) = dlsym(tls_library, "SSL_new");
+    *(void **)(&tls_SSL_free) = dlsym(tls_library, "SSL_free");
+    *(void **)(&tls_SSL_set_fd) = dlsym(tls_library, "SSL_set_fd");
+    *(void **)(&tls_SSL_set_verify) = dlsym(tls_library, "SSL_set_verify");
+    *(void **)(&tls_SSL_ctrl) = dlsym(tls_library, "SSL_ctrl");
+    *(void **)(&tls_SSL_set1_host) = dlsym(tls_library, "SSL_set1_host");
+    *(void **)(&tls_SSL_connect) = dlsym(tls_library, "SSL_connect");
+    *(void **)(&tls_SSL_read) = dlsym(tls_library, "SSL_read");
+    *(void **)(&tls_SSL_write) = dlsym(tls_library, "SSL_write");
+    *(void **)(&tls_SSL_get_error) = dlsym(tls_library, "SSL_get_error");
+    *(void **)(&tls_SSL_shutdown) = dlsym(tls_library, "SSL_shutdown");
+    *(void **)(&tls_SSL_get_verify_result) = dlsym(tls_library, "SSL_get_verify_result");
+
+    if (!tls_TLS_client_method || !tls_SSL_CTX_new || !tls_SSL_new || !tls_SSL_connect ||
+        !tls_SSL_read || !tls_SSL_write || !tls_SSL_get_error) {
+        tls_state = -1;
+        return false;
+    }
+
+    tls_state = 1;
+    return true;
+}
+
+/// Wraps `fd` in TLS. On success the pair is handed back and the caller keeps
+/// both alive until the socket closes.
+static bool tls_handshake(int fd, const char *host, bool verify, const char *ca,
+                          SSL **out_ssl, SSL_CTX **out_ctx) {
+    if (!tls_load()) {
+        tern_panic("TlsError", "TLS support is not available on this system");
+    }
+
+    SSL_CTX *ctx = tls_SSL_CTX_new(tls_TLS_client_method());
+    if (!ctx) {
+        tern_panic("TlsError", "TLS handshake failed");
+    }
+
+    if (ca) {
+        if (tls_SSL_CTX_load_verify_locations(ctx, ca, NULL) != 1) {
+            tls_SSL_CTX_free(ctx);
+            tern_panic("TlsError", "cannot read the CA file '%s'", ca);
+        }
+    } else if (tls_SSL_CTX_set_default_verify_paths) {
+        tls_SSL_CTX_set_default_verify_paths(ctx);
+    }
+
+    SSL *ssl = tls_SSL_new(ctx);
+    if (!ssl) {
+        tls_SSL_CTX_free(ctx);
+        tern_panic("TlsError", "TLS handshake failed");
+    }
+
+    tls_SSL_set_fd(ssl, fd);
+    tls_SSL_set_verify(ssl, verify ? SSL_VERIFY_PEER : 0, NULL);
+    // SNI: SSL_set_tlsext_host_name is a macro over SSL_ctrl.
+    tls_SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, (void *)host);
+    if (verify && tls_SSL_set1_host) {
+        tls_SSL_set1_host(ssl, host);
+    }
+
+    if (tls_SSL_connect(ssl) != 1) {
+        tls_SSL_free(ssl);
+        tls_SSL_CTX_free(ctx);
+        tern_panic("TlsError", "TLS handshake failed");
+    }
+
+    if (verify && tls_SSL_get_verify_result && tls_SSL_get_verify_result(ssl) != 0) {
+        tls_SSL_free(ssl);
+        tls_SSL_CTX_free(ctx);
+        tern_panic("TlsError", "TLS handshake failed");
+    }
+
+    *out_ssl = ssl;
+    *out_ctx = ctx;
+    return true;
+}
+
+/// Reads from an encrypted socket with the same contract as net_read_raw: the
+/// number of bytes, short at end of stream, or -1 with errno set (EAGAIN for a
+/// timeout).
+static ssize_t tls_read_some(void *handle, unsigned char *buffer, size_t length) {
+    SSL *ssl = (SSL *)handle;
+    size_t got = 0;
+    while (got < length) {
+        int n = tls_SSL_read(ssl, buffer + got, (int)(length - got));
+        if (n > 0) {
+            got += (size_t)n;
+            continue;
+        }
+
+        int error = tls_SSL_get_error(ssl, n);
+        if (error == SSL_ERROR_ZERO_RETURN) {
+            return (ssize_t)got;
+        }
+        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+            continue;
+        }
+        if (error == SSL_ERROR_SYSCALL) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (got > 0) return (ssize_t)got;
+                errno = EAGAIN;
+                return -1;
+            }
+            if (n == 0) {
+                return (ssize_t)got;
+            }
+            return -1;
+        }
+
+        errno = ECONNRESET;
+        return -1;
+    }
+    return (ssize_t)got;
+}
+
+/// Reads whatever is available, at most `length` bytes: the contract a protocol
+/// parser wants, where a short read is normal and only 0 means end of stream.
+static ssize_t tls_read_once(void *handle, unsigned char *buffer, size_t length) {
+    SSL *ssl = (SSL *)handle;
+    for (;;) {
+        int n = tls_SSL_read(ssl, buffer, (int)length);
+        if (n > 0) {
+            return (ssize_t)n;
+        }
+
+        int error = tls_SSL_get_error(ssl, n);
+        if (error == SSL_ERROR_ZERO_RETURN) {
+            return 0;
+        }
+        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+            continue;
+        }
+        if (error == SSL_ERROR_SYSCALL && n == 0) {
+            return 0;
+        }
+        return -1;
+    }
+}
+
+/// Writes every byte through `ssl`, raising like net_write_all does.
+static void tls_write_all(void *handle, const void *data, size_t length, const char *what) {
+    SSL *ssl = (SSL *)handle;
+    const unsigned char *bytes = (const unsigned char *)data;
+    size_t sent = 0;
+    while (sent < length) {
+        int n = tls_SSL_write(ssl, bytes + sent, (int)(length - sent));
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+
+        int error = tls_SSL_get_error(ssl, n);
+        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+            continue;
+        }
+        if (error == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            tern_panic("NetError", "%s() timed out", what);
+        }
+        tern_panic("NetError", "%s() failed: %s", what,
+                   strerror(errno ? errno : ECONNRESET));
+    }
+}
+
+
+// --- the socket I/O the net API actually uses ------------------------------
+//
+// Everything below reads and writes through a slot so a connection can be plain
+// or encrypted without the frame code knowing which.
+
+static void net_slot_write(int slot, const void *data, size_t length, const char *what) {
+    if (net_ssl[slot]) {
+        tls_write_all(net_ssl[slot], data, length, what);
+        return;
+    }
+    net_write_all(net_fds[slot], data, length, what);
+}
+
+static ssize_t net_slot_read(int slot, unsigned char *buffer, size_t length) {
+    if (net_ssl[slot]) {
+        return tls_read_some(net_ssl[slot], buffer, length);
+    }
+    return net_read_raw(net_fds[slot], buffer, length);
+}
+
 static int net_bound_port(int fd) {
     struct sockaddr_in address;
     socklen_t length = sizeof address;
@@ -5382,7 +5628,7 @@ static int net_bound_port(int fd) {
 
 /// Version byte, then the token as a length-prefixed UTF-8 string (length 0 for
 /// "no token"). Trailing bytes are reserved for later versions to negotiate.
-static void net_send_hello(int fd, const char *token) {
+static void net_send_hello(int slot, const char *token) {
     size_t token_length = token ? strlen(token) : 0;
     unsigned char payload[16];
     size_t at = 0;
@@ -5402,10 +5648,10 @@ static void net_send_hello(int fd, const char *token) {
     header[2] = (unsigned char)(total >> 8);
     header[3] = (unsigned char)total;
 
-    net_write_all(fd, header, 4, "connect");
-    net_write_all(fd, payload, at, "connect");
+    net_slot_write(slot, header, 4, "connect");
+    net_slot_write(slot, payload, at, "connect");
     if (token_length) {
-        net_write_all(fd, token, token_length, "connect");
+        net_slot_write(slot, token, token_length, "connect");
     }
 }
 
@@ -5427,9 +5673,9 @@ typedef enum {
 
 /// Reads a peer's hello: a 4 byte big endian length, then a payload of one
 /// version byte, the token length as a varint and the token itself.
-static NetHelloResult net_check_hello(int fd, const char *expected, char *scratch, size_t scratch_size) {
+static NetHelloResult net_check_hello(int slot, const char *expected, char *scratch, size_t scratch_size) {
     unsigned char header[4];
-    if (net_read_raw(fd, header, 4) <= 0) {
+    if (net_slot_read(slot, header, 4) <= 0) {
         return NET_HELLO_CLOSED;
     }
 
@@ -5441,7 +5687,7 @@ static NetHelloResult net_check_hello(int fd, const char *expected, char *scratc
     }
 
     unsigned char *payload = (unsigned char *)malloc(length);
-    if (net_read_raw(fd, payload, length) <= 0) {
+    if (net_slot_read(slot, payload, length) <= 0) {
         free(payload);
         return NET_HELLO_CLOSED;
     }
@@ -5497,10 +5743,14 @@ typedef struct NetOptions {
     const char *token;
     int max_frame;
     int timeout;
+    bool tls;
+    const char *sni;
+    bool verify;
+    const char *ca;
 } NetOptions;
 
 static NetOptions net_options(Value v, const char *operation) {
-    NetOptions options = { NULL, NET_DEFAULT_MAX_FRAME, 0 };
+    NetOptions options = { NULL, NET_DEFAULT_MAX_FRAME, 0, false, NULL, true, NULL };
     if (v.tag == T_NIL || v.tag == T_MISSING) {
         return options;
     }
@@ -5535,6 +5785,28 @@ static NetOptions net_options(Value v, const char *operation) {
             tern_panic("ArgumentError", "option 'timeout' must not be negative");
         }
         options.timeout = (int)milliseconds;
+    }
+
+    if (map_get(map, str_from_cstr("tls"), &found)) {
+        if (found.tag != T_BOOL) {
+            tern_panic("TypeError", "option 'tls' must be a boolean, not %s", tern_type_name(found));
+        }
+        options.tls = found.as.i != 0;
+    }
+
+    if (map_get(map, str_from_cstr("sni"), &found)) {
+        options.sni = net_arg_text(found, "option 'sni'");
+    }
+
+    if (map_get(map, str_from_cstr("verify"), &found)) {
+        if (found.tag != T_BOOL) {
+            tern_panic("TypeError", "option 'verify' must be a boolean, not %s", tern_type_name(found));
+        }
+        options.verify = found.as.i != 0;
+    }
+
+    if (map_get(map, str_from_cstr("ca"), &found)) {
+        options.ca = net_arg_text(found, "option 'ca'");
     }
 
     return options;
@@ -5579,6 +5851,10 @@ static Value n_net_listen(int argc, Value *argv) {
     }
 
     NetOptions options = net_options(options_value, "listen");
+    if (options.tls) {
+        tern_panic("TlsError", "listen() cannot accept tls: server TLS is not supported");
+    }
+
     int port = net_arg_int(port_value, "port");
 
     struct sockaddr_in address;
@@ -5652,8 +5928,10 @@ static Value n_net_accept(int argc, Value *argv) {
     handshake.tv_usec = (handshake_ms % 1000) * 1000;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &handshake, sizeof handshake);
 
+    int handle = net_store(fd, 0);
+
     char scratch[96];
-    NetHelloResult result = net_check_hello(fd, expected, scratch, sizeof scratch);
+    NetHelloResult result = net_check_hello(handle - 1, expected, scratch, sizeof scratch);
 
     // The handshake wait is not the script's timeout, so the connection starts
     // without one no matter what the listener used.
@@ -5662,6 +5940,8 @@ static Value n_net_accept(int argc, Value *argv) {
 
     if (result == NET_HELLO_CLOSED) {
         close(fd);
+        net_fds[handle - 1] = -1;
+        net_kinds[handle - 1] = 0;
         tern_panic("ConnectionError", "connection closed during the handshake");
     }
 
@@ -5669,10 +5949,11 @@ static Value n_net_accept(int argc, Value *argv) {
         // Say why, then close: a rejected peer gets no second chance.
         send(fd, scratch, strlen(scratch), MSG_NOSIGNAL);
         close(fd);
+        net_fds[handle - 1] = -1;
+        net_kinds[handle - 1] = 0;
         tern_panic("AuthenticationError", "%s", scratch);
     }
 
-    int handle = net_store(fd, 0);
     net_max_frames[handle - 1] = inherited_max;
     return v_int(handle);
 }
@@ -5744,11 +6025,24 @@ static Value n_net_connect(int argc, Value *argv) {
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     }
 
-    net_send_hello(fd, options.token);
-
     int handle = net_store(fd, 0);
     net_max_frames[handle - 1] = options.max_frame;
     net_timeouts[handle - 1] = options.timeout;
+
+    if (options.tls) {
+        SSL *ssl = NULL;
+        SSL_CTX *ctx = NULL;
+        if (!tls_handshake(fd, options.sni ? options.sni : host, options.verify, options.ca, &ssl, &ctx)) {
+            close(fd);
+            net_fds[handle - 1] = -1;
+            net_kinds[handle - 1] = 0;
+            tern_panic("TlsError", "TLS handshake failed");
+        }
+        net_ssl[handle - 1] = (void *)ssl;
+        net_ssl_ctx[handle - 1] = (void *)ctx;
+    }
+
+    net_send_hello(handle - 1, options.token);
     return v_int(handle);
 }
 
@@ -5765,10 +6059,10 @@ static void net_require_stream(int slot, const char *operation) {
     }
 }
 
-static int net_connection_arg(Value v, const char *operation) {
+static int net_connection_slot(Value v, const char *operation) {
     int slot = net_slot(net_handle_arg(v));
     net_require_stream(slot, operation);
-    return net_fds[slot];
+    return slot;
 }
 
 static int net_datagram_slot(Value v, const char *operation) {
@@ -5783,7 +6077,6 @@ static Value n_net_send(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
     net_require_stream(slot, "send");
-    int fd = net_fds[slot];
 
     Value encoded = wire_encode(argv[1]);
     List *payload = (List *)encoded.as.o;
@@ -5801,13 +6094,13 @@ static Value n_net_send(int argc, Value *argv) {
         frame[4 + i] = (unsigned char)payload->items[i].as.i;
     }
 
-    net_write_all(fd, frame, (size_t)length + 4, "send");
+    net_slot_write(slot, frame, (size_t)length + 4, "send");
     free(frame);
     return v_nil();
 }
 
-static void net_read_exactly(int fd, unsigned char *buffer, size_t length, bool first) {
-    ssize_t got = net_read_raw(fd, buffer, length);
+static void net_read_exactly(int slot, unsigned char *buffer, size_t length, bool first) {
+    ssize_t got = net_slot_read(slot, buffer, length);
     if (got < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             tern_panic("NetError", "frame timed out");
@@ -5825,11 +6118,10 @@ static Value n_net_receive(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
     net_require_stream(slot, "receive");
-    int fd = net_fds[slot];
     int limit = net_max_frames[slot];
 
     unsigned char header[4];
-    net_read_exactly(fd, header, 4, true);
+    net_read_exactly(slot, header, 4, true);
 
     uint32_t length = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16) |
                       ((uint32_t)header[2] << 8) | (uint32_t)header[3];
@@ -5840,7 +6132,7 @@ static Value n_net_receive(int argc, Value *argv) {
 
     unsigned char *payload = (unsigned char *)malloc(length > 0 ? length : 1);
     if (length > 0) {
-        net_read_exactly(fd, payload, length, false);
+        net_read_exactly(slot, payload, length, false);
     }
 
     List *bytes = list_new((int)length);
@@ -5861,7 +6153,7 @@ static List *net_bytes_arg(Value v) {
 
 static Value n_net_send_bytes(int argc, Value *argv) {
     (void)argc;
-    int fd = net_connection_arg(argv[0], "sendBytes");
+    int slot = net_connection_slot(argv[0], "sendBytes");
     List *bytes = net_bytes_arg(argv[1]);
 
     size_t length = (size_t)bytes->count;
@@ -5875,20 +6167,14 @@ static Value n_net_send_bytes(int argc, Value *argv) {
         buffer[i] = (unsigned char)byte.as.i;
     }
 
-    net_write_all(fd, buffer, length, "sendBytes");
+    net_slot_write(slot, buffer, length, "sendBytes");
     free(buffer);
     return v_nil();
 }
 
 static Value n_net_receive_bytes(int argc, Value *argv) {
     (void)argc;
-    int slot = net_slot(net_handle_arg(argv[0]));
-    if (net_kinds[slot] == 1) {
-        tern_panic("NetError", "receiveBytes() needs a connection handle, not a server");
-    }
-    if (net_kinds[slot] != 0) {
-        tern_panic("NetError", "receiveBytes() needs a connection handle, not a datagram socket");
-    }
+    int slot = net_connection_slot(argv[0], "receiveBytes");
     int count = net_arg_int(argv[1], "count");
     if (count < 0) {
         tern_panic("NetError", "receiveBytes() needs a count of 0 or more");
@@ -5896,7 +6182,7 @@ static Value n_net_receive_bytes(int argc, Value *argv) {
 
     unsigned char *buffer = (unsigned char *)malloc(count > 0 ? (size_t)count : 1);
     if (count > 0) {
-        net_read_exactly(net_fds[slot], buffer, (size_t)count, true);
+        net_read_exactly(slot, buffer, (size_t)count, true);
     }
 
     List *bytes = list_new(count);
@@ -6052,6 +6338,18 @@ static Value n_net_close(int argc, Value *argv) {
     if (handle < 1 || handle > NET_MAX_HANDLES || net_fds[slot] < 0) {
         return v_nil();
     }
+    if (net_ssl[slot]) {
+        if (tls_state > 0) {
+            tls_SSL_shutdown((SSL *)net_ssl[slot]);
+            tls_SSL_free((SSL *)net_ssl[slot]);
+            if (net_ssl_ctx[slot]) {
+                tls_SSL_CTX_free((SSL_CTX *)net_ssl_ctx[slot]);
+            }
+        }
+        net_ssl[slot] = NULL;
+        net_ssl_ctx[slot] = NULL;
+    }
+
     close(net_fds[slot]);
     net_fds[slot] = -1;
     net_kinds[slot] = 0;
@@ -6168,12 +6466,21 @@ static void bb_free(ByteBuf *buffer) {
 /// once. `fd` is -1 for the fixed-buffer form.
 typedef struct {
     int fd;
+    void *ssl;              // set when the connection is encrypted
     const unsigned char *fixed;
     size_t fixed_len;
     size_t pos;
     ByteBuf buffer;
     int max_bytes;
 } HttpSource;
+
+/// Reads from the source's transport: plain recv or the TLS layer.
+static ssize_t http_recv(HttpSource *source, unsigned char *buffer, size_t length) {
+    if (source->ssl) {
+        return tls_read_once(source->ssl, buffer, length);
+    }
+    return recv(source->fd, buffer, length, 0);
+}
 
 static int http_source_available(HttpSource *source) {
     if (source->fd < 0) {
@@ -6199,7 +6506,7 @@ static bool http_fill(HttpSource *source, int need) {
 
     unsigned char chunk[4096];
     while (http_source_available(source) < need) {
-        ssize_t read = recv(source->fd, chunk, sizeof chunk, 0);
+        ssize_t read = http_recv(source, chunk, sizeof chunk);
         if (read == 0) {
             tern_panic("ConnectionError", "connection closed while reading the response");
         }
@@ -6290,7 +6597,7 @@ static unsigned char *http_to_end(HttpSource *source, int max_bytes, size_t *out
 
     unsigned char chunk[4096];
     for (;;) {
-        ssize_t read = recv(source->fd, chunk, sizeof chunk, 0);
+        ssize_t read = http_recv(source, chunk, sizeof chunk);
         if (read == 0) {
             break;
         }
@@ -6809,6 +7116,16 @@ static int http_connect(const char *host, int port, int timeout) {
     return fd;
 }
 
+static void http_write_all(int fd, const unsigned char *data, size_t length);
+
+static void http_write_stream(void *ssl, int fd, const unsigned char *data, size_t length) {
+    if (ssl) {
+        tls_write_all(ssl, data, length, "send");
+        return;
+    }
+    http_write_all(fd, data, length);
+}
+
 static void http_write_all(int fd, const unsigned char *data, size_t length) {
     size_t sent = 0;
     while (sent < length) {
@@ -7017,12 +7334,13 @@ static Value n_http_exchange(int argc, Value *argv) {
 
     ByteBuf request = { 0 };
     http_encode_request(method, url, &options, &request);
-    http_write_all(net_fds[slot], request.data, request.len);
+    http_write_stream(net_ssl[slot], net_fds[slot], request.data, request.len);
     bb_free(&request);
 
     HttpSource source;
     memset(&source, 0, sizeof source);
     source.fd = net_fds[slot];
+    source.ssl = net_ssl[slot];
     source.max_bytes = options.max_bytes;
 
     Map *response = http_read(&source, options.max_bytes, NULL, NULL);
@@ -7516,6 +7834,8 @@ void tern_rt_init(void) {
         net_max_frames[i] = NET_DEFAULT_MAX_FRAME;
         net_timeouts[i] = 0;
         net_tokens[i] = NULL;
+        net_ssl[i] = NULL;
+        net_ssl_ctx[i] = NULL;
     }
 
     /* towupper/towlower need a UTF-8 locale to know about non-ASCII letters. */

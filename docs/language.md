@@ -698,6 +698,10 @@ Both `listen` and `connect` take an optional options map:
 | `token` | Shared secret the peer must present before the connection is handed to the script | no token |
 | `maxFrame` | Largest frame this socket will accept, in bytes (1 .. 64 MiB) | 1 MiB |
 | `timeout` | Connect, send and receive timeout in milliseconds; `0` waits forever | no timeout |
+| `tls` | Encrypt the connection (client side only) | `false` |
+| `sni` | Name used for SNI and for the certificate check | the host |
+| `verify` | Check the certificate chain and the name | `true` |
+| `ca` | PEM bundle to trust instead of the system store | system store |
 
 `maxFrame` is a memory guard, not a wire setting: the length in a frame header is
 compared with the limit before the payload is read, so four bytes from a peer
@@ -717,6 +721,26 @@ compared in constant time and gives up after five seconds (or the listener's own
 bytes with no frame header, for protocols layered on top of `net` (HTTP, RCON,
 anything with its own framing). Byte lists use integers in 0..255 and are
 rejected otherwise.
+
+A connection can be encrypted with `{"tls": true}`:
+
+```tern
+let secure = net.connect("example.com", 443, {"tls": true, "timeout": 5000});
+net.sendBytes(secure, http.encodeRequest("GET", "https://example.com/"));
+println(http.decodeResponse(net.receiveBytes(secure, 4096)));
+```
+
+The handshake happens before the hello, so everything after it — frames, raw
+bytes, `http.exchange` — is encrypted and the API does not change. The chain is
+checked against the system store, or against the PEM bundle named by `ca`, and
+the name in the certificate is checked against `sni` (the host when it is not
+given). `verify: false` trusts any certificate and skips the name check, which is
+what a self-signed server needs. TLS is a thin wrapper over a real library —
+`SslStream` in the interpreter and the system OpenSSL in a compiled binary,
+loaded at run time so a machine without it can still build scripts — and never
+hand-rolled crypto. Only the client side is implemented: `net.listen` refuses
+`tls`. `tools/test-tls.sh` runs a live handshake against a generated certificate
+in both back ends.
 
 Datagrams are separate handles from `net.udpListen`:
 

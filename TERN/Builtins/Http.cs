@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Net.Sockets;
 using System.Text;
 using TERN.Compiler;
@@ -66,8 +67,8 @@ namespace TERN.Builtins
 
                 var options = ParseOptions(vm, a.Length > 3 ? a[3] : Value.Nil, "exchange");
                 var request = EncodeRequest(vm, NetModule.Text(vm, a[1], "method"), NetModule.Text(vm, a[2], "url"), options);
-                WriteAll(vm, endpoint.Socket, request);
-                return Value.Of(ReadResponse(vm, endpoint.Socket, options.MaxBytes));
+                WriteAll(vm, endpoint.Stream, request);
+                return Value.Of(ReadResponse(vm, endpoint.Stream, options.MaxBytes));
             }, "Writes a request on a net handle and reads one response from it.");
 
             engine.RegisterValue("http", Value.Of(map));
@@ -343,38 +344,32 @@ namespace TERN.Builtins
         }
 
         /// <summary>Writes every byte of a request, or raises.</summary>
-        private static void WriteAll(VM vm, Socket socket, byte[] bytes)
+        private static void WriteAll(VM vm, Stream stream, byte[] bytes)
         {
-            var offset = 0;
             try
             {
-                while (offset < bytes.Length)
-                {
-                    var sent = socket.Send(bytes, offset, bytes.Length - offset, SocketFlags.None);
-                    if (sent <= 0)
-                    {
-                        throw vm.Error("ConnectionError", "connection closed while sending the request");
-                    }
-
-                    offset += sent;
-                }
+                stream.Write(bytes);
+                stream.Flush();
             }
-            catch (SocketException error) when (error.SocketErrorCode == SocketError.TimedOut)
+            catch (IOException error) when (InnerSocket(error) is { SocketErrorCode: SocketError.TimedOut })
             {
                 throw vm.Error("HttpError", "the request timed out");
             }
-            catch (Exception error) when (error is SocketException or ObjectDisposedException)
+            catch (Exception error) when (error is IOException or SocketException or ObjectDisposedException)
             {
                 throw vm.Error("ConnectionError", "connection closed while sending the request");
             }
         }
 
+        private static SocketException? InnerSocket(IOException error) =>
+            error.InnerException as SocketException;
+
         // ------------------------------------------------------------ the response
 
         /// <summary>Reads a response from a socket, honouring the framing headers.</summary>
-        private static TernMap ReadResponse(VM vm, Socket socket, int maxBytes)
+        private static TernMap ReadResponse(VM vm, Stream stream, int maxBytes)
         {
-            var reader = new Source(vm, socket, maxBytes);
+            var reader = new Source(vm, stream, maxBytes);
             return Read(vm, reader, maxBytes);
         }
 
@@ -483,7 +478,7 @@ namespace TERN.Builtins
         private sealed class Source
         {
             private readonly VM _vm;
-            private readonly Socket? _socket;
+            private readonly Stream? _socket;
             private readonly byte[]? _fixed;
             private readonly List<byte> _buffer = new();
             private readonly int _maxBytes;
@@ -496,7 +491,7 @@ namespace TERN.Builtins
                 _maxBytes = maxBytes;
             }
 
-            public Source(VM vm, Socket socket, int maxBytes)
+            public Source(VM vm, Stream socket, int maxBytes)
             {
                 _vm = vm;
                 _socket = socket;
@@ -525,13 +520,13 @@ namespace TERN.Builtins
                     int read;
                     try
                     {
-                        read = _socket!.Receive(chunk);
+                        read = _socket!.Read(chunk);
                     }
-                    catch (SocketException error) when (error.SocketErrorCode == SocketError.TimedOut)
+                    catch (IOException error) when (InnerSocket(error) is { SocketErrorCode: SocketError.TimedOut })
                     {
                         throw _vm.Error("HttpError", "the response timed out");
                     }
-                    catch (Exception error) when (error is SocketException or ObjectDisposedException)
+                    catch (Exception error) when (error is IOException or SocketException or ObjectDisposedException)
                     {
                         throw _vm.Error("ConnectionError", "connection closed while reading the response");
                     }
@@ -646,7 +641,7 @@ namespace TERN.Builtins
                     int read;
                     try
                     {
-                        read = _socket!.Receive(chunk);
+                        read = _socket!.Read(chunk);
                     }
                     catch (SocketException error) when (error.SocketErrorCode == SocketError.TimedOut)
                     {
@@ -750,8 +745,9 @@ namespace TERN.Builtins
                     throw vm.Error("HttpError", $"cannot connect to {target.Host}:{target.Port}: {error.Message}");
                 }
 
-                WriteAll(vm, socket, EncodeRequest(vm, currentMethod, currentUrl, options));
-                var response = ReadResponse(vm, socket, options.MaxBytes);
+                var stream = new NetworkStream(socket, ownsSocket: false);
+                WriteAll(vm, stream, EncodeRequest(vm, currentMethod, currentUrl, options));
+                var response = ReadResponse(vm, stream, options.MaxBytes);
 
                 if (!response.TryGet(Value.Str("headers"), out var headersValue) ||
                     !headersValue.AsMap().TryGet(Value.Str("location"), out var locationValue) ||

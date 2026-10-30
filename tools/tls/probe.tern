@@ -1,0 +1,49 @@
+// The live TLS test: this file is a template — tools/test-tls.sh replaces the
+// placeholders with the port and certificate it generated, then runs it in both
+// back ends and diffs the output.
+import "std:http";
+import "std:net";
+
+fn kind(block) {
+    try {
+        block();
+        return "ok";
+    } catch (e) {
+        return str(e);
+    }
+}
+
+fn bytes(text) {
+    let out = [];
+    for i in 0..<len(text) {
+        out.push(ord(text[i]));
+    }
+    return out;
+}
+
+// A verified handshake with the certificate that signed it.
+let secure = net.connect("127.0.0.1", __PORT__, {"tls": true, "ca": "__CERT__", "timeout": 4000});
+net.sendBytes(secure, bytes("round trip"));
+println("echo:", len(net.receiveBytes(secure, 10)));
+
+// Frames still work over TLS: the hello and the frame header both go encrypted.
+net.send(secure, {"tls": true, "n": [1, 2]});
+println("frame:", net.receive(secure));
+net.close(secure);
+
+// Without the CA the self-signed certificate is refused.
+println("untrusted:", kind(fn() {
+    net.connect("127.0.0.1", __PORT__, {"tls": true, "timeout": 4000});
+}));
+
+// verify: false trusts anything, and the name is not checked.
+let lax = net.connect("127.0.0.1", __PORT__, {"tls": true, "verify": false, "timeout": 4000});
+net.sendBytes(lax, bytes("lax"));
+println("lax:", len(net.receiveBytes(lax, 3)));
+net.close(lax);
+
+// http.exchange works on a TLS handle: the request and response are encrypted.
+let web = net.connect("127.0.0.1", __HTTP_PORT__, {"tls": true, "ca": "__CERT__", "timeout": 4000});
+let response = http.exchange(web, "GET", "http://127.0.0.1:__HTTP_PORT__/page.txt");
+println("http:", response["status"], response["body"]);
+net.close(web);

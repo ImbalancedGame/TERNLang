@@ -2,7 +2,12 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Net;
+using System.IO;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using TERN.Compiler;
 using TERN.Runtime;
@@ -32,9 +37,23 @@ namespace TERN.Builtins
         {
             Socket = socket;
             Kind = kind;
+
+            // A listener has no stream to speak of, and NetworkStream refuses an
+            // unconnected socket, so only connections get one.
+            Stream = kind == NetKind.Stream
+                ? new NetworkStream(socket, ownsSocket: false)
+                : System.IO.Stream.Null;
         }
 
         public Socket Socket { get; }
+
+        /// <summary>
+        /// Where the bytes go: a plain NetworkStream, or the SslStream layered on
+        /// it when the connection was opened with tls. Every read and write in
+        /// the net namespace goes through this, so the rest of the API does not
+        /// care which it is.
+        /// </summary>
+        public Stream Stream { get; set; }
 
         /// <summary>
         /// What this handle is for. Settable so rcon.attach can take a plain
@@ -177,6 +196,11 @@ namespace TERN.Builtins
                 }
 
                 var options = ParseOptions(vm, optionsValue, "listen");
+                if (options.Tls)
+                {
+                    throw vm.Error("TlsError", "listen() cannot accept tls: server TLS is not supported");
+                }
+
                 var port = (int)Number(vm, portValue, "port");
 
                 var address = Resolve(vm, host);
@@ -226,10 +250,12 @@ namespace TERN.Builtins
                     throw vm.Error("NetError", $"accept() failed: {error.Message}");
                 }
 
-                Authenticate(vm, connection, endpoint);
+                var stream = Authenticate(vm, connection, endpoint);
 
                 var handle = engine.Net.Add(connection, NetKind.Stream);
-                engine.Net.Require(vm, handle).MaxFrame = endpoint.MaxFrame;
+                var accepted = engine.Net.Require(vm, handle);
+                accepted.MaxFrame = endpoint.MaxFrame;
+                accepted.Stream = stream;
                 return new Value(handle);
             }, "Waits for one connection, checks its hello, and returns its handle.");
 
@@ -258,16 +284,6 @@ namespace TERN.Builtins
                     throw;
                 }
 
-                try
-                {
-                    SendHello(vm, socket, options.Token);
-                }
-                catch
-                {
-                    socket.Dispose();
-                    throw;
-                }
-
                 var handle = engine.Net.Add(socket, NetKind.Stream);
                 var endpoint = engine.Net.Require(vm, handle);
                 endpoint.TimeoutMs = options.Timeout;
@@ -276,6 +292,21 @@ namespace TERN.Builtins
                 {
                     socket.ReceiveTimeout = options.Timeout;
                     socket.SendTimeout = options.Timeout;
+                }
+
+                try
+                {
+                    if (options.Tls)
+                    {
+                        StartTls(vm, endpoint, options, host);
+                    }
+
+                    SendHello(vm, endpoint, options.Token);
+                }
+                catch
+                {
+                    engine.Net.Close(handle);
+                    throw;
                 }
 
                 return new Value(handle);
@@ -293,7 +324,7 @@ namespace TERN.Builtins
                 var frame = new byte[4 + payload.Length];
                 BinaryPrimitives.WriteInt32BigEndian(frame, payload.Length);
                 payload.CopyTo(frame, 4);
-                SendAll(vm, endpoint.Socket, frame);
+                SendAll(vm, endpoint, frame);
                 return Value.Nil;
             }, "Encodes a value and sends it as one frame.");
 
@@ -307,7 +338,7 @@ namespace TERN.Builtins
             {
                 var endpoint = Connection(vm, engine, a[0], "sendBytes");
                 var bytes = Wire.FromList(vm, a[1]);
-                SendAll(vm, endpoint.Socket, bytes);
+                SendAll(vm, endpoint, bytes);
                 return Value.Nil;
             }, "Sends raw bytes (no frame header). Used by protocols layered on net.");
 
@@ -321,7 +352,7 @@ namespace TERN.Builtins
                 }
 
                 var buffer = new byte[count];
-                ReadExactly(vm, endpoint.Socket, buffer, endpoint.MaxFrame);
+                ReadExactly(vm, endpoint, buffer);
                 return Value.Of(Wire.ToList(buffer));
             }, "Reads exactly n bytes (no frame header).");
 
@@ -523,13 +554,75 @@ namespace TERN.Builtins
             return frame.ToArray();
         }
 
-        private static void SendHello(VM vm, Socket socket, string? token)
+        private static void SendHello(VM vm, NetEndpoint endpoint, string? token)
         {
             var payload = Hello(token);
             var frame = new byte[4 + payload.Length];
             BinaryPrimitives.WriteInt32BigEndian(frame, payload.Length);
             payload.CopyTo(frame, 4);
-            SendAll(vm, socket, frame);
+            SendAll(vm, endpoint, frame);
+        }
+
+        /// <summary>
+        /// Wraps the connection in TLS. The certificate chain is checked against
+        /// the system store, or against the PEM bundle given as `ca`, and the name
+        /// is checked against `sni` (the host when it is not set) — unless the
+        /// script asked for verify: false, which trusts anything.
+        /// </summary>
+        private static void StartTls(VM vm, NetEndpoint endpoint, NetOptions options, string host)
+        {
+            var target = options.Sni ?? host;
+            X509Certificate2Collection? roots = null;
+            if (options.Ca is not null)
+            {
+                roots = new X509Certificate2Collection();
+                try
+                {
+                    roots.ImportFromPem(File.ReadAllText(options.Ca));
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or CryptographicException)
+                {
+                    throw vm.Error("TlsError", $"cannot read the CA file '{options.Ca}'");
+                }
+            }
+
+            RemoteCertificateValidationCallback? validate = null;
+            if (!options.Verify)
+            {
+                validate = (_, _, _, _) => true;
+            }
+            else if (roots is not null)
+            {
+                validate = (_, certificate, _, errors) => ValidateWith(certificate, errors, roots);
+            }
+
+            var tls = new SslStream(endpoint.Stream, leaveInnerStreamOpen: false, validate);
+            try
+            {
+                tls.AuthenticateAsClient(new SslClientAuthenticationOptions { TargetHost = target });
+            }
+            catch (Exception error) when (error is AuthenticationException or IOException or SocketException
+                                              or ObjectDisposedException)
+            {
+                throw vm.Error("TlsError", "TLS handshake failed");
+            }
+
+            endpoint.Stream = tls;
+        }
+
+        private static bool ValidateWith(X509Certificate? certificate, SslPolicyErrors errors,
+                                         X509Certificate2Collection roots)
+        {
+            if (certificate is null || (errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0)
+            {
+                return false;
+            }
+
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            chain.ChainPolicy.CustomTrustStore.AddRange(roots);
+            return chain.Build(new X509Certificate2(certificate));
         }
 
         /// <summary>
@@ -537,16 +630,17 @@ namespace TERN.Builtins
         /// when the version is unknown or the token does not match the one this
         /// listener was created with. The connection is closed on refusal.
         /// </summary>
-        private static void Authenticate(VM vm, Socket connection, NetEndpoint listener)
+        private static Stream Authenticate(VM vm, Socket connection, NetEndpoint listener)
         {
             var timeout = listener.TimeoutMs > 0 ? listener.TimeoutMs : HandshakeTimeoutMs;
             connection.ReceiveTimeout = timeout;
 
+            var stream = new NetworkStream(connection, ownsSocket: false);
             byte[]? reason = null;
             try
             {
                 var header = new byte[4];
-                ReadHello(vm, connection, header);
+                ReadHello(vm, stream, header);
 
                 var length = BinaryPrimitives.ReadInt32BigEndian(header);
                 if (length < 1 || length > FrameCeiling)
@@ -556,7 +650,7 @@ namespace TERN.Builtins
                 else
                 {
                     var payload = new byte[length];
-                    ReadHello(vm, connection, payload);
+                    ReadHello(vm, stream, payload);
                     reason = CheckHello(payload, listener.Token);
                 }
             }
@@ -580,6 +674,8 @@ namespace TERN.Builtins
                 connection.Dispose();
                 throw vm.Error("AuthenticationError", Encoding.UTF8.GetString(reason));
             }
+
+            return stream;
         }
 
         /// <summary>
@@ -587,7 +683,7 @@ namespace TERN.Builtins
         /// is reported as a dead handshake, so a silent or hostile peer cannot
         /// hang the listener or look like a script-level error.
         /// </summary>
-        private static void ReadHello(VM vm, Socket socket, byte[] buffer)
+        private static void ReadHello(VM vm, Stream stream, byte[] buffer)
         {
             var offset = 0;
             while (offset < buffer.Length)
@@ -595,9 +691,9 @@ namespace TERN.Builtins
                 int read;
                 try
                 {
-                    read = socket.Receive(buffer, offset, buffer.Length - offset, SocketFlags.None);
+                    read = stream.Read(buffer, offset, buffer.Length - offset);
                 }
-                catch (Exception error) when (error is SocketException or ObjectDisposedException)
+                catch (Exception error) when (error is IOException or SocketException or ObjectDisposedException)
                 {
                     throw vm.Error("ConnectionError", "connection closed during the handshake");
                 }
@@ -689,16 +785,25 @@ namespace TERN.Builtins
 
         internal readonly struct NetOptions
         {
-            public NetOptions(string? token, int maxFrame, int timeout)
+            public NetOptions(string? token, int maxFrame, int timeout,
+                              bool tls = false, string? sni = null, bool verify = true, string? ca = null)
             {
                 Token = token;
                 MaxFrame = maxFrame;
                 Timeout = timeout;
+                Tls = tls;
+                Sni = sni;
+                Verify = verify;
+                Ca = ca;
             }
 
             public string? Token { get; }
             public int MaxFrame { get; }
             public int Timeout { get; }
+            public bool Tls { get; }
+            public string? Sni { get; }
+            public bool Verify { get; }
+            public string? Ca { get; }
         }
 
         private static NetOptions ParseOptions(VM vm, in Value value, string operation)
@@ -754,7 +859,41 @@ namespace TERN.Builtins
                 timeout = (int)milliseconds;
             }
 
-            return new NetOptions(token, maxFrame, timeout);
+            var tls = false;
+            if (map.TryGet(Value.Str("tls"), out var tlsValue))
+            {
+                if (tlsValue.Kind != ValueKind.Bool)
+                {
+                    throw vm.Error("TypeError", $"option 'tls' must be a boolean, not {vm.TypeName(tlsValue)}");
+                }
+
+                tls = tlsValue.AsBool();
+            }
+
+            string? sni = null;
+            if (map.TryGet(Value.Str("sni"), out var sniValue))
+            {
+                sni = Text(vm, sniValue, "option 'sni'");
+            }
+
+            var verify = true;
+            if (map.TryGet(Value.Str("verify"), out var verifyValue))
+            {
+                if (verifyValue.Kind != ValueKind.Bool)
+                {
+                    throw vm.Error("TypeError", $"option 'verify' must be a boolean, not {vm.TypeName(verifyValue)}");
+                }
+
+                verify = verifyValue.AsBool();
+            }
+
+            string? ca = null;
+            if (map.TryGet(Value.Str("ca"), out var caValue))
+            {
+                ca = Text(vm, caValue, "option 'ca'");
+            }
+
+            return new NetOptions(token, maxFrame, timeout, tls, sni, verify, ca);
         }
 
         private static void Connect(VM vm, Socket socket, IPEndPoint endPoint, string host, int port, int timeoutMs)
@@ -781,7 +920,7 @@ namespace TERN.Builtins
         private static byte[] ReceiveFrame(VM vm, NetEndpoint endpoint)
         {
             Span<byte> header = stackalloc byte[4];
-            ReadExactly(vm, endpoint.Socket, header, endpoint.MaxFrame, "frame");
+            ReadExactly(vm, endpoint, header);
             var length = BinaryPrimitives.ReadInt32BigEndian(header);
             if (length < 0)
             {
@@ -797,11 +936,73 @@ namespace TERN.Builtins
             var payload = new byte[length];
             if (length > 0)
             {
-                ReadExactly(vm, endpoint.Socket, payload, endpoint.MaxFrame, "frame");
+                ReadExactly(vm, endpoint, payload);
             }
 
             return payload;
         }
+
+        /// <summary>Writes a frame through the endpoint's stream (plain or TLS).</summary>
+        internal static void SendAll(VM vm, NetEndpoint endpoint, ReadOnlySpan<byte> frame)
+        {
+            try
+            {
+                endpoint.Stream.Write(frame);
+                endpoint.Stream.Flush();
+            }
+            catch (IOException error) when (InnerSocket(error) is { SocketErrorCode: SocketError.TimedOut })
+            {
+                throw vm.Error("NetError", "send() timed out");
+            }
+            catch (IOException error)
+            {
+                throw vm.Error("NetError", $"send() failed: {error.Message}");
+            }
+            catch (ObjectDisposedException)
+            {
+                throw vm.Error("NetError", "socket is closed");
+            }
+        }
+
+        /// <summary>Fills a buffer from the endpoint's stream, or raises.</summary>
+        internal static void ReadExactly(VM vm, Stream stream, Span<byte> buffer, string what)
+        {
+            var offset = 0;
+            try
+            {
+                while (offset < buffer.Length)
+                {
+                    var read = stream.Read(buffer[offset..]);
+                    if (read <= 0)
+                    {
+                        throw vm.Error("ConnectionError", offset == 0
+                            ? "connection closed by the other side"
+                            : "connection closed in the middle of a frame");
+                    }
+
+                    offset += read;
+                }
+            }
+            catch (IOException error) when (InnerSocket(error) is { SocketErrorCode: SocketError.TimedOut })
+            {
+                throw vm.Error("NetError", $"{what} timed out");
+            }
+            catch (IOException error) when (InnerSocket(error) is { SocketErrorCode: SocketError.ConnectionReset })
+            {
+                throw vm.Error("ConnectionError", "connection reset by the other side");
+            }
+            catch (IOException error)
+            {
+                throw vm.Error("NetError", $"{what} failed: {error.Message}");
+            }
+            catch (ObjectDisposedException)
+            {
+                throw vm.Error("NetError", "socket is closed");
+            }
+        }
+
+        private static SocketException? InnerSocket(IOException error) =>
+            error.InnerException as SocketException;
 
         internal static void SendAll(VM vm, Socket socket, ReadOnlySpan<byte> frame)
         {
@@ -833,7 +1034,7 @@ namespace TERN.Builtins
         }
 
         private static void ReadExactly(VM vm, NetEndpoint endpoint, Span<byte> buffer) =>
-            ReadExactly(vm, endpoint.Socket, buffer, endpoint.MaxFrame, "frame");
+            ReadExactly(vm, endpoint.Stream, buffer, "frame");
 
         /// <summary>
         /// Fills <paramref name="buffer"/> or raises. A peer that closes mid-way is
