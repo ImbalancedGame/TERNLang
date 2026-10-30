@@ -10,6 +10,7 @@ try {
     println("index: " + e);
 }
 
+
 try {
     nil.foo();
 } catch (e) {
@@ -111,6 +112,12 @@ println(kind(fn() { text.format(); }));
 println(kind(fn() { text.trim(); }));
 println(kind(fn() { lists.zip(); }));
 println(kind(fn() { lists.chunk([1], 2, 3); }));
+
+// A negative index is reported as written, and a bad range key names its type.
+println(kind(fn() { let row = [10, 20, 30]; return row[-9]; }));
+println(kind(fn() { return "ab"[-9]; }));
+println(kind(fn() { let span = 1..5; return span[-9]; }));
+println(kind(fn() { let span = 1..5; return span[span]; }));
 
 // The script ends with an uncaught error so the trace report is part of the golden.
 error("custom failure");

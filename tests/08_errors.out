@@ -48,5 +48,9 @@ format() expects at least 1 argument(s) but got 0
 trim() expects 1 argument(s) but got 0
 zip() expects at least 1 argument(s) but got 0
 chunk() expects 2 argument(s) but got 3
+index -9 out of range for list of length 3
+index -9 out of range for string of length 2
+index -9 out of range for range of length 5
+range index must be an integer, not range
 Error: custom failure
-  at <module> (08_errors:116)
+  at <module> (08_errors:123)

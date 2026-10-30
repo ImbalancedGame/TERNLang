@@ -872,24 +872,28 @@ void list_push(List *list, Value v) {
     list->items[list->count++] = v;
 }
 
+// The error names the index the script wrote, not the one left after the
+// negative adjustment: `xs[-9]` reports -9 in both back ends.
 Value list_get(List *list, int64_t index) {
+    int64_t written = index;
     if (index < 0) {
         index += list->count;
     }
     if (index < 0 || index >= list->count) {
         tern_panic("IndexError", "index %lld out of range for list of length %d",
-                   (long long)index, list->count);
+                   (long long)written, list->count);
     }
     return list->items[index];
 }
 
 void list_set(List *list, int64_t index, Value v) {
+    int64_t written = index;
     if (index < 0) {
         index += list->count;
     }
     if (index < 0 || index >= list->count) {
         tern_panic("IndexError", "index %lld out of range for list of length %d",
-                   (long long)index, list->count);
+                   (long long)written, list->count);
     }
     list->items[index] = v;
 }
@@ -1796,13 +1800,14 @@ Value tern_get_index(Value target, Value index) {
                                       ((Range *)index.as.o)->inclusive);
                 }
                 int64_t position = require_index(index, "string");
+                int64_t written = position;
                 int64_t units = str_units(s);
                 if (position < 0) {
                     position += units;
                 }
                 if (position < 0 || position >= units) {
                     tern_panic("IndexError", "index %lld out of range for string of length %lld",
-                               (long long)position, (long long)units);
+                               (long long)written, (long long)units);
                 }
                 uint32_t offset = str_offset_of_unit(s, position);
                 int size;
@@ -1812,16 +1817,18 @@ Value tern_get_index(Value target, Value index) {
             case O_RANGE: {
                 Range *range = (Range *)target.as.o;
                 if (index.tag != T_INT) {
-                    tern_panic("TypeError", "range index must be an integer");
+                    tern_panic("TypeError", "range index must be an integer, not %s",
+                               tern_type_name(index));
                 }
-                int64_t offset = index.as.i;
+                int64_t written = index.as.i;
+                int64_t offset = written;
                 int64_t length = range_length(range);
                 if (offset < 0) {
                     offset += length;
                 }
                 if (offset < 0 || offset >= length) {
                     tern_panic("IndexError", "index %lld out of range for range of length %lld",
-                               (long long)offset, (long long)length);
+                               (long long)written, (long long)length);
                 }
                 return v_int(range->start + offset * range->step);
             }

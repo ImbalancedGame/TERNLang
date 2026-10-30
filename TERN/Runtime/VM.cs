@@ -3141,7 +3141,7 @@ namespace TERN.Runtime
                 {
                     if (index.Kind != ValueKind.Int)
                     {
-                        throw Error("TypeError", "range index must be an integer");
+                        throw Error("TypeError", $"range index must be an integer, not {TypeName(index)}");
                     }
 
                     var range = target.AsRange();
