@@ -93,7 +93,9 @@ and `Ctrl++`/`Ctrl+-` behave as expected too.
 | `Ctrl+F` / `Ctrl+H` / `F3` | find, find and replace, find next |
 | `Ctrl+G` | go to line |
 | `Ctrl+E` | recent files, filterable |
+| `Alt+3` / `Alt+5` / `Alt+0` | Find / Debug / Commit window |
 | `Ctrl+Shift+F` | find in path (project-wide, regex if it parses) |
+| `Ctrl+Shift+E` | open recent (the files opened this session) |
 | `Ctrl+F12` | go to symbol in the current file |
 | `Tab` / `Shift+Tab` | indent, unindent (four spaces) |
 
