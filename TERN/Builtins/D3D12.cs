@@ -46,6 +46,22 @@ namespace TERN.Builtins
         private const int CommandListTypeDirect = 0;
         private const int FeatureLevel11 = 0xB000;
         private const uint ResourceFlagAllowRenderTarget = 1;
+        private const int FormatR32G32B32Float = 6;
+        private const int FormatR32G32B32A32Float = 2;
+        private const int FormatUnknown = 0;
+        private const int HeapTypeUpload = 2;
+        private const int StateGenericRead = 2755;
+        private const int TopologyTypeTriangle = 3;
+        private const int TopologyTriangleList = 4;
+        private const int RootSignatureVersion1 = 1;
+        private const uint RootSignatureFlagAllowInputAssembler = 1;
+        private const int FillModeSolid = 3;
+        private const int CullModeNone = 1;
+        private const int ComparisonAlways = 8;
+        private const int BlendOne = 2;
+        private const int BlendOpAdd = 1;
+        private const int LogicOpNoop = 4;
+        private const int VertexFloats = 7;
 
         public static void Install(TernEngine engine)
         {
@@ -79,6 +95,23 @@ namespace TERN.Builtins
                     (float)Unit(vm, a[3], "blue"), (float)Unit(vm, a[4], "alpha"));
                 return Value.Nil;
             }, "Clears the render target: d3d12.clear(handle, r, g, b, a), each 0..1.");
+
+            Add(map, "pipeline", 3, 3, (vm, a) =>
+            {
+                var target = targets.Get(vm, a[0]);
+                var vertex = Shader(vm, a[1], "vertex shader");
+                var pixel = Shader(vm, a[2], "pixel shader");
+                return new Value(target.MakeProgram(vm, vertex, pixel));
+            }, "Compiles HLSL and builds a pipeline: d3d12.pipeline(handle, vertex, pixel).");
+
+            Add(map, "draw", 3, 3, (vm, a) =>
+            {
+                var target = targets.Get(vm, a[0]);
+                var program = Program(vm, target, a[1]);
+                var vertices = Vertices(vm, a[2]);
+                target.Draw(vm, program, vertices);
+                return Value.Nil;
+            }, "Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle.");
 
             Add(map, "pixels", 1, 1, (vm, a) =>
             {
@@ -173,6 +206,60 @@ namespace TERN.Builtins
             }
 
             return number;
+        }
+
+        private static string Shader(VM vm, in Value value, string what)
+        {
+            if (value.Kind != ValueKind.Str)
+            {
+                throw vm.Error("TypeError", $"{what} must be a string, not {vm.TypeName(value)}");
+            }
+
+            return value.AsString();
+        }
+
+        private static int Program(VM vm, Target target, in Value value)
+        {
+            if (value.Kind != ValueKind.Int)
+            {
+                throw vm.Error("TypeError", $"expected a pipeline handle, not {vm.TypeName(value)}");
+            }
+
+            var handle = (int)value.AsInt();
+            if (handle < 1 || handle > target.ProgramCount)
+            {
+                throw vm.Error("D3D12Error", $"no pipeline with handle {handle}");
+            }
+
+            return handle;
+        }
+
+        private static float[] Vertices(VM vm, in Value value)
+        {
+            if (value.Kind != ValueKind.List)
+            {
+                throw vm.Error("TypeError", $"expected a list of vertices, not {vm.TypeName(value)}");
+            }
+
+            var list = value.AsList();
+            if (list.Count % 6 != 0)
+            {
+                throw vm.Error("ArgumentError",
+                    $"vertices must be groups of 6 numbers (x, y, r, g, b, a), not {list.Count}");
+            }
+
+            var vertices = new float[list.Count];
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (!list[i].IsNumber)
+                {
+                    throw vm.Error("TypeError", $"vertex {i} must be a number, not {vm.TypeName(list[i])}");
+                }
+
+                vertices[i] = (float)list[i].AsDouble();
+            }
+
+            return vertices;
         }
 
         private static string OutputPath(VM vm, in Value value)
@@ -286,6 +373,156 @@ namespace TERN.Builtins
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct ShaderBytecode
+        {
+            public IntPtr Bytecode;
+            public IntPtr Length;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct StreamOutput
+        {
+            public IntPtr Declarations;
+            public uint Entries;
+            public IntPtr Strides;
+            public uint StrideCount;
+            public uint RasterizedStream;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RenderTargetBlend
+        {
+            public int BlendEnable;
+            public int LogicOpEnable;
+            public int SrcBlend;
+            public int DestBlend;
+            public int BlendOp;
+            public int SrcBlendAlpha;
+            public int DestBlendAlpha;
+            public int BlendOpAlpha;
+            public int LogicOp;
+            public byte WriteMask;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)] public byte[] Padding;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BlendDesc
+        {
+            public int AlphaToCoverage;
+            public int IndependentBlend;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)] public RenderTargetBlend[] Targets;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RasterizerDesc
+        {
+            public int FillMode;
+            public int CullMode;
+            public int FrontCounterClockwise;
+            public int DepthBias;
+            public float DepthBiasClamp;
+            public float SlopeScaledDepthBias;
+            public int DepthClipEnable;
+            public int MultisampleEnable;
+            public int AntialiasedLineEnable;
+            public uint ForcedSampleCount;
+            public int ConservativeRaster;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct StencilOp
+        {
+            public int StencilFailOp;
+            public int StencilDepthFailOp;
+            public int StencilPassOp;
+            public int StencilFunc;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DepthStencilDesc
+        {
+            public int DepthEnable;
+            public int DepthWriteMask;
+            public int DepthFunc;
+            public int StencilEnable;
+            public byte StencilReadMask;
+            public byte StencilWriteMask;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)] public byte[] Padding;
+            public StencilOp FrontFace;
+            public StencilOp BackFace;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CachedPipelineState
+        {
+            public IntPtr Blob;
+            public IntPtr Size;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct InputElement
+        {
+            [MarshalAs(UnmanagedType.LPStr)] public string SemanticName;
+            public uint SemanticIndex;
+            public int Format;
+            public uint InputSlot;
+            public uint AlignedByteOffset;
+            public int InputSlotClass;
+            public uint InstanceDataStepRate;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct InputLayoutDesc
+        {
+            public IntPtr Elements;
+            public uint Count;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct GraphicsPipelineStateDesc
+        {
+            public IntPtr RootSignature;
+            public ShaderBytecode Vs;
+            public ShaderBytecode Ps;
+            public ShaderBytecode Ds;
+            public ShaderBytecode Hs;
+            public ShaderBytecode Gs;
+            public StreamOutput StreamOutput;
+            public BlendDesc BlendState;
+            public uint SampleMask;
+            public RasterizerDesc RasterizerState;
+            public DepthStencilDesc DepthStencilState;
+            public InputLayoutDesc InputLayout;
+            public int IbStripCutValue;
+            public int PrimitiveTopologyType;
+            public uint NumRenderTargets;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)] public int[] RtvFormats;
+            public int DsvFormat;
+            public SampleDesc SampleDesc;
+            public uint NodeMask;
+            public CachedPipelineState CachedPso;
+            public int Flags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RootSignatureDesc
+        {
+            public uint NumParameters;
+            public IntPtr Parameters;
+            public uint NumStaticSamplers;
+            public IntPtr StaticSamplers;
+            public uint Flags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct VertexBufferView
+        {
+            public ulong BufferLocation;
+            public uint SizeInBytes;
+            public uint StrideInBytes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct CpuDescriptorHandle
         {
             public IntPtr Pointer;
@@ -349,6 +586,16 @@ namespace TERN.Builtins
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long MapFn(IntPtr self, uint subresource, ref Range range, out IntPtr data);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void UnmapFn(IntPtr self, uint subresource, ref Range range);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate ulong ReleaseFn(IntPtr self);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long CreateGraphicsPipelineStateFn(IntPtr self, ref GraphicsPipelineStateDesc desc, IntPtr iid, out IntPtr pipeline);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long CreateRootSignatureFn(IntPtr self, uint nodeMask, IntPtr blob, IntPtr length, IntPtr iid, out IntPtr signature);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetGraphicsRootSignatureFn(IntPtr self, IntPtr signature);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetPipelineStateFn(IntPtr self, IntPtr pipeline);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void IASetPrimitiveTopologyFn(IntPtr self, int topology);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetVertexBuffersFn(IntPtr self, uint slot, uint count, ref VertexBufferView view);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void DrawInstancedFn(IntPtr self, uint vertices, uint instances, uint startVertex, uint startInstance);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate ulong GetBufferSizeFn(IntPtr self);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate IntPtr GetBufferPointerFn(IntPtr self);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate IntPtr GetGpuAddressFn(IntPtr self);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long EnumAdapters1Fn(IntPtr self, uint index, out IntPtr adapter);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void GetDesc1Fn(IntPtr self, IntPtr description);
 
@@ -376,8 +623,13 @@ namespace TERN.Builtins
             private static Driver? _cached;
             private static bool _attempted;
 
-            private delegate long CreateDeviceFn(IntPtr adapter, int level, IntPtr iid, out IntPtr device);
-            private delegate long CreateFactoryFn(IntPtr iid, out IntPtr factory);
+            public delegate long CreateDeviceFn(IntPtr adapter, int level, IntPtr iid, out IntPtr device);
+            public delegate long CreateFactoryFn(IntPtr iid, out IntPtr factory);
+            public delegate long CompileFn(IntPtr source, IntPtr size, IntPtr name, IntPtr defines,
+                                            IntPtr include, IntPtr entry, IntPtr target, uint flags1,
+                                            uint flags2, out IntPtr code, out IntPtr errors);
+            public delegate long SerializeRootSignatureFn(ref RootSignatureDesc desc, int version,
+                                                           out IntPtr blob, out IntPtr errors);
 
             private IntPtr _d3d12;
             private CreateDeviceFn _createDevice;
@@ -444,12 +696,57 @@ namespace TERN.Builtins
                         dxgi = IntPtr.Zero;
                     }
 
-                    _cached = new Driver(library, createDevice, dxgi, createFactory);
+                    var driver = new Driver(library, createDevice, dxgi, createFactory);
+                    if (NativeLibrary.TryGetExport(library, "D3D12SerializeRootSignature", out var serialize))
+                    {
+                        driver.SerializeRootSignature =
+                            (SerializeRootSignatureFn)Marshal.GetDelegateForFunctionPointer(serialize, typeof(SerializeRootSignatureFn));
+                    }
+
+                    _cached = driver;
                     return _cached;
                 }
 
                 return null;
             }
+
+            public SerializeRootSignatureFn? SerializeRootSignature { get; private set; }
+
+            /// <summary>
+            /// d3dcompiler_47 is a separate library, opened when the first shader
+            /// is compiled so a script that never renders never touches it.
+            /// </summary>
+            public CompileFn? Compiler()
+            {
+                if (_compilerLoaded)
+                {
+                    return _compiler;
+                }
+
+                _compilerLoaded = true;
+                var configured = Environment.GetEnvironmentVariable("TERN_D3DCOMPILER_LIBRARY");
+                var names = string.IsNullOrEmpty(configured)
+                    ? new[] { "d3dcompiler_47.dll", "libd3dcompiler_47.so" }
+                    : new[] { configured };
+                foreach (var name in names)
+                {
+                    if (!NativeLibrary.TryLoad(name, out var library))
+                    {
+                        continue;
+                    }
+
+                    if (NativeLibrary.TryGetExport(library, "D3DCompile", out var address))
+                    {
+                        _compiler = (CompileFn)Marshal.GetDelegateForFunctionPointer(address, typeof(CompileFn));
+                        return _compiler;
+                    }
+                }
+
+                return null;
+            }
+
+            private bool _compilerLoaded;
+            private CompileFn? _compiler;
 
             public IntPtr CreateDevice(VM vm, int width, int height)
             {
@@ -550,6 +847,11 @@ namespace TERN.Builtins
             private ulong _fenceValue;
             private ulong _rowPitch;
             private ulong _totalBytes;
+            private readonly List<IntPtr> _pipelines = new();
+            private readonly List<IntPtr> _signatures = new();
+            private IntPtr _vertexBuffer;
+
+            public int ProgramCount => _pipelines.Count;
 
             private Target(int width, int height)
             {
@@ -660,6 +962,321 @@ namespace TERN.Builtins
                     {
                         throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a fence could not be created");
                     }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(iid);
+                }
+            }
+
+            // ------------------------------------------------------------ the pipeline
+
+            private IntPtr CompileStage(VM vm, string source, string target, string which)
+            {
+                var compile = Driver.Load()?.Compiler();
+                if (compile is null)
+                {
+                    throw vm.Error("D3D12Error",
+                        "the shader compiler is not available: d3dcompiler_47 could not be loaded");
+                }
+
+                var text = Marshal.StringToHGlobalAnsi(source);
+                var name = Marshal.StringToHGlobalAnsi("tern.hlsl");
+                var entry = Marshal.StringToHGlobalAnsi("main");
+                var profile = Marshal.StringToHGlobalAnsi(target);
+                IntPtr code = IntPtr.Zero;
+                IntPtr errors = IntPtr.Zero;
+                try
+                {
+                    var hr = compile(text, (IntPtr)source.Length, name, IntPtr.Zero, IntPtr.Zero,
+                        entry, profile, 0, 0, out code, out errors);
+                    if (hr < 0 || code == IntPtr.Zero)
+                    {
+                        var message = BlobText(errors);
+                        Release(errors);
+                        throw vm.Error("D3D12Error", message.Length == 0
+                            ? $"the {which} shader did not compile (0x{(uint)hr:X8})"
+                            : $"the {which} shader did not compile: {message}");
+                    }
+
+                    Release(errors);
+                    return code;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(text);
+                    Marshal.FreeHGlobal(name);
+                    Marshal.FreeHGlobal(entry);
+                    Marshal.FreeHGlobal(profile);
+                }
+            }
+
+            private static string BlobText(IntPtr blob)
+            {
+                if (blob == IntPtr.Zero)
+                {
+                    return string.Empty;
+                }
+
+                var size = (int)Slot<GetBufferSizeFn>(blob, 4)(blob);
+                var bytes = Slot<GetBufferPointerFn>(blob, 3)(blob);
+                if (size <= 0 || bytes == IntPtr.Zero)
+                {
+                    return string.Empty;
+                }
+
+                var text = Marshal.PtrToStringAnsi(bytes, size) ?? string.Empty;
+                // The first line is the useful part; the rest is the caret diagram.
+                var line = text.Split('\n')[0].Trim();
+                return line;
+            }
+
+            private IntPtr RootSignature(VM vm)
+            {
+                var serialize = Driver.Load()?.SerializeRootSignature;
+                if (serialize is null)
+                {
+                    throw vm.Error("D3D12Error",
+                        "Direct3D 12 is not available on this system: D3D12SerializeRootSignature is missing");
+                }
+
+                // An empty root signature: the vertex data comes from a vertex
+                // buffer, and the shaders take no constants.
+                var description = new RootSignatureDesc { Flags = RootSignatureFlagAllowInputAssembler };
+                var hr = serialize(ref description, RootSignatureVersion1, out var blob, out var errors);
+                Release(errors);
+                if (hr < 0 || blob == IntPtr.Zero)
+                {
+                    throw vm.Error("D3D12Error", "the root signature could not be serialized");
+                }
+
+                try
+                {
+                    var length = (IntPtr)(int)Slot<GetBufferSizeFn>(blob, 4)(blob);
+                    var bytes = Slot<GetBufferPointerFn>(blob, 3)(blob);
+                    var iid = IidDevice.Allocate();
+                    try
+                    {
+                        hr = Slot<CreateRootSignatureFn>(_device, 16)(_device, 0, bytes, length, iid, out var signature);
+                        if (hr < 0 || signature == IntPtr.Zero)
+                        {
+                            throw vm.Error("D3D12Error", $"the root signature could not be created (0x{(uint)hr:X8})");
+                        }
+
+                        return signature;
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(iid);
+                    }
+                }
+                finally
+                {
+                    Release(blob);
+                }
+            }
+
+            public int MakeProgram(VM vm, string vertexSource, string pixelSource)
+            {
+                var vertex = CompileStage(vm, vertexSource, "vs_5_0", "vertex");
+                IntPtr pixel = IntPtr.Zero;
+                IntPtr signature = IntPtr.Zero;
+                try
+                {
+                    pixel = CompileStage(vm, pixelSource, "ps_5_0", "pixel");
+                    signature = RootSignature(vm);
+
+                    var elements = new[]
+                    {
+                        new InputElement
+                        {
+                            SemanticName = "POSITION", Format = FormatR32G32B32Float,
+                            InputSlot = 0, AlignedByteOffset = 0,
+                        },
+                        new InputElement
+                        {
+                            SemanticName = "COLOR", Format = FormatR32G32B32A32Float,
+                            InputSlot = 0, AlignedByteOffset = 12,
+                        },
+                    };
+                    var elementSize = Marshal.SizeOf<InputElement>();
+                    var elementPointer = Marshal.AllocHGlobal(elementSize * elements.Length);
+                    try
+                    {
+                        for (var i = 0; i < elements.Length; i++)
+                        {
+                            Marshal.StructureToPtr(elements[i], IntPtr.Add(elementPointer, i * elementSize), false);
+                        }
+
+                        var description = new GraphicsPipelineStateDesc
+                        {
+                            RootSignature = signature,
+                            Vs = Bytecode(vertex),
+                            Ps = Bytecode(pixel),
+                            BlendState = OpaqueBlend(),
+                            SampleMask = 0xFFFFFFFF,
+                            RasterizerState = new RasterizerDesc
+                            {
+                                FillMode = FillModeSolid,
+                                CullMode = CullModeNone,
+                                DepthClipEnable = 1,
+                            },
+                            DepthStencilState = AlwaysDepth(),
+                            InputLayout = new InputLayoutDesc { Elements = elementPointer, Count = 2 },
+                            PrimitiveTopologyType = TopologyTypeTriangle,
+                            NumRenderTargets = 1,
+                            RtvFormats = new[] { FormatRgba8, 0, 0, 0, 0, 0, 0, 0 },
+                            DsvFormat = FormatUnknown,
+                            SampleDesc = new SampleDesc { Count = 1 },
+                        };
+
+                        var iid = IidDevice.Allocate();
+                        try
+                        {
+                            var hr = Slot<CreateGraphicsPipelineStateFn>(_device, 10)(_device, ref description, iid, out var pipeline);
+                            if (hr < 0 || pipeline == IntPtr.Zero)
+                            {
+                                throw vm.Error("D3D12Error", $"the pipeline state could not be created (0x{(uint)hr:X8})");
+                            }
+
+                            _pipelines.Add(pipeline);
+                            _signatures.Add(signature);
+                            signature = IntPtr.Zero;   // owned by the target now
+                            return _pipelines.Count;
+                        }
+                        finally
+                        {
+                            Marshal.FreeHGlobal(iid);
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(elementPointer);
+                    }
+                }
+                finally
+                {
+                    Release(vertex);
+                    Release(pixel);
+                    Release(signature);
+                }
+            }
+
+            private static ShaderBytecode Bytecode(IntPtr blob) => new ShaderBytecode
+            {
+                Bytecode = Slot<GetBufferPointerFn>(blob, 3)(blob),
+                Length = (IntPtr)(int)Slot<GetBufferSizeFn>(blob, 4)(blob),
+            };
+
+            private static BlendDesc OpaqueBlend()
+            {
+                var targets = new RenderTargetBlend[8];
+                for (var i = 0; i < targets.Length; i++)
+                {
+                    targets[i] = new RenderTargetBlend
+                    {
+                        SrcBlend = BlendOne,
+                        DestBlend = 1,          // D3D12_BLEND_ZERO
+                        BlendOp = BlendOpAdd,
+                        SrcBlendAlpha = BlendOne,
+                        DestBlendAlpha = 1,
+                        BlendOpAlpha = BlendOpAdd,
+                        LogicOp = LogicOpNoop,
+                        WriteMask = 0xF,
+                        Padding = new byte[3],
+                    };
+                }
+
+                return new BlendDesc { Targets = targets };
+            }
+
+            private static DepthStencilDesc AlwaysDepth() => new DepthStencilDesc
+            {
+                DepthFunc = ComparisonAlways,
+                FrontFace = new StencilOp { StencilFunc = ComparisonAlways },
+                BackFace = new StencilOp { StencilFunc = ComparisonAlways },
+                Padding = new byte[2],
+            };
+
+            public void Draw(VM vm, int program, float[] vertices)
+            {
+                var count = vertices.Length / 6;
+                var packed = new float[count * VertexFloats];
+                for (var i = 0; i < count; i++)
+                {
+                    packed[i * VertexFloats + 0] = vertices[i * 6 + 0];
+                    packed[i * VertexFloats + 1] = vertices[i * 6 + 1];
+                    packed[i * VertexFloats + 2] = 0.0f;
+                    packed[i * VertexFloats + 3] = vertices[i * 6 + 2];
+                    packed[i * VertexFloats + 4] = vertices[i * 6 + 3];
+                    packed[i * VertexFloats + 5] = vertices[i * 6 + 4];
+                    packed[i * VertexFloats + 6] = vertices[i * 6 + 5];
+                }
+
+                var view = Upload(vm, packed);
+                Reset();
+                Barrier(_texture, StateCommon, StateRenderTarget);
+
+                var handle = _rtv;
+                Slot<OMSetRenderTargetsFn>(_list, 46)(_list, 1, ref handle, 0, IntPtr.Zero);
+                Slot<SetGraphicsRootSignatureFn>(_list, 30)(_list, _signatures[program - 1]);
+                Slot<SetPipelineStateFn>(_list, 25)(_list, _pipelines[program - 1]);
+                Slot<IASetPrimitiveTopologyFn>(_list, 20)(_list, TopologyTriangleList);
+                Slot<SetVertexBuffersFn>(_list, 44)(_list, 0, 1, ref view);
+                Slot<DrawInstancedFn>(_list, 12)(_list, (uint)count, 1, 0, 0);
+
+                Barrier(_texture, StateRenderTarget, StateCopySource);
+                Submit(vm);
+            }
+
+            /// <summary>
+            /// A fresh upload-heap buffer per draw. Correct and simple; a renderer
+            /// that draws thousands of times a frame would rotate them instead.
+            /// </summary>
+            private VertexBufferView Upload(VM vm, float[] vertices)
+            {
+                var bytes = (uint)Math.Max(1, vertices.Length * sizeof(float));
+                var heap = new HeapProperties { Type = HeapTypeUpload };
+                var buffer = new ResourceDesc
+                {
+                    Dimension = DimensionBuffer,
+                    Width = bytes,
+                    Height = 1,
+                    DepthOrArraySize = 1,
+                    MipLevels = 1,
+                    SampleDesc = new SampleDesc { Count = 1 },
+                    Layout = 1,
+                };
+
+                var iid = IidDevice.Allocate();
+                try
+                {
+                    var hr = Slot<CreateCommittedResourceFn>(_device, 27)(
+                        _device, ref heap, 0, ref buffer, StateGenericRead, IntPtr.Zero, iid, out var resource);
+                    if (hr < 0 || resource == IntPtr.Zero)
+                    {
+                        throw vm.Error("D3D12Error", $"the vertex buffer could not be created (0x{(uint)hr:X8})");
+                    }
+
+                    var range = new Range { Begin = 0, End = 0 };
+                    hr = Slot<MapFn>(resource, 8)(resource, 0, ref range, out var data);
+                    if (hr < 0 || data == IntPtr.Zero)
+                    {
+                        Release(resource);
+                        throw vm.Error("D3D12Error", $"the vertex buffer could not be mapped (0x{(uint)hr:X8})");
+                    }
+
+                    Marshal.Copy(vertices, 0, data, vertices.Length);
+                    Slot<UnmapFn>(resource, 9)(resource, 0, ref range);
+
+                    Release(_vertexBuffer);
+                    _vertexBuffer = resource;
+                    return new VertexBufferView
+                    {
+                        BufferLocation = (ulong)Slot<GetGpuAddressFn>(resource, 11)(resource).ToInt64(),
+                        SizeInBytes = bytes,
+                        StrideInBytes = VertexFloats * sizeof(float),
+                    };
                 }
                 finally
                 {
@@ -797,6 +1414,20 @@ namespace TERN.Builtins
 
             public void Dispose()
             {
+                foreach (var pipeline in _pipelines)
+                {
+                    Release(pipeline);
+                }
+
+                foreach (var signature in _signatures)
+                {
+                    Release(signature);
+                }
+
+                _pipelines.Clear();
+                _signatures.Clear();
+                Release(_vertexBuffer);
+                _vertexBuffer = IntPtr.Zero;
                 Release(_fence);
                 Release(_readback);
                 Release(_texture);

@@ -9238,6 +9238,10 @@ static Value namespace_map(const char *ns) {
                 make_native_arity("create", n_d3d12_create, 2, 2));
         map_set(map, str_from_cstr("clear"),
                 make_native_arity("clear", n_d3d12_clear, 5, 5));
+        map_set(map, str_from_cstr("pipeline"),
+                make_native_arity("pipeline", n_d3d12_pipeline, 3, 3));
+        map_set(map, str_from_cstr("draw"),
+                make_native_arity("draw", n_d3d12_draw, 3, 3));
         map_set(map, str_from_cstr("pixels"),
                 make_native_arity("pixels", n_d3d12_pixels, 1, 1));
         map_set(map, str_from_cstr("save"),

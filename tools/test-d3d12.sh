@@ -22,6 +22,8 @@ cc -shared -fPIC -o "$WORK/libd3d12.so" tools/d3d12/mock_d3d12.c || {
 }
 export TERN_D3D12_LIBRARY="$WORK/libd3d12.so"
 export TERN_DXGI_LIBRARY="$WORK/libd3d12.so"
+# The mock exports D3DCompile too, so the shader path runs without HLSL.
+export TERN_D3DCOMPILER_LIBRARY="$WORK/libd3d12.so"
 
 echo "d3d12: running the probe in the interpreter"
 TERN_D3D12_PNG="$WORK/interp.png" ./tools/tern tools/d3d12/probe.tern > "$WORK/interp.txt" 2>&1 || {
@@ -72,8 +74,10 @@ for name in ("interp", "native"):
     assert (width, height, depth, colour) == (3, 2, 8, 6), (width, height, depth, colour)
     stride = width * 4 + 1
     pixels = [tuple(raw[i * stride + 1 + x * 4:i * stride + 5 + x * 4]) for i in range(height) for x in range(width)]
-    assert set(pixels) == {(64, 128, 191, 255)}, set(pixels)
-print("d3d12: the PNG decodes to the cleared colour")
+    # The probe clears, then draws a triangle whose first vertex is red: the mock
+    # paints the target with that colour, so both have to show up.
+    assert (255, 0, 0, 255) in set(pixels), set(pixels)
+print("d3d12: the PNG decodes to the drawn colour")
 PY
 
 echo "d3d12: the unavailable path"
@@ -107,6 +111,15 @@ PY
 )"
 fi
 if [ -n "$ZIG" ] && [ -x "$ZIG" ]; then
+    echo "d3d12: checking the structure mirror against the real d3d12.h"
+    python3 tools/d3d12/gen_layout_check.py > "$WORK/layout_check.c"
+    if ! "$ZIG" cc -target x86_64-windows-gnu -c -o "$WORK/layout_check.o" "$WORK/layout_check.c" 2> "$WORK/layout.txt"; then
+        echo "d3d12: the mirror does not match the Windows SDK headers" >&2
+        sed -n 1,20p "$WORK/layout.txt" >&2
+        exit 1
+    fi
+    echo "d3d12: the mirror matches d3d12.h"
+
     echo "d3d12: cross-compiling the probe for Windows"
     if ! python3 native/ternc.py --target windows tools/d3d12/probe.tern -o "$WORK/probe.exe" > "$WORK/win.txt" 2>&1; then
         echo "d3d12: the Windows build failed" >&2

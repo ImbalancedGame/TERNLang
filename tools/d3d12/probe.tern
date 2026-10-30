@@ -26,6 +26,27 @@ println("pixels:", len(pixels), pixels[0..4], pixels[8..12]);
 // The bottom row comes first, so the last row of the surface is first here.
 println("row order:", pixels[0..4], pixels[len(pixels) - 4..len(pixels)]);
 
+// -------------------------------------------------------------- the pipeline
+// HLSL through d3dcompiler (the mock answers with a stand-in blob), a root
+// signature, a pipeline state, an upload buffer and a draw. The mock paints the
+// target with the first vertex's colour, so the readback shows the vertex data
+// made it through IASetVertexBuffers.
+
+let vertexShader = "struct Vertex {\n    float3 position : POSITION;\n    float4 colour : COLOR;\n};\nstruct Pixel {\n    float4 position : SV_Position;\n    float4 colour : COLOR;\n};\nPixel main(Vertex input) {\n    Pixel output;\n    output.position = float4(input.position, 1.0);\n    output.colour = input.colour;\n    return output;\n}\n";
+let pixelShader = "struct Pixel {\n    float4 position : SV_Position;\n    float4 colour : COLOR;\n};\nfloat4 main(Pixel input) : SV_Target {\n    return input.colour;\n}\n";
+
+let pipeline = d3d12.pipeline(target, vertexShader, pixelShader);
+d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1, 1, -1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]);
+let drawn = d3d12.pixels(target);
+println("drawn:", drawn[0..4]);
+println(kind(fn() { d3d12.pipeline(target, "FAIL", pixelShader); }));
+println(kind(fn() { d3d12.pipeline(target, vertexShader, "fail"); }));
+println(kind(fn() { d3d12.pipeline(target, 1, pixelShader); }));
+println(kind(fn() { d3d12.draw(target, 99, []); }));
+println(kind(fn() { d3d12.draw(target, pipeline, "nope"); }));
+println(kind(fn() { d3d12.draw(target, pipeline, [1, 2]); }));
+println(kind(fn() { d3d12.draw(target, pipeline, [1, 2, 3, 4, 5, "x"]); }));
+
 let png = os.env("TERN_D3D12_PNG", ".d3d12_probe.png");
 d3d12.save(target, png);
 println("png written:", fs.size(png) > 0, fs.readBytes(png)[0..4]);

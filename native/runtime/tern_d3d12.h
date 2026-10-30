@@ -16,9 +16,13 @@
 #ifndef TERN_D3D12_H
 #define TERN_D3D12_H
 
+#include <stddef.h>
 #include <string.h>
 
 #define D3D12_MAX_DEVICES 4
+#define D3D12_MAX_PROGRAMS 32
+#define D3D12_VERTEX_FLOATS 7     // x, y, z, r, g, b, a in the buffer
+#define D3D12_VERTEX_STRIDE (D3D12_VERTEX_FLOATS * 4)
 #define D3D12_MAX_DIMENSION 16384
 #define D3D12_WAIT_TIMEOUT_MS 30000
 
@@ -134,6 +138,186 @@ typedef struct {
     size_t pointer;
 } D3D12_CPU_DESCRIPTOR_HANDLE;  // 8
 
+// The pipeline structures. The sizes and offsets here were printed from the
+// shipped d3d12.h and are asserted below, so a build on Linux fails loudly if a
+// mirror drifts; on Windows the real header is used instead and the compiler
+// checks every field by name.
+typedef struct {
+    const void *bytecode;
+    size_t length;
+} D3D12_SHADER_BYTECODE;        // 16
+
+typedef struct {
+    const void *declarations;
+    unsigned entries;
+    const unsigned *strides;
+    unsigned stride_count;
+    unsigned rasterized_stream;
+} D3D12_STREAM_OUTPUT_DESC;     // 32
+
+typedef struct {
+    int blend_enable;
+    int logic_op_enable;
+    int src_blend;
+    int dest_blend;
+    int blend_op;
+    int src_blend_alpha;
+    int dest_blend_alpha;
+    int blend_op_alpha;
+    int logic_op;
+    unsigned char write_mask;
+    unsigned char pad[3];
+} D3D12_RENDER_TARGET_BLEND_DESC; // 40
+
+typedef struct {
+    int alpha_to_coverage;
+    int independent_blend;
+    D3D12_RENDER_TARGET_BLEND_DESC render_target[8];
+} D3D12_BLEND_DESC;              // 328
+
+typedef struct {
+    int fill_mode;
+    int cull_mode;
+    int front_counter_clockwise;
+    int depth_bias;
+    float depth_bias_clamp;
+    float slope_scaled_depth_bias;
+    int depth_clip_enable;
+    int multisample_enable;
+    int antialiased_line_enable;
+    unsigned forced_sample_count;
+    int conservative_raster;
+} D3D12_RASTERIZER_DESC;        // 44
+
+typedef struct {
+    int stencil_fail_op;
+    int stencil_depth_fail_op;
+    int stencil_pass_op;
+    int stencil_func;
+} D3D12_DEPTH_STENCILOP_DESC;   // 16
+
+typedef struct {
+    int depth_enable;
+    int depth_write_mask;
+    int depth_func;
+    int stencil_enable;
+    unsigned char stencil_read_mask;
+    unsigned char stencil_write_mask;
+    unsigned char pad[2];
+    D3D12_DEPTH_STENCILOP_DESC front_face;
+    D3D12_DEPTH_STENCILOP_DESC back_face;
+} D3D12_DEPTH_STENCIL_DESC;     // 52
+
+typedef struct {
+    const void *blob;
+    size_t size;
+} D3D12_CACHED_PIPELINE_STATE;  // 16
+
+typedef struct {
+    const char *semantic_name;
+    unsigned semantic_index;
+    int format;
+    unsigned input_slot;
+    unsigned aligned_byte_offset;
+    int input_slot_class;
+    unsigned instance_data_step_rate;
+} D3D12_INPUT_ELEMENT_DESC;     // 32
+
+typedef struct {
+    const D3D12_INPUT_ELEMENT_DESC *elements;
+    unsigned count;
+} D3D12_INPUT_LAYOUT_DESC;     // 16
+
+typedef struct {
+    void *root_signature;
+    D3D12_SHADER_BYTECODE vs;
+    D3D12_SHADER_BYTECODE ps;
+    D3D12_SHADER_BYTECODE ds;
+    D3D12_SHADER_BYTECODE hs;
+    D3D12_SHADER_BYTECODE gs;
+    D3D12_STREAM_OUTPUT_DESC stream_output;
+    D3D12_BLEND_DESC blend_state;
+    unsigned sample_mask;
+    D3D12_RASTERIZER_DESC rasterizer_state;
+    D3D12_DEPTH_STENCIL_DESC depth_stencil_state;
+    D3D12_INPUT_LAYOUT_DESC input_layout;
+    int ib_strip_cut_value;
+    int primitive_topology_type;
+    unsigned render_target_count;
+    int render_target_formats[8];
+    int dsv_format;
+    TernSampleDesc sample_desc;
+    unsigned node_mask;
+    D3D12_CACHED_PIPELINE_STATE cached_pso;
+    int flags;
+} D3D12_GRAPHICS_PIPELINE_STATE_DESC;   // 656
+
+typedef struct {
+    unsigned num_parameters;
+    const void *parameters;
+    unsigned num_static_samplers;
+    const void *static_samplers;
+    unsigned flags;
+} D3D12_ROOT_SIGNATURE_DESC;    // 40
+
+typedef struct {
+    unsigned long long buffer_location;
+    unsigned size_in_bytes;
+    unsigned stride_in_bytes;
+} D3D12_VERTEX_BUFFER_VIEW;     // 16
+
+// The values the pipeline needs, from the same headers.
+#define D3D12_HEAP_TYPE_UPLOAD_ 2
+#define D3D12_RESOURCE_STATE_GENERIC_READ_ 2755
+#define D3D12_ROOT_SIGNATURE_FLAG_ALLOW_IA_ 1
+#define D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_ 3
+#define D3D12_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ 4
+#define D3D12_FILL_MODE_SOLID_ 3
+#define D3D12_CULL_MODE_NONE_ 1
+#define D3D12_COMPARISON_FUNC_ALWAYS_ 8
+#define D3D12_BLEND_ONE_ 2
+#define D3D12_BLEND_OP_ADD_ 1
+#define D3D12_LOGIC_OP_NOOP_ 4
+#define DXGI_FORMAT_R32G32B32_FLOAT_ 6
+#define DXGI_FORMAT_R32G32B32A32_FLOAT_ 2
+#define DXGI_FORMAT_UNKNOWN_ 0
+#define D3D_ROOT_SIGNATURE_VERSION_1_ 1
+
+// The same numbers as the SDK, checked at compile time on the platform where
+// this mirror is actually used. tools/d3d12/gen_layout_check.py turns these into
+// assertions against the real d3d12.h, which the Windows build compiles.
+_Static_assert(sizeof(D3D12_HEAP_PROPERTIES) == 20, "heap properties size");
+_Static_assert(offsetof(D3D12_HEAP_PROPERTIES, cpu_page_property) == 4, "heap cpu page offset");
+_Static_assert(sizeof(D3D12_RESOURCE_DESC) == 56, "resource desc size");
+_Static_assert(offsetof(D3D12_RESOURCE_DESC, width) == 16, "resource width offset");
+_Static_assert(offsetof(D3D12_RESOURCE_DESC, format) == 32, "resource format offset");
+_Static_assert(sizeof(D3D12_DESCRIPTOR_HEAP_DESC) == 16, "descriptor heap desc size");
+_Static_assert(sizeof(D3D12_RESOURCE_BARRIER) == 32, "barrier size");
+_Static_assert(offsetof(D3D12_RESOURCE_BARRIER, u) == 8, "barrier union offset");
+_Static_assert(sizeof(D3D12_RANGE) == 16, "range size");
+_Static_assert(sizeof(D3D12_PLACED_SUBRESOURCE_FOOTPRINT) == 32, "placed footprint size");
+_Static_assert(offsetof(D3D12_PLACED_SUBRESOURCE_FOOTPRINT, footprint) == 8, "footprint offset");
+_Static_assert(sizeof(D3D12_TEXTURE_COPY_LOCATION) == 48, "copy location size");
+_Static_assert(offsetof(D3D12_TEXTURE_COPY_LOCATION, u) == 16, "copy location union offset");
+_Static_assert(sizeof(D3D12_CPU_DESCRIPTOR_HANDLE) == 8, "cpu handle size");
+_Static_assert(sizeof(D3D12_SHADER_BYTECODE) == 16, "shader bytecode size");
+_Static_assert(sizeof(D3D12_STREAM_OUTPUT_DESC) == 32, "stream output size");
+_Static_assert(sizeof(D3D12_RENDER_TARGET_BLEND_DESC) == 40, "blend target size");
+_Static_assert(sizeof(D3D12_CACHED_PIPELINE_STATE) == 16, "cached pso size");
+_Static_assert(sizeof(D3D12_INPUT_LAYOUT_DESC) == 16, "input layout size");
+_Static_assert(sizeof(D3D12_DEPTH_STENCILOP_DESC) == 16, "stencil op size");
+_Static_assert(sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC) == 656, "pipeline state size");
+_Static_assert(sizeof(D3D12_BLEND_DESC) == 328, "blend state size");
+_Static_assert(sizeof(D3D12_RASTERIZER_DESC) == 44, "rasterizer state size");
+_Static_assert(sizeof(D3D12_DEPTH_STENCIL_DESC) == 52, "depth stencil state size");
+_Static_assert(sizeof(D3D12_ROOT_SIGNATURE_DESC) == 40, "root signature desc size");
+_Static_assert(sizeof(D3D12_VERTEX_BUFFER_VIEW) == 16, "vertex buffer view size");
+_Static_assert(sizeof(D3D12_INPUT_ELEMENT_DESC) == 32, "input element size");
+_Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, blend_state) == 120, "blend offset");
+_Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, rasterizer_state) == 452, "rasterizer offset");
+_Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, input_layout) == 552, "input layout offset");
+_Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, render_target_formats) == 580, "rtv format offset");
+
 // --- the vtables -----------------------------------------------------------
 
 #define TERN_SLOT(object, slot) (((void **)((void ***)(object))[0])[slot])
@@ -243,6 +427,10 @@ typedef struct {
     int width;
     int height;
     int open;
+    void *vertex_buffer;
+    void *programs[D3D12_MAX_PROGRAMS];
+    void *signatures[D3D12_MAX_PROGRAMS];
+    int program_count;
 } TernD3D12Target;
 
 static TernD3D12Target d3d12_targets[D3D12_MAX_DEVICES];
@@ -482,6 +670,11 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
 }
 
 static void d3d12_free_device(TernD3D12Target *target) {
+    for (int i = 0; i < target->program_count; i++) {
+        d3d12_release(target->programs[i]);
+        d3d12_release(target->signatures[i]);
+    }
+    d3d12_release(target->vertex_buffer);
     d3d12_release(target->fence);
     d3d12_release(target->readback);
     d3d12_release(target->target);
@@ -491,6 +684,327 @@ static void d3d12_free_device(TernD3D12Target *target) {
     d3d12_release(target->queue);
     d3d12_release(target->device);
     memset(target, 0, sizeof *target);
+}
+
+// --- the pipeline ----------------------------------------------------------
+//
+// Shaders are HLSL source, compiled at run time by d3dcompiler_47.dll, which
+// ships with Windows. The entry point is `main` in both stages; the vertex input
+// is POSITION (x, y, z) followed by COLOR (r, g, b, a), which is what
+// `d3d12.draw` packs from a script's x, y, r, g, b, a.
+
+typedef long (*PfnD3DCompile)(const void *, size_t, const char *, const void *, void *,
+                              const char *, const char *, unsigned, unsigned, void **, void **);
+typedef long (*PfnSerializeRootSignature)(const D3D12_ROOT_SIGNATURE_DESC *, int, void **, void **);
+
+static void *d3d_compiler_library;
+static PfnD3DCompile d3d_compile;
+
+static PfnD3DCompile d3d12_compiler(void) {
+    if (d3d_compiler_library) {
+        return d3d_compile;
+    }
+    // Only LoadLibrary is used here (not GetProcAddress) because the symbol is
+    // exported straight from the compiler DLL.
+    const char *configured = getenv("TERN_D3DCOMPILER_LIBRARY");
+#ifdef _WIN32
+    const char *default_name = "d3dcompiler_47.dll";
+#else
+    const char *default_name = "libd3dcompiler_47.so";
+#endif
+    d3d_compiler_library = tern_lib_open(configured && configured[0] ? configured : default_name);
+    if (d3d_compiler_library) {
+        *(void **)(&d3d_compile) = tern_lib_symbol(d3d_compiler_library, "D3DCompile");
+    }
+    return d3d_compile;
+}
+
+static const void *blob_bytes(void *blob, size_t *length) {
+    *length = ((size_t (*)(void *))TERN_SLOT(blob, 4))(blob);          // GetBufferSize
+    return ((const void *(*)(void *))TERN_SLOT(blob, 3))(blob);        // GetBufferPointer
+}
+
+/// The first line of a blob, trimmed. D3DCompile writes a multi-line report whose
+/// first line names the file, the position and the error; the rest is the source
+/// excerpt and caret, which is noise in a TERN message.
+static char *blob_text(void *blob) {
+    if (!blob) {
+        return NULL;
+    }
+    size_t length = 0;
+    const char *text = (const char *)blob_bytes(blob, &length);
+    size_t end = 0;
+    while (end < length && text[end] != '\r' && text[end] != '\n') {
+        end++;
+    }
+    while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t')) {
+        end--;
+    }
+    char *copy = (char *)malloc(end + 1);
+    if (!copy) {
+        return NULL;
+    }
+    memcpy(copy, text, end);
+    copy[end] = '\0';
+    return copy;
+}
+
+/// Compiles one stage and returns its blob, or raises with the compiler's message.
+static void *d3d12_compile_stage(const char *source, const char *target, const char *which) {
+    PfnD3DCompile compile = d3d12_compiler();
+    if (!compile) {
+        tern_panic("D3D12Error",
+                   "the shader compiler is not available: d3dcompiler_47 could not be loaded");
+    }
+
+    void *code = NULL;
+    void *errors = NULL;
+    long hr = compile(source, strlen(source), "tern.hlsl", NULL, NULL, "main", target, 0, 0,
+                      &code, &errors);
+    if (hr < 0 || !code) {
+        char *text = blob_text(errors);
+        if (text && text[0]) {
+            tern_panic("D3D12Error", "the %s shader did not compile: %s", which, text);
+        }
+        free(text);
+        tern_panic("D3D12Error", "the %s shader did not compile (0x%08lx)", which,
+                   (unsigned long)hr & 0xFFFFFFFFul);
+    }
+    if (errors) {
+        d3d12_release(errors);
+    }
+    return code;
+}
+
+static void *d3d12_empty_root_signature(void *device) {
+    D3D12_ROOT_SIGNATURE_DESC description;
+    memset(&description, 0, sizeof description);
+    description.flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_IA_;
+
+    PfnSerializeRootSignature serialize =
+        (PfnSerializeRootSignature)tern_lib_symbol(d3d12_get_driver()->d3d12,
+                                                   "D3D12SerializeRootSignature");
+    if (!serialize) {
+        tern_panic("D3D12Error",
+                   "Direct3D 12 is not available on this system: D3D12SerializeRootSignature is missing");
+    }
+
+    void *blob = NULL;
+    void *errors = NULL;
+    if ((long)serialize(&description, D3D_ROOT_SIGNATURE_VERSION_1_, &blob, &errors) < 0 || !blob) {
+        char *text = blob_text(errors);
+        tern_panic("D3D12Error", "the root signature could not be serialized%s%s",
+                   text ? ": " : "", text ? text : "");
+    }
+    if (errors) {
+        d3d12_release(errors);
+    }
+
+    size_t length = 0;
+    const void *bytes = blob_bytes(blob, &length);
+    void *signature = NULL;
+    long hr = ((long (*)(void *, unsigned, const void *, size_t, const TernGuid *, void **))
+               TERN_SLOT(device, 16))(device, 0, bytes, length, &TERN_IID_ID3D12Device, &signature);
+    d3d12_release(blob);
+    if (hr < 0 || !signature) {
+        tern_panic("D3D12Error", "the root signature could not be created (0x%08lx)",
+                   (unsigned long)hr & 0xFFFFFFFFul);
+    }
+    return signature;
+}
+
+static void *d3d12_make_program(TernD3D12Target *target, const char *vertex_source,
+                                const char *pixel_source) {
+    void *vertex = d3d12_compile_stage(vertex_source, "vs_5_0", "vertex");
+    void *pixel = d3d12_compile_stage(pixel_source, "ps_5_0", "pixel");
+    void *signature = d3d12_empty_root_signature(target->device);
+
+    size_t vertex_length = 0, pixel_length = 0;
+    const void *vertex_bytes = blob_bytes(vertex, &vertex_length);
+    const void *pixel_bytes = blob_bytes(pixel, &pixel_length);
+
+    static const D3D12_INPUT_ELEMENT_DESC elements[2] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT_, 0, 0, 0, 0 },
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT_, 0, 12, 0, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description;
+    memset(&description, 0, sizeof description);
+    description.root_signature = signature;
+    description.vs.bytecode = vertex_bytes;
+    description.vs.length = vertex_length;
+    description.ps.bytecode = pixel_bytes;
+    description.ps.length = pixel_length;
+    for (int i = 0; i < 8; i++) {
+        description.blend_state.render_target[i].src_blend = D3D12_BLEND_ONE_;
+        description.blend_state.render_target[i].dest_blend = 0;   // D3D12_BLEND_ZERO
+        description.blend_state.render_target[i].blend_op = D3D12_BLEND_OP_ADD_;
+        description.blend_state.render_target[i].src_blend_alpha = D3D12_BLEND_ONE_;
+        description.blend_state.render_target[i].dest_blend_alpha = 0;
+        description.blend_state.render_target[i].blend_op_alpha = D3D12_BLEND_OP_ADD_;
+        description.blend_state.render_target[i].logic_op = D3D12_LOGIC_OP_NOOP_;
+        description.blend_state.render_target[i].write_mask = 0xF;
+    }
+    description.sample_mask = 0xFFFFFFFFu;
+    description.rasterizer_state.fill_mode = D3D12_FILL_MODE_SOLID_;
+    description.rasterizer_state.cull_mode = D3D12_CULL_MODE_NONE_;
+    description.rasterizer_state.depth_clip_enable = 1;
+    description.depth_stencil_state.depth_func = D3D12_COMPARISON_FUNC_ALWAYS_;
+    description.depth_stencil_state.front_face.stencil_func = D3D12_COMPARISON_FUNC_ALWAYS_;
+    description.depth_stencil_state.back_face.stencil_func = D3D12_COMPARISON_FUNC_ALWAYS_;
+    description.input_layout.elements = elements;
+    description.input_layout.count = 2;
+    description.primitive_topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_;
+    description.render_target_count = 1;
+    description.render_target_formats[0] = DXGI_FORMAT_R8G8B8A8_UNORM_;
+    description.dsv_format = DXGI_FORMAT_UNKNOWN_;
+    description.sample_desc.count = 1;
+
+    void *pipeline = NULL;
+    long hr = ((long (*)(void *, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *, const TernGuid *, void **))
+               TERN_SLOT(target->device, 10))(target->device, &description,
+                                              &TERN_IID_ID3D12Device, &pipeline);
+    d3d12_release(vertex);
+    d3d12_release(pixel);
+    if (hr < 0 || !pipeline) {
+        d3d12_release(signature);
+        tern_panic("D3D12Error", "the pipeline state could not be created (0x%08lx)",
+                   (unsigned long)hr & 0xFFFFFFFFul);
+    }
+
+    if (target->program_count >= D3D12_MAX_PROGRAMS) {
+        d3d12_release(pipeline);
+        d3d12_release(signature);
+        tern_panic("D3D12Error", "too many pipelines (%d)", D3D12_MAX_PROGRAMS);
+    }
+    target->programs[target->program_count] = pipeline;
+    target->signatures[target->program_count] = signature;
+    return (void *)(size_t)(++target->program_count);
+}
+
+/// Copies the script's vertices into a fresh upload buffer and returns the view.
+static D3D12_VERTEX_BUFFER_VIEW d3d12_upload_vertices(TernD3D12Target *target, Value value) {
+    if (!v_is_list(value)) {
+        tern_panic("TypeError", "expected a list of vertices, not %s", tern_type_name(value));
+    }
+    List *list = (List *)value.as.o;
+    if (list->count % 6 != 0) {
+        tern_panic("ArgumentError",
+                   "vertices must be groups of 6 numbers (x, y, r, g, b, a), not %d", list->count);
+    }
+
+    size_t vertices = (size_t)list->count / 6;
+    size_t bytes = vertices * D3D12_VERTEX_STRIDE;
+    if (bytes == 0) {
+        bytes = D3D12_VERTEX_STRIDE;
+    }
+
+    D3D12_HEAP_PROPERTIES upload_heap;
+    memset(&upload_heap, 0, sizeof upload_heap);
+    upload_heap.type = D3D12_HEAP_TYPE_UPLOAD_;
+
+    D3D12_RESOURCE_DESC buffer;
+    memset(&buffer, 0, sizeof buffer);
+    buffer.dimension = D3D12_RESOURCE_DIMENSION_BUFFER_;
+    buffer.width = bytes;
+    buffer.height = 1;
+    buffer.depth_or_array_size = 1;
+    buffer.mip_levels = 1;
+    buffer.layout = 1;   // ROW_MAJOR
+    buffer.sample_desc.count = 1;
+
+    void *resource = NULL;
+    long hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
+        target->device, &upload_heap, 0, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ_,
+        NULL, &TERN_IID_ID3D12Device, &resource);
+    if (hr < 0 || !resource) {
+        tern_panic("D3D12Error", "the vertex buffer could not be created (0x%08lx)",
+                   (unsigned long)hr & 0xFFFFFFFFul);
+    }
+
+    D3D12_RANGE range;
+    range.begin = 0;
+    range.end = 0;
+    void *data = NULL;
+    hr = ((PfnMap)TERN_SLOT(resource, 8))(resource, 0, &range, &data);
+    if (hr < 0 || !data) {
+        d3d12_release(resource);
+        tern_panic("D3D12Error", "the vertex buffer could not be mapped (0x%08lx)",
+                   (unsigned long)hr & 0xFFFFFFFFul);
+    }
+
+    float *packed = (float *)data;
+    for (size_t i = 0; i < vertices; i++) {
+        for (int field = 0; field < 6; field++) {
+            Value item = list->items[i * 6 + (size_t)field];
+            if (!v_is_num(item)) {
+                ((PfnUnmap)TERN_SLOT(resource, 9))(resource, 0, &range);
+                d3d12_release(resource);
+                tern_panic("TypeError", "vertex %d must be a number, not %s",
+                           (int)(i * 6 + (size_t)field), tern_type_name(item));
+            }
+        }
+        packed[i * D3D12_VERTEX_FLOATS + 0] = (float)v_as_double(list->items[i * 6 + 0]);
+        packed[i * D3D12_VERTEX_FLOATS + 1] = (float)v_as_double(list->items[i * 6 + 1]);
+        packed[i * D3D12_VERTEX_FLOATS + 2] = 0.0f;
+        packed[i * D3D12_VERTEX_FLOATS + 3] = (float)v_as_double(list->items[i * 6 + 2]);
+        packed[i * D3D12_VERTEX_FLOATS + 4] = (float)v_as_double(list->items[i * 6 + 3]);
+        packed[i * D3D12_VERTEX_FLOATS + 5] = (float)v_as_double(list->items[i * 6 + 4]);
+        packed[i * D3D12_VERTEX_FLOATS + 6] = (float)v_as_double(list->items[i * 6 + 5]);
+    }
+    ((PfnUnmap)TERN_SLOT(resource, 9))(resource, 0, &range);
+
+    D3D12_VERTEX_BUFFER_VIEW view;
+    memset(&view, 0, sizeof view);
+    view.buffer_location = ((unsigned long long (*)(void *))TERN_SLOT(resource, 11))(resource);
+    view.size_in_bytes = (unsigned)bytes;
+    view.stride_in_bytes = D3D12_VERTEX_STRIDE;
+
+    d3d12_release(target->vertex_buffer);
+    target->vertex_buffer = resource;
+    return view;
+}
+
+static Value n_d3d12_pipeline(int argc, Value *argv) {
+    (void)argc;
+    TernD3D12Target *target = d3d12_slot_arg(argv[0]);
+    net_arg_text(argv[1], "vertex shader");
+    net_arg_text(argv[2], "pixel shader");
+    Str *vertex = (Str *)argv[1].as.o;
+    Str *pixel = (Str *)argv[2].as.o;
+    return v_int((int64_t)(size_t)d3d12_make_program(target, vertex->chars, pixel->chars));
+}
+
+static Value n_d3d12_draw(int argc, Value *argv) {
+    (void)argc;
+    TernD3D12Target *target = d3d12_slot_arg(argv[0]);
+    if (argv[1].tag != T_INT) {
+        tern_panic("TypeError", "expected a pipeline handle, not %s", tern_type_name(argv[1]));
+    }
+    int handle = (int)argv[1].as.i;
+    if (handle < 1 || handle > target->program_count) {
+        tern_panic("D3D12Error", "no pipeline with handle %d", handle);
+    }
+
+    D3D12_VERTEX_BUFFER_VIEW view = d3d12_upload_vertices(target, argv[2]);
+    int count = view.size_in_bytes / D3D12_VERTEX_STRIDE;
+
+    d3d12_reset(target);
+    d3d12_barrier(target, target->target, D3D12_RESOURCE_STATE_COMMON_, D3D12_RESOURCE_STATE_RENDER_TARGET_);
+    ((PfnOMSetRenderTargets)TERN_SLOT(target->list, 46))(target->list, 1, &target->rtv, 0, NULL);
+    ((void (*)(void *, void *))TERN_SLOT(target->list, 30))(
+        target->list, target->signatures[handle - 1]);                        // SetGraphicsRootSignature
+    ((void (*)(void *, void *))TERN_SLOT(target->list, 25))(
+        target->list, target->programs[handle - 1]);                          // SetPipelineState
+    ((void (*)(void *, int))TERN_SLOT(target->list, 20))(
+        target->list, D3D12_PRIMITIVE_TOPOLOGY_TRIANGLELIST_);                // IASetPrimitiveTopology
+    ((void (*)(void *, unsigned, unsigned, const D3D12_VERTEX_BUFFER_VIEW *))TERN_SLOT(target->list, 44))(
+        target->list, 0, 1, &view);                                           // IASetVertexBuffers
+    ((void (*)(void *, unsigned, unsigned, unsigned, unsigned))TERN_SLOT(target->list, 12))(
+        target->list, (unsigned)count, 1, 0, 0);                              // DrawInstanced
+    d3d12_barrier(target, target->target, D3D12_RESOURCE_STATE_RENDER_TARGET_, D3D12_RESOURCE_STATE_COPY_SOURCE_);
+    d3d12_submit(target);
+    return v_nil();
 }
 
 // --- the namespace ---------------------------------------------------------
