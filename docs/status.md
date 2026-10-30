@@ -87,14 +87,15 @@ starts in 2 ms against 112 ms for the interpreter.
 separate process and the window is a client of it, so the IDE reports exactly
 what `tools/tern run` reports.
 
-* **Language server** (`ide/Server`, 384 KB) — LSP 3.17 over stdio with
+* **Language server** (`ide/Server`, 390 KB) — LSP 3.17 over stdio with
   Content-Length framing: `initialize`, full-text sync, diagnostics,
   completion (members, built-ins, imports, keywords; `.` and `"` triggers),
   hover, definition, references, document/workspace symbols, formatting,
-  rename with `prepareRename`.
+  signature help, rename with `prepareRename`.
 * **Studio** (`ide/Studio`, PySide6) — Rider-shaped shell: menu bar, toolbar,
   Project and Structure docks, Run/Problems/Terminal tabified at the bottom,
-  breadcrumbs, status bar, Darcula and light themes, remembered state.
+  breadcrumbs, status bar, Darcula and light themes, remembered state. The
+  Terminal window is a shell (colour, history, Ctrl+C), not a log view.
 * **Version control** (`ide/Studio/vcs.py`) — git status, staging, commit and a
   coloured diff view, all through the `git` CLI; degrades to "not a git
   repository" when there is none.
