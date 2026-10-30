@@ -26,7 +26,7 @@ namespace TERN.Builtins
             Add(stringMethods, "split", 1, 2, (vm, a) =>
             {
                 var text = a[0].AsString();
-                var separator = a.Length > 1 ? a[1].AsString() : " ";
+                var separator = a.Length > 1 ? RequireString(vm, a[1], "split") : " ";
                 var pieces = separator.Length == 0
                     ? SplitChars(text)
                     : text.Split(new[] { separator }, StringSplitOptions.None);
@@ -51,15 +51,15 @@ namespace TERN.Builtins
                 }
 
                 return Value.Of(list);
-            }, "Splits into lines, handling \\n and \\r\\n.");
+            }, "Non-empty lines, handling \\n and \\r\\n.");
             Add(stringMethods, "replace", 3, 3, (vm, a) =>
-                Value.Str(a[0].AsString().Replace(a[1].AsString(), a[2].AsString(), StringComparison.Ordinal)), "Replaces every occurrence of a substring.");
-            Add(stringMethods, "replaceFirst", 3, 3, (vm, a) => Value.Str(ReplaceFirst(a[0].AsString(), a[1].AsString(), a[2].AsString())), "Replaces the first occurrence of a substring.");
-            Add(stringMethods, "startsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().StartsWith(a[1].AsString(), StringComparison.Ordinal)), "True when the string begins with the prefix.");
-            Add(stringMethods, "endsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().EndsWith(a[1].AsString(), StringComparison.Ordinal)), "True when the string ends with the suffix.");
-            Add(stringMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsString().Contains(a[1].AsString(), StringComparison.Ordinal)), "True when the substring occurs.");
-            Add(stringMethods, "indexOf", 2, 2, (vm, a) => new Value(a[0].AsString().IndexOf(a[1].AsString(), StringComparison.Ordinal)), "Index of the first occurrence, or -1.");
-            Add(stringMethods, "lastIndexOf", 2, 2, (vm, a) => new Value(a[0].AsString().LastIndexOf(a[1].AsString(), StringComparison.Ordinal)), "Index of the last occurrence, or -1.");
+                Value.Str(a[0].AsString().Replace(RequireString(vm, a[1], "replace"), RequireString(vm, a[2], "replace"), StringComparison.Ordinal)), "Replaces every occurrence of a substring.");
+            Add(stringMethods, "replaceFirst", 3, 3, (vm, a) => Value.Str(ReplaceFirst(a[0].AsString(), RequireString(vm, a[1], "replaceFirst"), RequireString(vm, a[2], "replaceFirst"))), "Replaces the first occurrence of a substring.");
+            Add(stringMethods, "startsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().StartsWith(RequireString(vm, a[1], "startsWith"), StringComparison.Ordinal)), "True when the string begins with the prefix.");
+            Add(stringMethods, "endsWith", 2, 2, (vm, a) => Value.Bool(a[0].AsString().EndsWith(RequireString(vm, a[1], "endsWith"), StringComparison.Ordinal)), "True when the string ends with the suffix.");
+            Add(stringMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsString().Contains(RequireString(vm, a[1], "contains"), StringComparison.Ordinal)), "True when the substring occurs.");
+            Add(stringMethods, "indexOf", 2, 2, (vm, a) => new Value(a[0].AsString().IndexOf(RequireString(vm, a[1], "indexOf"), StringComparison.Ordinal)), "Index of the first occurrence, or -1.");
+            Add(stringMethods, "lastIndexOf", 2, 2, (vm, a) => new Value(a[0].AsString().LastIndexOf(RequireString(vm, a[1], "lastIndexOf"), StringComparison.Ordinal)), "Index of the last occurrence, or -1.");
             Add(stringMethods, "substring", 2, 3, (vm, a) =>
             {
                 var text = a[0].AsString();
@@ -94,21 +94,21 @@ namespace TERN.Builtins
                 return Value.Str(string.Concat(System.Linq.Enumerable.Repeat(a[0].AsString(), count)));
             }, "Repeats the string n times.");
             Add(stringMethods, "padStart", 2, 3, (vm, a) => Value.Str(Pad(a[0].AsString(), (int)RequireInt(a[1], "padStart", 1),
-                a.Length > 2 ? a[2].AsString() : " ", true)), "Left pads to a width with an optional fill.");
+                a.Length > 2 ? RequireString(vm, a[2], "padStart") : " ", true)), "Left pads to a width with an optional fill.");
             Add(stringMethods, "padEnd", 2, 3, (vm, a) => Value.Str(Pad(a[0].AsString(), (int)RequireInt(a[1], "padEnd", 1),
-                a.Length > 2 ? a[2].AsString() : " ", false)), "Right pads to a width with an optional fill.");
+                a.Length > 2 ? RequireString(vm, a[2], "padEnd") : " ", false)), "Right pads to a width with an optional fill.");
             Add(stringMethods, "reversed", 1, 1, (vm, a) =>
             {
                 var characters = a[0].AsString().ToCharArray();
                 Array.Reverse(characters);
                 return Value.Str(new string(characters));
             }, "Reversed copy.");
-            Add(stringMethods, "toInt", 1, 2, (vm, a) => ParseInteger(vm, a, "toInt"), "Parses the string as an integer.");
-            Add(stringMethods, "toFloat", 1, 2, (vm, a) => ParseFloat(vm, a, "toFloat"), "Parses the string as a float.");
+            Add(stringMethods, "toInt", 1, 2, (vm, a) => ParseInteger(vm, a, "toInt"), "Parses the string as an integer, or the fallback.");
+            Add(stringMethods, "toFloat", 1, 2, (vm, a) => ParseFloat(vm, a, "toFloat"), "Parses the string as a float, or the fallback.");
             Add(stringMethods, "count", 2, 2, (vm, a) =>
             {
                 var text = a[0].AsString();
-                var needle = a[1].AsString();
+                var needle = RequireString(vm, a[1], "count");
                 if (needle.Length == 0)
                 {
                     return new Value(0);
@@ -150,7 +150,7 @@ namespace TERN.Builtins
                 }
 
                 return new Value(list.Count);
-            }, "Appends an item and returns its position.");
+            }, "Appends the values and returns the new length.");
             Add(listMethods, "pop", 1, 1, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -184,7 +184,7 @@ namespace TERN.Builtins
                 }
 
                 return new Value(list.Count);
-            }, "Prepends an item.");
+            }, "Prepends the values in order and returns the new length.");
             Add(listMethods, "insert", 3, 3, (vm, a) =>
             {
                 a[0].AsList().Insert((int)RequireInt(a[1], "insert", 1), a[2]);
@@ -219,7 +219,7 @@ namespace TERN.Builtins
 
                 list.RemoveAt(index);
                 return Value.True;
-            }, "Removes the first occurrence of a value; returns true when found.");
+            }, "Removes the first occurrence of a value; true when one was found.");
             Add(listMethods, "indexOf", 2, 2, (vm, a) => new Value(a[0].AsList().IndexOf(a[1])), "Index of the first occurrence, or -1.");
             Add(listMethods, "contains", 2, 2, (vm, a) => Value.Bool(a[0].AsList().IndexOf(a[1]) >= 0), "True when the value is present.");
             Add(listMethods, "join", 1, 2, (vm, a) =>
@@ -238,7 +238,7 @@ namespace TERN.Builtins
                 }
 
                 return Value.Str(builder.ToString());
-            }, "Concatenates the items with a separator.");
+            }, "Joins the items with a separator (default \",\"); any value is rendered.");
             Add(listMethods, "reverse", 1, 1, (vm, a) =>
             {
                 a[0].AsList().Reverse();
@@ -251,7 +251,7 @@ namespace TERN.Builtins
                 var start = a.Length > 1 ? RequireInt(a[1], "slice", 1) : 0;
                 var end = a.Length > 2 ? RequireInt(a[2], "slice", 2) : list.Count;
                 return Value.Of(list.Slice(start, end));
-            }, "Copy of the range [start, end).");
+            }, "Copy of [start, end); both bounds optional, negatives count from the end.");
             Add(listMethods, "map", 2, 2, (vm, a) =>
             {
                 var list = a[0].AsList();
@@ -541,8 +541,8 @@ namespace TERN.Builtins
             Add(floatMethods, "clamp", 3, 3, (vm, a) =>
             {
                 var value = a[0].AsDouble();
-                var low = a[1].AsDouble();
-                var high = a[2].AsDouble();
+                var low = RequireNumber(vm, a[1], "clamp", 1);
+                var high = RequireNumber(vm, a[2], "clamp", 2);
                 return new Value(value < low ? low : value > high ? high : value);
             }, "Constrains the value to [low, high].");
 
@@ -737,6 +737,26 @@ namespace TERN.Builtins
             end = Math.Max(start, Math.Min(end, text.Length));
             return Value.Str(text.Substring(start, end - start));
         }
+
+        /// <summary>
+        /// A string argument. Without this the .NET call behind the method gets a
+        /// null or a mistyped reference and the process dies with a host
+        /// exception instead of raising a catchable TypeError.
+        /// </summary>
+        internal static string RequireString(VM vm, in Value value, string function) =>
+            value.Kind == ValueKind.Str
+                ? value.AsString()
+                : throw vm.Error("TypeError", $"{function} expects a string, not {vm.TypeName(value)}");
+
+        /// <summary>
+        /// A numeric argument for a float method: any int or float, never a
+        /// silent zero for a value of some other kind.
+        /// </summary>
+        internal static double RequireNumber(VM vm, in Value value, string function, int index) =>
+            value.IsNumber
+                ? value.AsDouble()
+                : throw vm.Error("TypeError",
+                    $"{function}() argument {index + 1} must be a number, got {value.ToDebugString()}");
 
         internal static long RequireInt(in Value value, string function, int index)
         {

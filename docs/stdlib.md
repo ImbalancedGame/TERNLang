@@ -187,123 +187,123 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 
 ### float
 
-| Name | Signature |
-| ---- | --------- |
-| `abs` | `abs()` |
-| `clamp` | `clamp(arg, arg)` |
-| `round` | `round([arg])` |
-| `toInt` | `toInt()` |
-| `toString` | `toString()` |
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `abs` | `abs()` | Absolute value. |
+| `clamp` | `clamp(arg, arg)` | Constrains the value to [low, high]. |
+| `round` | `round([arg])` | Rounds to the nearest integer, with optional digits. |
+| `toInt` | `toInt()` | Truncates toward zero. |
+| `toString` | `toString()` | Decimal representation. |
 
 ### int
 
-| Name | Signature |
-| ---- | --------- |
-| `abs` | `abs()` |
-| `clamp` | `clamp(arg, arg)` |
-| `times` | `times(arg)` |
-| `toFloat` | `toFloat()` |
-| `toString` | `toString()` |
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `abs` | `abs()` | Absolute value. |
+| `clamp` | `clamp(arg, arg)` | Constrains the value to [low, high]. |
+| `times` | `times(arg)` | Calls the callback n times with the index. |
+| `toFloat` | `toFloat()` | The same value as a float. |
+| `toString` | `toString()` | Decimal representation. |
 
 ### list
 
-| Name | Signature |
-| ---- | --------- |
-| `all` | `all(arg)` |
-| `any` | `any(arg)` |
-| `clear` | `clear()` |
-| `clone` | `clone()` |
-| `concat` | `concat(arg)` |
-| `contains` | `contains(arg)` |
-| `drop` | `drop(arg)` |
-| `each` | `each(arg)` |
-| `filter` | `filter(arg)` |
-| `find` | `find(arg)` |
-| `findIndex` | `findIndex(arg)` |
-| `first` | `first()` |
-| `flatten` | `flatten([arg])` |
-| `indexOf` | `indexOf(arg)` |
-| `insert` | `insert(arg, arg)` |
-| `isEmpty` | `isEmpty()` |
-| `join` | `join([arg])` |
-| `last` | `last()` |
-| `map` | `map(arg)` |
-| `max` | `max()` |
-| `min` | `min()` |
-| `pop` | `pop()` |
-| `push` | `push(arg, ...)` |
-| `reduce` | `reduce(arg, [arg])` |
-| `remove` | `remove(arg)` |
-| `removeValue` | `removeValue(arg)` |
-| `reverse` | `reverse()` |
-| `shift` | `shift()` |
-| `slice` | `slice([arg], [arg])` |
-| `sort` | `sort([arg])` |
-| `sum` | `sum()` |
-| `take` | `take(arg)` |
-| `toString` | `toString()` |
-| `unique` | `unique()` |
-| `unshift` | `unshift(arg, ...)` |
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `all` | `all(arg)` | True when the callback accepts every item. |
+| `any` | `any(arg)` | True when the callback accepts at least one item. |
+| `clear` | `clear()` | Removes every item in place. |
+| `clone` | `clone()` | Shallow copy. |
+| `concat` | `concat(arg)` | New list with the items of another list appended. |
+| `contains` | `contains(arg)` | True when the value is present. |
+| `drop` | `drop(arg)` | Copy without the first n items. |
+| `each` | `each(arg)` | Calls the callback for each item. |
+| `filter` | `filter(arg)` | New list of the items the callback accepts. |
+| `find` | `find(arg)` | First item the callback accepts, or nil. |
+| `findIndex` | `findIndex(arg)` | Index of the first item the callback accepts, or -1. |
+| `first` | `first()` | First item, or nil when empty. |
+| `flatten` | `flatten([arg])` | Flattens one level of nested lists. |
+| `indexOf` | `indexOf(arg)` | Index of the first occurrence, or -1. |
+| `insert` | `insert(arg, arg)` | Inserts an item at an index. |
+| `isEmpty` | `isEmpty()` | True when the list has no items. |
+| `join` | `join([arg])` | Joins the items with a separator (default ","); any value is rendered. |
+| `last` | `last()` | Last item, or nil when empty. |
+| `map` | `map(arg)` | New list of callback results. |
+| `max` | `max()` | Largest item by natural order. |
+| `min` | `min()` | Smallest item by natural order. |
+| `pop` | `pop()` | Removes and returns the last item. |
+| `push` | `push(arg, ...)` | Appends the values and returns the new length. |
+| `reduce` | `reduce(arg, [arg])` | Folds the list with a callback, optionally from an initial value. |
+| `remove` | `remove(arg)` | Removes and returns the item at an index. |
+| `removeValue` | `removeValue(arg)` | Removes the first occurrence of a value; true when one was found. |
+| `reverse` | `reverse()` | Reverses in place. |
+| `shift` | `shift()` | Removes and returns the first item. |
+| `slice` | `slice([arg], [arg])` | Copy of [start, end); both bounds optional, negatives count from the end. |
+| `sort` | `sort([arg])` | Stable in place sort, with an optional comparator. |
+| `sum` | `sum()` | Sum of the numeric items. |
+| `take` | `take(arg)` | Copy of the first n items. |
+| `toString` | `toString()` | Debug rendering of the list. |
+| `unique` | `unique()` | New list without duplicates, order preserved. |
+| `unshift` | `unshift(arg, ...)` | Prepends the values in order and returns the new length. |
 
 ### map
 
-| Name | Signature |
-| ---- | --------- |
-| `clear` | `clear()` |
-| `clone` | `clone()` |
-| `contains` | `contains(arg)` |
-| `entries` | `entries()` |
-| `get` | `get(arg, [arg])` |
-| `has` | `has(arg)` |
-| `isEmpty` | `isEmpty()` |
-| `keys` | `keys()` |
-| `merge` | `merge(arg)` |
-| `remove` | `remove(arg)` |
-| `set` | `set(arg, arg)` |
-| `toString` | `toString()` |
-| `values` | `values()` |
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `clear` | `clear()` | Removes every key in place. |
+| `clone` | `clone()` | Shallow copy. |
+| `contains` | `contains(arg)` | Alias of has. |
+| `entries` | `entries()` | List of [key, value] pairs in insertion order. |
+| `get` | `get(arg, [arg])` | Value for a key, or a default when missing. |
+| `has` | `has(arg)` | True when the key exists. |
+| `isEmpty` | `isEmpty()` | True when the map has no keys. |
+| `keys` | `keys()` | List of keys in insertion order. |
+| `merge` | `merge(arg)` | New map with another map's pairs merged in. |
+| `remove` | `remove(arg)` | Deletes a key; returns the removed value or nil. |
+| `set` | `set(arg, arg)` | Inserts a key value pair and returns the map. |
+| `toString` | `toString()` | Debug rendering of the map. |
+| `values` | `values()` | List of values in insertion order. |
 
 ### range
 
-| Name | Signature |
-| ---- | --------- |
-| `contains` | `contains(arg)` |
-| `each` | `each(arg)` |
-| `length` | `length()` |
-| `map` | `map(arg)` |
-| `toList` | `toList()` |
-| `toString` | `toString()` |
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `contains` | `contains(arg)` | True when the number is inside the range. |
+| `each` | `each(arg)` | Calls the callback for each value in the range. |
+| `length` | `length()` | Number of values in the range. |
+| `map` | `map(arg)` | List of callback results over the range, like list.map. |
+| `toList` | `toList()` | Materialises the range as a list. |
+| `toString` | `toString()` | Range notation such as 0..<5. |
 
 ### string
 
-| Name | Signature |
-| ---- | --------- |
-| `chars` | `chars()` |
-| `contains` | `contains(arg)` |
-| `count` | `count(arg)` |
-| `endsWith` | `endsWith(arg)` |
-| `format` | `format(...)` |
-| `indexOf` | `indexOf(arg)` |
-| `isEmpty` | `isEmpty()` |
-| `lastIndexOf` | `lastIndexOf(arg)` |
-| `lines` | `lines()` |
-| `lower` | `lower()` |
-| `padEnd` | `padEnd(arg, [arg])` |
-| `padStart` | `padStart(arg, [arg])` |
-| `repeat` | `repeat(arg)` |
-| `replace` | `replace(arg, arg)` |
-| `replaceFirst` | `replaceFirst(arg, arg)` |
-| `reversed` | `reversed()` |
-| `slice` | `slice([arg], [arg])` |
-| `split` | `split([arg])` |
-| `startsWith` | `startsWith(arg)` |
-| `substring` | `substring(arg, [arg])` |
-| `toFloat` | `toFloat([arg])` |
-| `toInt` | `toInt([arg])` |
-| `toString` | `toString()` |
-| `trim` | `trim()` |
-| `trimEnd` | `trimEnd()` |
-| `trimStart` | `trimStart()` |
-| `upper` | `upper()` |
-| `words` | `words()` |
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `chars` | `chars()` | List of single character strings. |
+| `contains` | `contains(arg)` | True when the substring occurs. |
+| `count` | `count(arg)` | Number of characters. |
+| `endsWith` | `endsWith(arg)` | True when the string ends with the suffix. |
+| `format` | `format(...)` | Formats the string as a template, like text.format. |
+| `indexOf` | `indexOf(arg)` | Index of the first occurrence, or -1. |
+| `isEmpty` | `isEmpty()` | True when the string has no characters. |
+| `lastIndexOf` | `lastIndexOf(arg)` | Index of the last occurrence, or -1. |
+| `lines` | `lines()` | Non-empty lines, handling \n and \r\n. |
+| `lower` | `lower()` | Lowercased copy. |
+| `padEnd` | `padEnd(arg, [arg])` | Right pads to a width with an optional fill. |
+| `padStart` | `padStart(arg, [arg])` | Left pads to a width with an optional fill. |
+| `repeat` | `repeat(arg)` | Repeats the string n times. |
+| `replace` | `replace(arg, arg)` | Replaces every occurrence of a substring. |
+| `replaceFirst` | `replaceFirst(arg, arg)` | Replaces the first occurrence of a substring. |
+| `reversed` | `reversed()` | Reversed copy. |
+| `slice` | `slice([arg], [arg])` | Substring from start to end, negative indices allowed. |
+| `split` | `split([arg])` | Splits on a separator (default a space); an empty separator splits into characters. |
+| `startsWith` | `startsWith(arg)` | True when the string begins with the prefix. |
+| `substring` | `substring(arg, [arg])` | Substring from a start index with an optional length. |
+| `toFloat` | `toFloat([arg])` | Parses the string as a float, or the fallback. |
+| `toInt` | `toInt([arg])` | Parses the string as an integer, or the fallback. |
+| `toString` | `toString()` | The string itself. |
+| `trim` | `trim()` | Removes leading and trailing whitespace. |
+| `trimEnd` | `trimEnd()` | Removes trailing whitespace. |
+| `trimStart` | `trimStart()` | Removes leading whitespace. |
+| `upper` | `upper()` | Uppercased copy. |
+| `words` | `words()` | Splits on whitespace, dropping empty pieces. |
 

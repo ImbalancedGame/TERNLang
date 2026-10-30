@@ -280,12 +280,13 @@ Options for `run`:
             {
                 builder.AppendLine($"### {group.Key}");
                 builder.AppendLine();
-                builder.AppendLine("| Name | Signature |");
-                builder.AppendLine("| ---- | --------- |");
+                builder.AppendLine("| Name | Signature | Notes |");
+                builder.AppendLine("| ---- | --------- | ----- |");
 
                 foreach (var entry in group.OrderBy(e => e.Name, StringComparer.Ordinal))
                 {
-                    builder.AppendLine($"| `{entry.Name}` | `{Signature(entry.Name, entry.Min, entry.Max, false, hasReceiver: true)}` |");
+                    var notes = entry.Documentation ?? string.Empty;
+                    builder.AppendLine($"| `{entry.Name}` | `{Signature(entry.Name, entry.Min, entry.Max, false, hasReceiver: true)}` | {notes} |");
                 }
 
                 builder.AppendLine();

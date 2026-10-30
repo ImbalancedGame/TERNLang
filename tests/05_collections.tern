@@ -44,3 +44,14 @@ println(nested.list[1].deep);
 println(json.stringify({"k": [1, nil, true]}));
 println(json.parse("{\"n\": 1, \"f\": 2.5, \"s\": \"x\"}"));
 println(type([]), type({}), type(""), type(1), type(1.5), type(nil), type(true));
+
+// List methods report what the interpreter reports, and slicing counts code
+// units rather than bytes.
+let items = [];
+println(items.push(1), items.push(2, 3), items);
+println(items.unshift(0, -1), items);
+println([3, 1, 2].join(), [3, 1, 2].join("-"), [1, 2].join(0), [1, 2].join(nil));
+let removable = [1, 2, 3];
+println(removable.removeValue(2), removable.removeValue(9), removable);
+println([1, 2, 3, 4].slice(), [1, 2, 3, 4].slice(1), [1, 2, 3, 4].slice(1, 3));
+println([1, 2, 3, 4].slice(-2), [1, 2, 3, 4].slice(0, -1));

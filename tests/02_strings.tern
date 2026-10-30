@@ -25,3 +25,19 @@ println("a b  c".words());
 for c in "hey" { print(c + "."); }
 println("");
 println(str(42) + str(1.5) + str(nil) + str(true));
+
+// String conversions and slicing: a whole parse or a fallback, defaults for
+// both slice bounds, and slices that never cut a multi-byte character.
+println(" 42 ".toInt(), "12abc".toInt(-1), "7.5".toFloat(), "x".toFloat(0.5));
+println("héllo".slice(1, 3), "héllo".slice(0), "héllo".slice(-2), "héllo".substring(1, 3));
+println(len("héllo".slice(1)), len("héllo".slice()));
+println("a  b".split(), "".split(), "".words(), "a b".words());
+println("".lines(), "a\n\nb".lines());
+fn parseFailure(text) {
+    try {
+        return str(text.toInt());
+    } catch (e) {
+        return str(e);
+    }
+}
+println(parseFailure("nope"), parseFailure("12abc"));

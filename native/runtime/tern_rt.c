@@ -1364,6 +1364,15 @@ static int64_t need_int(Value v, const char *fn, int index) {
     return 0;
 }
 
+// Float parameters take any number and name the position like need_int does.
+static double need_number(Value v, const char *fn, int index) {
+    if (!v_is_num(v)) {
+        tern_panic("TypeError", "%s() argument %d must be a number, got %s",
+                   fn, index, ((Str *)tern_to_debug(v))->chars);
+    }
+    return v_as_double(v);
+}
+
 // Indexing reports the container: "list index must be an integer, not string".
 static int64_t require_index(Value v, const char *kind) {
     if (v.tag != T_INT) {
@@ -2034,8 +2043,8 @@ Value tern_concat(Value *parts, int count) {
 Value tern_slice(Value target, Value start, Value end, bool inclusive) {
     if (v_is_list(target)) {
         List *list = (List *)target.as.o;
-        int64_t from = start.tag == T_NIL ? 0 : need_int(start, "slice", 1);
-        int64_t to = end.tag == T_NIL ? list->count : need_int(end, "slice", 2) + (inclusive ? 1 : 0);
+        int64_t from = start.tag == T_NIL ? 0 : need_int(start, "slice", 2);
+        int64_t to = end.tag == T_NIL ? list->count : need_int(end, "slice", 3) + (inclusive ? 1 : 0);
         if (from < 0) from += list->count;
         if (to < 0) to += list->count;
         if (from < 0) from = 0;
@@ -2051,8 +2060,8 @@ Value tern_slice(Value target, Value start, Value end, bool inclusive) {
     if (v_is_str(target)) {
         Str *s = (Str *)target.as.o;
         int64_t units = str_units(s);
-        int64_t from = start.tag == T_NIL ? 0 : need_int(start, "slice", 1);
-        int64_t to = end.tag == T_NIL ? units : need_int(end, "slice", 2) + (inclusive ? 1 : 0);
+        int64_t from = start.tag == T_NIL ? 0 : need_int(start, "slice", 2);
+        int64_t to = end.tag == T_NIL ? units : need_int(end, "slice", 3) + (inclusive ? 1 : 0);
         if (from < 0) from += units;
         if (to < 0) to += units;
         if (from < 0) from = 0;
@@ -2694,48 +2703,63 @@ static Value s_lastindexof(int argc, Value *argv) {
 
 static Value s_substring(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
+    int64_t units = str_units(s);
     int64_t from = iarg(argc, argv, 1, "substring");
-    int64_t to = argc > 2 && argv[2].tag != T_NIL ? iarg(argc, argv, 2, "substring") : (int64_t)s->len;
-    if (from < 0) from += s->len;
-    if (to < 0) to += s->len;
+    int64_t to = argc > 2 && argv[2].tag != T_NIL ? iarg(argc, argv, 2, "substring") : units;
+    if (from < 0) from += units;
+    if (to < 0) to += units;
     if (from < 0) from = 0;
-    if (to > (int64_t)s->len) to = s->len;
+    if (to > units) to = units;
     if (to < from) to = from;
-    return str_value(s->chars + from, (size_t)(to - from));
+
+    // Indices count code units, so a multi-byte character is never cut in two.
+    uint32_t begin = str_offset_of_unit(s, from);
+    uint32_t finish = str_offset_of_unit(s, to);
+    return str_value(s->chars + begin, (size_t)(finish - begin));
 }
 
 static Value s_slice(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
-    int64_t from = iarg(argc, argv, 1, "slice");
-    int64_t to = argc > 2 && argv[2].tag != T_NIL ? iarg(argc, argv, 2, "slice") : (int64_t)s->len;
-    if (from < 0) from += s->len;
-    if (to < 0) to += s->len;
+    int64_t units = str_units(s);
+
+    // Both bounds are optional and count code units, like len() and indexing.
+    int64_t from = 0;
+    int64_t to = units;
+    if (argc > 1 && argv[1].tag != T_NIL) {
+        from = iarg(argc, argv, 1, "slice");
+    }
+    if (argc > 2 && argv[2].tag != T_NIL) {
+        to = iarg(argc, argv, 2, "slice");
+    }
+    if (from < 0) from += units;
+    if (to < 0) to += units;
     if (from < 0) from = 0;
-    if (to > (int64_t)s->len) to = s->len;
+    if (to > units) to = units;
     if (to < from) to = from;
-    return str_value(s->chars + from, (size_t)(to - from));
+
+    uint32_t begin = str_offset_of_unit(s, from);
+    uint32_t finish = str_offset_of_unit(s, to);
+    return str_value(s->chars + begin, (size_t)(finish - begin));
 }
 
 static Value s_split(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
     List *parts = list_new(8);
-    if (argc < 2 || argv[1].tag == T_NIL) {
-        uint32_t start = 0;
-        for (uint32_t i = 0; i <= s->len; i++) {
-            if (i == s->len || is_space(s->chars[i])) {
-                if (i > start) {
-                    list_push(parts, str_value(s->chars + start, i - start));
-                }
-                start = i + 1;
-            }
-        }
-        return v_obj((Obj *)parts);
-    }
 
-    Str *separator = as_str(argv[1], "split");
+    // The default separator is a single space, not "any whitespace": the
+    // interpreter leaves empty pieces in place ("a  b".split() has three).
+    Value separator_value = (argc > 1 && argv[1].tag != T_NIL)
+        ? argv[1]
+        : str_value(" ", 1);
+    Str *separator = as_str(separator_value, "split");
+
     if (separator->len == 0) {
-        for (uint32_t i = 0; i < s->len; i++) {
-            list_push(parts, str_value(s->chars + i, 1));
+        // Empty separator: one piece per character, whole code points only.
+        for (uint32_t i = 0; i < s->len; ) {
+            int size;
+            utf8_decode(s->chars + i, s->chars + s->len, &size);
+            list_push(parts, str_value(s->chars + i, (size_t)size));
+            i += (uint32_t)size;
         }
         return v_obj((Obj *)parts);
     }
@@ -2831,6 +2855,23 @@ static Value s_chars(int argc, Value *argv) {
     return v_obj((Obj *)chars);
 }
 
+// `words()` is not `split()`: it splits on any whitespace and drops the empty
+// pieces, so "" has no words while "".split() has one empty field.
+static Value s_words(int argc, Value *argv) {
+    Str *s = self_str(argc, argv);
+    List *words = list_new(8);
+    uint32_t i = 0;
+    while (i < s->len) {
+        while (i < s->len && is_space(s->chars[i])) i++;
+        uint32_t start = i;
+        while (i < s->len && !is_space(s->chars[i])) i++;
+        if (i > start) {
+            list_push(words, str_value(s->chars + start, i - start));
+        }
+    }
+    return v_obj((Obj *)words);
+}
+
 static Value s_lines(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
     List *lines = list_new(8);
@@ -2841,7 +2882,9 @@ static Value s_lines(int argc, Value *argv) {
             if (end > start && s->chars[end - 1] == '\r') {
                 end--;
             }
-            list_push(lines, str_value(s->chars + start, end - start));
+            if (end > start) {
+                list_push(lines, str_value(s->chars + start, end - start));
+            }
             start = i + 1;
         }
     }
@@ -2850,14 +2893,45 @@ static Value s_lines(int argc, Value *argv) {
 
 static Value s_isempty(int argc, Value *argv) { return v_bool(self_str(argc, argv)->len == 0); }
 
+// `toInt([fallback])`: parse the whole trimmed text or use the fallback, and
+// raise when neither applies — strtoll alone would answer 0 for "abc".
 static Value s_toint(int argc, Value *argv) {
-    (void)argc;
-    return v_int(strtoll(self_str(argc, argv)->chars, NULL, 10));
+    Str *s = self_str(argc, argv);
+    const char *start = s->chars;
+    const char *end = s->chars + s->len;
+    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) start++;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) end--;
+
+    char *consumed = NULL;
+    errno = 0;
+    long long value = strtoll(start, &consumed, 10);
+    if (start < end && consumed == end && errno != ERANGE) {
+        return v_int((int64_t)value);
+    }
+    if (argc > 1) {
+        return argv[1];
+    }
+    tern_panic("ArgumentError", "cannot parse '%.*s' as an integer", (int)(end - start), start);
+    return v_nil();
 }
 
 static Value s_tofloat(int argc, Value *argv) {
-    (void)argc;
-    return v_float(strtod(self_str(argc, argv)->chars, NULL));
+    Str *s = self_str(argc, argv);
+    const char *start = s->chars;
+    const char *end = s->chars + s->len;
+    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) start++;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) end--;
+
+    char *consumed = NULL;
+    double number = strtod(start, &consumed);
+    if (start < end && consumed == end) {
+        return v_float(number);
+    }
+    if (argc > 1) {
+        return argv[1];
+    }
+    tern_panic("ArgumentError", "cannot parse '%.*s' as a number", (int)(end - start), start);
+    return v_nil();
 }
 
 static Value s_tostring(int argc, Value *argv) {
@@ -2865,12 +2939,15 @@ static Value s_tostring(int argc, Value *argv) {
     return argv[0];
 }
 
-static Value s_pad(int argc, Value *argv, bool start) {
+static Value s_pad(int argc, Value *argv, bool start, const char *name) {
     Str *s = self_str(argc, argv);
-    int64_t width = iarg(argc, argv, 1, "pad");
+    int64_t width = iarg(argc, argv, 1, name);
     Str *fill = NULL;
-    if (argc > 2 && v_is_str(argv[2]) && ((Str *)argv[2].as.o)->len > 0) {
-        fill = (Str *)argv[2].as.o;
+    if (argc > 2) {
+        Str *candidate = as_str(argv[2], name);
+        if (candidate->len > 0) {
+            fill = candidate;
+        }
     }
 
     int64_t units = str_units(s);
@@ -2928,8 +3005,8 @@ static Value s_pad(int argc, Value *argv, bool start) {
     return v_obj((Obj *)out);
 }
 
-static Value s_padstart(int argc, Value *argv) { return s_pad(argc, argv, true); }
-static Value s_padend(int argc, Value *argv) { return s_pad(argc, argv, false); }
+static Value s_padstart(int argc, Value *argv) { return s_pad(argc, argv, true, "padStart"); }
+static Value s_padend(int argc, Value *argv) { return s_pad(argc, argv, false, "padEnd"); }
 
 static Value s_reversed(int argc, Value *argv) {
     Str *s = self_str(argc, argv);
@@ -2969,7 +3046,8 @@ static Value l_push(int argc, Value *argv) {
     for (int i = 1; i < argc; i++) {
         list_push(list, argv[i]);
     }
-    return argv[0];
+    // The new length, like the interpreter (not the list itself).
+    return v_int(list->count);
 }
 
 static Value l_pop(int argc, Value *argv) {
@@ -2993,20 +3071,28 @@ static Value l_shift(int argc, Value *argv) {
 
 static Value l_unshift(int argc, Value *argv) {
     List *list = self_list(argc, argv);
-    list_reserve(list, list->count + 1);
-    memmove(list->items + 1, list->items, (size_t)list->count * sizeof(Value));
-    list->items[0] = arg(argc, argv, 1);
-    list->count++;
-    return argv[0];
+    int added = argc - 1;
+    if (added > 0) {
+        list_reserve(list, list->count + added);
+        memmove(list->items + added, list->items, (size_t)list->count * sizeof(Value));
+        for (int i = 0; i < added; i++) {
+            list->items[i] = argv[i + 1];
+        }
+        list->count += added;
+    }
+    return v_int(list->count);
 }
 
 static Value l_join(int argc, Value *argv) {
     List *list = self_list(argc, argv);
-    const char *separator = ", ";
-    size_t separator_len = 2;
-    if (argc > 1 && v_is_str(argv[1])) {
-        separator = ((Str *)argv[1].as.o)->chars;
-        separator_len = ((Str *)argv[1].as.o)->len;
+    const char *separator = ",";
+    size_t separator_len = 1;
+    if (argc > 1) {
+        // Any value works as a separator: it is rendered, not required to be a
+        // string, exactly like the items themselves.
+        Str *rendered = (Str *)tern_to_string(argv[1]).as.o;
+        separator = rendered->chars;
+        separator_len = rendered->len;
     }
 
     Buf buf;
@@ -3298,16 +3384,22 @@ static Value num_abs(Value v) {
 
 static Value n_abs_self(int argc, Value *argv) { (void)argc; return num_abs(argv[0]); }
 
+// `5.clamp(1, 9)` keeps the integer type and needs integer bounds;
+// `2.5.clamp(0.0, 1.0)` accepts any numbers.
 static Value n_clamp_self(int argc, Value *argv) {
     Value v = argv[0];
-    double low = v_as_number(arg(argc, argv, 1));
-    double high = v_as_number(arg(argc, argv, 2));
-    double value = v_as_number(v);
+    if (v.tag == T_INT) {
+        int64_t value = v.as.i;
+        int64_t low = need_int(arg(argc, argv, 1), "clamp", 2);
+        int64_t high = need_int(arg(argc, argv, 2), "clamp", 3);
+        return v_int(value < low ? low : (value > high ? high : value));
+    }
+
+    double value = v_as_double(v);
+    double low = need_number(arg(argc, argv, 1), "clamp", 2);
+    double high = need_number(arg(argc, argv, 2), "clamp", 3);
     if (value < low) value = low;
     if (value > high) value = high;
-    if (v.tag == T_INT && arg(argc, argv, 1).tag == T_INT && arg(argc, argv, 2).tag == T_INT) {
-        return v_int((int64_t)value);
-    }
     return v_float(value);
 }
 
@@ -3429,7 +3521,8 @@ static Value r_each(int argc, Value *argv) {
         Value item = items->items[i];
         tern_call(fn, 1, &item);
     }
-    return argv[0];
+    // list.each returns nil, so range.each does too.
+    return v_nil();
 }
 
 
@@ -3632,14 +3725,13 @@ static Value l_removevalue(int argc, Value *argv) {
     Value needle = arg(argc, argv, 1);
     for (int32_t i = 0; i < list->count; i++) {
         if (tern_equal(list->items[i], needle)) {
-            Value removed = list->items[i];
             memmove(&list->items[i], &list->items[i + 1],
                     (size_t)(list->count - i - 1) * sizeof(Value));
             list->count--;
-            return removed;
+            return v_bool(true);
         }
     }
-    return v_nil();
+    return v_bool(false);
 }
 
 static Value m_tostring_self(int argc, Value *argv) {
@@ -3649,7 +3741,14 @@ static Value m_tostring_self(int argc, Value *argv) {
 
 static Value m_merge(int argc, Value *argv) {
     Map *map = (Map *)argv[0].as.o;
-    Map *other = (Map *)arg(argc, argv, 1).as.o;
+    Value argument = arg(argc, argv, 1);
+    if (!v_is_map(argument)) {
+        // The interpreter routes merge through `+`, which only knows how to add
+        // a map to a map; anything else reads a non-map as a Map pointer here.
+        tern_panic("TypeError", "operator '+' is not defined for map and %s",
+                   tern_type_name(argument));
+    }
+    Map *other = (Map *)argument.as.o;
     Map *out = map_new();
     for (int32_t i = 0; i < map->cap; i++) {
         MapEntry *entry = &map->entries[i];
@@ -4614,7 +4713,7 @@ static const MethodSlot string_methods[] = {
     {"count", s_count, 2, 2},
     {"substring", s_substring, 2, 3}, {"slice", s_slice, 1, 3}, {"split", s_split, 1, 2},
     {"replace", s_replace, 3, 3}, {"replaceFirst", s_replacefirst, 3, 3}, {"repeat", s_repeat, 2, 2},
-    {"chars", s_chars, 1, 1}, {"lines", s_lines, 1, 1}, {"words", s_split, 1, 1},
+    {"chars", s_chars, 1, 1}, {"lines", s_lines, 1, 1}, {"words", s_words, 1, 1},
     {"isEmpty", s_isempty, 1, 1}, {"toInt", s_toint, 1, 2}, {"toFloat", s_tofloat, 1, 2},
     {"toString", s_tostring, 1, 1}, {"padStart", s_padstart, 2, 3}, {"padEnd", s_padend, 2, 3},
     {"reversed", s_reversed, 1, 1}, {"format", s_format, 1, -1}, {NULL, NULL},
