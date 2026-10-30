@@ -42,6 +42,13 @@ net.sendBytes(lax, bytes("lax"));
 println("lax:", len(net.receiveBytes(lax, 3)));
 net.close(lax);
 
+// http.get speaks https: the same TLS options, one request per connection.
+let direct = http.get("https://127.0.0.1:__WEB_PORT__/page.txt", {"ca": "__CERT__", "timeout": 4000});
+println("https:", direct["status"], direct["body"]);
+println("https untrusted:", kind(fn() {
+    http.get("https://127.0.0.1:__WEB_PORT__/page.txt", {"timeout": 4000});
+}));
+
 // http.exchange works on a TLS handle: the request and response are encrypted.
 let web = net.connect("127.0.0.1", __HTTP_PORT__, {"tls": true, "ca": "__CERT__", "timeout": 4000});
 let response = http.exchange(web, "GET", "http://127.0.0.1:__HTTP_PORT__/page.txt");

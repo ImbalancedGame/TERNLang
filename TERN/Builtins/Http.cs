@@ -92,6 +92,8 @@ namespace TERN.Builtins
             public int Timeout { get; set; } = DefaultTimeout;
             public int Redirects { get; set; } = DefaultRedirects;
             public int MaxBytes { get; set; } = DefaultMaxBytes;
+            public bool Verify { get; set; } = true;
+            public string? Ca { get; set; }
         }
 
         private static Options ParseOptions(VM vm, in Value value, string operation)
@@ -168,6 +170,21 @@ namespace TERN.Builtins
                 options.Redirects = (int)count;
             }
 
+            if (map.TryGet(Value.Str("verify"), out var verify))
+            {
+                if (verify.Kind != ValueKind.Bool)
+                {
+                    throw vm.Error("TypeError", $"option 'verify' must be a boolean, not {vm.TypeName(verify)}");
+                }
+
+                options.Verify = verify.AsBool();
+            }
+
+            if (map.TryGet(Value.Str("ca"), out var ca))
+            {
+                options.Ca = NetModule.Text(vm, ca, "option 'ca'");
+            }
+
             if (map.TryGet(Value.Str("maxBytes"), out var maxBytes))
             {
                 var limit = NetModule.Number(vm, maxBytes, "maxBytes");
@@ -220,29 +237,34 @@ namespace TERN.Builtins
 
         private readonly struct Url
         {
-            public Url(string host, int port, string path)
+            public Url(string host, int port, string path, bool tls)
             {
                 Host = host;
                 Port = port;
                 Path = path;
+                Tls = tls;
             }
 
             public string Host { get; }
             public int Port { get; }
             public string Path { get; }
+            public bool Tls { get; }
 
-            public string Authority => Port == 80 ? Host : $"{Host}:{Port}";
+            public string Scheme => Tls ? "https" : "http";
+
+            public string Authority => Port == (Tls ? 443 : 80) ? Host : $"{Host}:{Port}";
         }
 
         private static Url ParseUrl(VM vm, string url)
         {
-            const string scheme = "http://";
-            if (!url.StartsWith(scheme, StringComparison.Ordinal))
+            var tls = url.StartsWith("https://", StringComparison.Ordinal);
+            if (!tls && !url.StartsWith("http://", StringComparison.Ordinal))
             {
-                throw vm.Error("HttpError", $"only http:// URLs are supported, not '{url}'");
+                throw vm.Error("HttpError", $"only http:// and https:// URLs are supported, not '{url}'");
             }
 
-            var rest = url.Substring(scheme.Length);
+            var rest = url.Substring(tls ? 8 : 7);
+            var defaultPort = tls ? 443 : 80;
             var slash = rest.IndexOfAny(new[] { '/', '?' });
             var authority = slash < 0 ? rest : rest.Substring(0, slash);
             var path = slash < 0 ? "/" : rest.Substring(slash);
@@ -259,7 +281,7 @@ namespace TERN.Builtins
             var colon = authority.LastIndexOf(':');
             if (colon < 0)
             {
-                return new Url(authority, 80, path);
+                return new Url(authority, defaultPort, path, tls);
             }
 
             var host = authority.Substring(0, colon);
@@ -275,7 +297,7 @@ namespace TERN.Builtins
                 throw vm.Error("HttpError", $"URL has a bad port: '{url}'");
             }
 
-            return new Url(host, port, path);
+            return new Url(host, port, path, tls);
         }
 
         // ------------------------------------------------------------- the request
@@ -745,7 +767,16 @@ namespace TERN.Builtins
                     throw vm.Error("HttpError", $"cannot connect to {target.Host}:{target.Port}: {error.Message}");
                 }
 
-                var stream = new NetworkStream(socket, ownsSocket: false);
+                var endpoint = new NetEndpoint(socket, NetKind.Stream);
+                if (target.Tls)
+                {
+                    var tlsOptions = new NetModule.NetOptions(
+                        token: null, maxFrame: NetModule.DefaultMaxFrame, timeout: options.Timeout,
+                        tls: true, sni: null, verify: options.Verify, ca: options.Ca);
+                    NetModule.StartTls(vm, endpoint, tlsOptions, target.Host);
+                }
+
+                var stream = endpoint.Stream;
                 WriteAll(vm, stream, EncodeRequest(vm, currentMethod, currentUrl, options));
                 var response = ReadResponse(vm, stream, options.MaxBytes);
 
@@ -790,12 +821,12 @@ namespace TERN.Builtins
 
             if (location.StartsWith('/'))
             {
-                return $"http://{from.Authority}{location}";
+                return $"{from.Scheme}://{from.Authority}{location}";
             }
 
             var directory = from.Path.LastIndexOf('/');
             var prefix = directory <= 0 ? "/" : from.Path.Substring(0, directory + 1);
-            return $"http://{from.Authority}{prefix}{location}";
+            return $"{from.Scheme}://{from.Authority}{prefix}{location}";
         }
     }
 }

@@ -569,7 +569,7 @@ namespace TERN.Builtins
         /// is checked against `sni` (the host when it is not set) — unless the
         /// script asked for verify: false, which trusts anything.
         /// </summary>
-        private static void StartTls(VM vm, NetEndpoint endpoint, NetOptions options, string host)
+        internal static void StartTls(VM vm, NetEndpoint endpoint, NetOptions options, string host)
         {
             var target = options.Sni ?? host;
             X509Certificate2Collection? roots = null;

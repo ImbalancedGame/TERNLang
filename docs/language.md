@@ -587,10 +587,15 @@ library that may not be installed. `http.get(url[, options])` and
 `http.request(method, url[, options])` takes any method.
 
 ```tern
-let response = http.get("http://example.com/index.html", {"timeout": 5000});
+let response = http.get("https://example.com/index.html", {"timeout": 5000});
 println(response["status"], response["reason"], response["headers"]["content-type"]);
 println(response["body"]);
 ```
+
+`https://` works: the connection is wrapped in TLS with the same machinery
+`net.connect` uses, so the certificate is checked against the system store unless
+`ca` names a PEM bundle (or `verify` is false). A `Host` header is only given a
+port when it is not the scheme's default.
 
 A response is a map with `status` (integer), `reason`, `version`, `headers`
 (a map with lowercased names, repeated headers joined by `, `), `body` (text) and
@@ -603,6 +608,8 @@ A response is a map with `status` (integer), `reason`, `version`, `headers`
 | `timeout` | Milliseconds allowed for connecting and for the whole exchange | 10000 |
 | `redirects` | Redirects to follow (301, 302, 303, 307, 308); a 303 switches to GET | 5 |
 | `maxBytes` | Largest response body accepted | 8 MiB |
+| `verify` | Check the TLS certificate chain and name (`https://` only) | `true` |
+| `ca` | PEM bundle to trust instead of the system store (`https://` only) | system store |
 
 Responses are framed by `Transfer-Encoding: chunked`, then `Content-Length`, then
 end of stream, so a server that closes the connection at the end of the body

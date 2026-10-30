@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """A throwaway TLS server for the live TLS test (tools/test-tls.sh).
 
-It is a TERN peer: it reads the hello frame std:net sends, then either echoes raw
-bytes back ("echo" mode) or answers one plain HTTP request ("http" mode). It
-exists so the handshake, the certificate checks and http.exchange over TLS can be
-exercised against a real certificate without a network.
+It reads the hello frame std:net sends, then either echoes raw bytes back
+("echo" mode) or answers one plain HTTP request ("http" mode). "web" mode skips
+the hello and is a plain HTTPS server, which is what http.get("https://...")
+talks to. It exists so the handshake, the certificate checks, http.exchange and
+https requests can be exercised against a real certificate without a network.
 """
 import socket
 import ssl
@@ -26,10 +27,21 @@ def read_exactly(conn, count):
 def serve(conn, mode):
     try:
         conn.settimeout(5)
-        size = struct.unpack(">I", read_exactly(conn, 4))[0]
-        read_exactly(conn, size)  # the TERN hello
+        if mode == "web":
+            pass  # no hello: this one is a plain HTTPS server
+        else:
+            size = struct.unpack(">I", read_exactly(conn, 4))[0]
+            read_exactly(conn, size)  # the TERN hello
 
-        if mode == "echo":
+        if mode == "web":
+            request = b""
+            while b"\r\n\r\n" not in request:
+                request += read_exactly(conn, 1)
+            body = b"https works"
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
+            while conn.recv(4096):
+                pass
+        elif mode == "echo":
             while True:
                 chunk = conn.recv(4096)
                 if not chunk:

@@ -13,6 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 PORT="${TERN_TLS_PORT:-9461}"
 HTTP_PORT="$((PORT + 1))"
+WEB_PORT="$((PORT + 2))"
 SERVERS=()
 
 cleanup() {
@@ -32,9 +33,11 @@ python3 "$HERE/tools/tls/server.py" "$PORT" echo "$WORK/cert.pem" "$WORK/key.pem
 SERVERS+=($!)
 python3 "$HERE/tools/tls/server.py" "$HTTP_PORT" http "$WORK/cert.pem" "$WORK/key.pem" &
 SERVERS+=($!)
+python3 "$HERE/tools/tls/server.py" "$WEB_PORT" web "$WORK/cert.pem" "$WORK/key.pem" &
+SERVERS+=($!)
 
 # Wait for both ports to answer a connection instead of sleeping blindly.
-for port in "$PORT" "$HTTP_PORT"; do
+for port in "$PORT" "$HTTP_PORT" "$WEB_PORT"; do
   for _ in $(seq 1 50); do
     if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
       exec 3>&-
@@ -44,7 +47,8 @@ for port in "$PORT" "$HTTP_PORT"; do
   done
 done
 
-sed -e "s#__PORT__#$PORT#g" -e "s#__HTTP_PORT__#$HTTP_PORT#g" -e "s#__CERT__#$WORK/cert.pem#g" \
+sed -e "s#__PORT__#$PORT#g" -e "s#__HTTP_PORT__#$HTTP_PORT#g" -e "s#__WEB_PORT__#$WEB_PORT#g" \
+  -e "s#__CERT__#$WORK/cert.pem#g" \
   "$HERE/tools/tls/probe.tern" > "$WORK/probe.tern"
 
 echo "tls: running the probe in the interpreter"

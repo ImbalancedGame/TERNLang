@@ -14,7 +14,21 @@ Content-Length: 2
 hi
 96
 method 'BAD METHOD' is not valid
-only http:// URLs are supported, not 'https://example.com/'
+GET / HTTP/1.1
+Host: example.com
+Connection: close
+User-Agent: TERN
+
+
+GET /x HTTP/1.1
+Host: example.com:8443
+Connection: close
+User-Agent: TERN
+
+
+only http:// and https:// URLs are supported, not 'ftp://example.com/'
+option 'verify' must be a boolean, not int
+option 'ca' must be a string, not int
 URL has no host: 'http:///path'
 URL has a bad port: 'http://example.com:0/'
 URL has a bad port: 'http://example.com:abc/'

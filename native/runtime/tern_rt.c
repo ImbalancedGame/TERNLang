@@ -6717,15 +6717,18 @@ static bool http_parse_number(const char *text, long minimum, long maximum, long
     return true;
 }
 
-/// Parses "http://host[:port][/path?query]" into its parts.
-static void http_parse_url(const char *url, char **host, int *port, char **path) {
-    const char *scheme = "http://";
-    size_t scheme_length = strlen(scheme);
-    if (strncmp(url, scheme, scheme_length) != 0) {
-        tern_panic("HttpError", "only http:// URLs are supported, not '%s'", url);
+/// Parses "http(s)://host[:port][/path?query]" into its parts.
+static void http_parse_url(const char *url, char **host, int *port, char **path, bool *tls) {
+    bool secure = strncmp(url, "https://", 8) == 0;
+    if (!secure && strncmp(url, "http://", 7) != 0) {
+        tern_panic("HttpError", "only http:// and https:// URLs are supported, not '%s'", url);
+    }
+    if (tls) {
+        *tls = secure;
     }
 
-    const char *rest = url + scheme_length;
+    const char *rest = url + (secure ? 8 : 7);
+    int default_port = secure ? 443 : 80;
     const char *slash = strpbrk(rest, "/?");
     size_t authority_length = slash ? (size_t)(slash - rest) : strlen(rest);
     if (authority_length == 0) {
@@ -6749,7 +6752,7 @@ static void http_parse_url(const char *url, char **host, int *port, char **path)
     authority[authority_length] = '\0';
 
     char *colon = strrchr(authority, ':');
-    *port = 80;
+    *port = default_port;
     if (colon) {
         *colon = '\0';
         long parsed = 0;
@@ -6779,6 +6782,8 @@ typedef struct {
     int timeout;
     int redirects;
     int max_bytes;
+    bool verify;
+    const char *ca;
 } HttpOptions;
 
 static bool http_bytes_value(Value v, ByteBuf *out) {
@@ -6811,6 +6816,8 @@ static void http_parse_options(Value v, const char *operation, HttpOptions *opti
     options->timeout = HTTP_DEFAULT_TIMEOUT;
     options->redirects = HTTP_DEFAULT_REDIRECTS;
     options->max_bytes = HTTP_DEFAULT_MAX_BYTES;
+    options->verify = true;
+    options->ca = NULL;
 
     if (v.tag == T_NIL || v.tag == T_MISSING) {
         return;
@@ -6884,6 +6891,17 @@ static void http_parse_options(Value v, const char *operation, HttpOptions *opti
         options->redirects = (int)count;
     }
 
+    if (map_get(map, str_from_cstr("verify"), &found)) {
+        if (found.tag != T_BOOL) {
+            tern_panic("TypeError", "option 'verify' must be a boolean, not %s", tern_type_name(found));
+        }
+        options->verify = found.as.i != 0;
+    }
+
+    if (map_get(map, str_from_cstr("ca"), &found)) {
+        options->ca = net_arg_text(found, "option 'ca'");
+    }
+
     if (map_get(map, str_from_cstr("maxBytes"), &found)) {
         double limit = net_arg_number(found, "maxBytes");
         if (limit < 0 || limit > 67108864) {
@@ -6913,7 +6931,8 @@ static void http_encode_request(const char *method, const char *url, HttpOptions
     char *host = NULL;
     char *path = NULL;
     int port = 0;
-    http_parse_url(url, &host, &port, &path);
+    bool secure = false;
+    http_parse_url(url, &host, &port, &path, &secure);
 
     char head[64];
     bb_add_text(out, method);
@@ -6924,7 +6943,7 @@ static void http_encode_request(const char *method, const char *url, HttpOptions
     if (!http_has_header(options, "Host")) {
         bb_add_text(out, "Host: ");
         bb_add_text(out, host);
-        if (port != 80) {
+        if (port != (secure ? 443 : 80)) {
             snprintf(head, sizeof head, ":%d", port);
             bb_add_text(out, head);
         }
@@ -7155,12 +7174,13 @@ static char *http_resolve_url(const char *base_url, const char *location) {
     char *host = NULL;
     char *path = NULL;
     int port = 0;
-    http_parse_url(base_url, &host, &port, &path);
+    bool secure = false;
+    http_parse_url(base_url, &host, &port, &path, &secure);
 
     ByteBuf out = { 0 };
-    bb_add_text(&out, "http://");
+    bb_add_text(&out, secure ? "https://" : "http://");
     bb_add_text(&out, host);
-    if (port != 80) {
+    if (port != (secure ? 443 : 80)) {
         char port_text[16];
         snprintf(port_text, sizeof port_text, ":%d", port);
         bb_add_text(&out, port_text);
@@ -7194,26 +7214,43 @@ static Map *http_send_impl(const char *method, const char *url, HttpOptions *opt
         char *host = NULL;
         char *path = NULL;
         int port = 0;
-        http_parse_url(current_url, &host, &port, &path);
+        bool secure = false;
+        http_parse_url(current_url, &host, &port, &path, &secure);
         free(path);
 
         int fd = http_connect(host, port, options->timeout);
+        void *ssl = NULL;
+        void *ctx = NULL;
+        if (secure) {
+            SSL *handshake = NULL;
+            SSL_CTX *handshake_ctx = NULL;
+            tls_handshake(fd, host, options->verify, options->ca, &handshake, &handshake_ctx);
+            ssl = (void *)handshake;
+            ctx = (void *)handshake_ctx;
+        }
         free(host);
 
         ByteBuf request = { 0 };
         http_encode_request(current_method, current_url, options, &request);
-        http_write_all(fd, request.data, request.len);
+        http_write_stream(ssl, fd, request.data, request.len);
         bb_free(&request);
 
         HttpSource source;
         memset(&source, 0, sizeof source);
         source.fd = fd;
+        source.ssl = ssl;
         source.max_bytes = options->max_bytes;
 
         char *reason = NULL;
         int status = 0;
         Map *response = http_read(&source, options->max_bytes, &reason, &status);
         bb_free(&source.buffer);
+
+        if (ssl) {
+            tls_SSL_shutdown((SSL *)ssl);
+            tls_SSL_free((SSL *)ssl);
+            tls_SSL_CTX_free((SSL_CTX *)ctx);
+        }
         close(fd);
 
         Value location = v_nil();

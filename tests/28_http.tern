@@ -30,7 +30,11 @@ println(asText(http.encodeRequest("POST", "http://example.com:8080/x", {"body": 
 println(len(http.encodeRequest("PUT", "http://example.com/", {"body": [1, 2, 3]})));
 
 println(kind(fn() { http.encodeRequest("BAD METHOD", "http://example.com/"); }));
-println(kind(fn() { http.encodeRequest("GET", "https://example.com/"); }));
+println(asText(http.encodeRequest("GET", "https://example.com/")));
+println(asText(http.encodeRequest("GET", "https://example.com:8443/x")));
+println(kind(fn() { http.encodeRequest("GET", "ftp://example.com/"); }));
+println(kind(fn() { http.encodeRequest("GET", "https://example.com/", {"verify": 1}); }));
+println(kind(fn() { http.encodeRequest("GET", "https://example.com/", {"ca": 1}); }));
 println(kind(fn() { http.encodeRequest("GET", "http:///path"); }));
 println(kind(fn() { http.encodeRequest("GET", "http://example.com:0/"); }));
 println(kind(fn() { http.encodeRequest("GET", "http://example.com:abc/"); }));
