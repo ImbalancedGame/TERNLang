@@ -30,3 +30,8 @@ not a map
 a is nil a is set no a
 grid 10 rows 5,6 +2 triple 6
 negative digit digit big negative out of range digit negative digit
+nested 567
+three [9, 5][9, 6][9, 7]
+pair 12 34
+deep 1 [2, 3] 4
+no match

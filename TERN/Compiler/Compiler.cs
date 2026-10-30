@@ -465,6 +465,19 @@ namespace TERN.Compiler
                 return slot;
             }
 
+            /// <summary>
+            /// Gives back a slot taken by <see cref="ReserveSlot"/> once the value in
+            /// it is dead. Only the most recent reservation can be reclaimed, which is
+            /// all a pattern test needs: it fills a temporary, tests it, and is done.
+            /// </summary>
+            private void ReleaseSlot(int slot)
+            {
+                if (_nextSlot == slot + 1)
+                {
+                    _nextSlot = slot;
+                }
+            }
+
             private int DeclareLocal(string name, bool isConst)
             {
                 var slot = _nextSlot++;
@@ -2955,6 +2968,10 @@ namespace TERN.Compiler
                         // be present, and its value must match the entry's pattern.
                         failJumps.Add(Emit(Op.JumpIfNotMap, subjectSlot, 0, 0, pop: 0, push: 0));
 
+                        // One temporary for the whole pattern: each entry is extracted,
+                        // tested and dropped before the next one is read.
+                        var valueSlot = ReserveSlot();
+
                         foreach (var entry in mapPattern.Entries)
                         {
                             var keyConstant = AddStringConstant(entry.Key);
@@ -2965,15 +2982,15 @@ namespace TERN.Compiler
                             Emit(Op.In, 0, 0, 0, pop: 2, push: 1);
                             failJumps.Add(Emit(Op.JumpIfFalse, 0, 0, 0, pop: 1, push: 0));
 
-                            var valueSlot = ReserveSlot();
                             EmitLoadLocal(subjectSlot);
                             Emit(Op.LoadConst, keyConstant, 0, 0, pop: 0, push: 1);
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                            EmitStoreLocal(valueSlot);
+                            EmitStoreLocalPlain(valueSlot);
 
                             EmitPatternTest(entry.Pattern, valueSlot, failJumps);
                         }
 
+                        ReleaseSlot(valueSlot);
                         return;
                     }
 
@@ -2993,18 +3010,24 @@ namespace TERN.Compiler
                             failJumps.Add(Emit(Op.JumpIfTrue, 0, 0, 0, pop: 1, push: 0));
                         }
 
-                        for (var i = 0; i < listPattern.Elements.Count; i++)
+                        if (listPattern.Elements.Count > 0)
                         {
-                            var element = listPattern.Elements[i];
-                            var tempSlot = DeclareLocal("$elem", isConst: true);
-                            EmitLoadLocal(subjectSlot);
-                            Emit(Op.LoadInt, i, 0, 0, pop: 0, push: 1);
-                            Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                            EmitStoreLocal(tempSlot);
+                            var tempSlot = ReserveSlot();
 
-                            var innerFails = new List<int>();
-                            EmitPatternTest(element, tempSlot, innerFails);
-                            failJumps.AddRange(innerFails);
+                            for (var i = 0; i < listPattern.Elements.Count; i++)
+                            {
+                                var element = listPattern.Elements[i];
+                                EmitLoadLocal(subjectSlot);
+                                Emit(Op.LoadInt, i, 0, 0, pop: 0, push: 1);
+                                Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
+                                EmitStoreLocalPlain(tempSlot);
+
+                                var innerFails = new List<int>();
+                                EmitPatternTest(element, tempSlot, innerFails);
+                                failJumps.AddRange(innerFails);
+                            }
+
+                            ReleaseSlot(tempSlot);
                         }
 
                         return;
@@ -3056,6 +3079,7 @@ namespace TERN.Compiler
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
                             EmitStoreLocal(nested);
                             BindPatternVariables(entry.Pattern, nested);
+                            ReleaseSlot(nested);
                         }
 
                         return;
@@ -3088,6 +3112,7 @@ namespace TERN.Compiler
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
                             EmitStoreLocal(nested);
                             BindPatternVariables(element, nested);
+                            ReleaseSlot(nested);
                         }
 
                         if (listPattern.RestName is not null)

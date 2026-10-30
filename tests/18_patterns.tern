@@ -96,3 +96,20 @@ fn sign(n) {
     };
 }
 println(sign(-5), sign(5), sign(-50), sign(-500), sign(0), sign(-1.5));
+
+// A pattern test should not leave a slot (or a hidden local) behind per element:
+// a match-heavy function keeps its frame small and deep nesting still binds.
+fn shape(value) {
+    return match value {
+        [[1, a], [2, b], [3, c]] => "nested ${a}${b}${c}",
+        [first, second, third] => "three ${first}${second}${third}",
+        {"kind": "pair", "left": [l1, l2], "right": [r1, r2]} => "pair ${l1}${l2} ${r1}${r2}",
+        {"a": [x, ...xs], "b": {"c": [y]}} => "deep ${x} ${xs} ${y}",
+        _ => "no match",
+    };
+}
+println(shape([[1, 5], [2, 6], [3, 7]]));
+println(shape([[9, 5], [9, 6], [9, 7]]));
+println(shape({"kind": "pair", "left": [1, 2], "right": [3, 4], "extra": true}));
+println(shape({"a": [1, 2, 3], "b": {"c": [4]}}));
+println(shape("nothing"));
