@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Prints a Python interpreter that can run the tooling.
+#
+# The IDE's test suites need nothing beyond the standard library; the UI suite
+# additionally needs PySide6. Nothing in tools/ may depend on the caller's PATH
+# being set up, so every script asks this for an interpreter.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+for candidate in "$HERE/.venv/bin/python" "/tmp/qtenv/bin/python" python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    echo "$candidate"
+    exit 0
+  fi
+done
+
+echo "python3" >&2
+exit 1

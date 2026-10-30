@@ -266,6 +266,92 @@ def main():
                  str(recent.list.currentItem().data(Qt.UserRole)))
     recent.deleteLater()
 
+    # -------------------------------------------------------- debugging
+    # A breakpoint, a stop, the stack, the locals, a step, and the program's
+    # output — through the window, not the protocol client.
+    debug_root = tempfile.mkdtemp(prefix="tern-debug-ui-")
+    debug_file = os.path.join(debug_root, "counted.tern")
+    with open(debug_file, "w", encoding="utf-8") as handle:
+        handle.write("fn double(n) {\n    let twice = n * 2;\n    return twice;\n}\n\n"
+                     "let total = 0;\nfor n in 1..4 {\n    total = total + double(n);\n}\n"
+                     "println(total);\n")
+
+    debug_window = StudioWindow(debug_root, theme="darcula")
+    debug_window.resize(1440, 900)
+    debug_window.show()
+    pump(app, 2000)
+    debug_window.open_file(debug_file)
+    pump(app, 500)
+
+    debug_editor = debug_window._editor()
+    set_breakpoint = debug_editor.toggle_breakpoint(1)      # line 2, inside double
+    checks.check("a breakpoint can be set on a line", set_breakpoint is True
+                 and 2 in debug_editor.breakpoints, str(debug_editor.breakpoints))
+    cleared = debug_editor.toggle_breakpoint(1)
+    checks.check("a breakpoint can be cleared again", cleared is False
+                 and 2 not in debug_editor.breakpoints, str(debug_editor.breakpoints))
+    debug_editor.toggle_breakpoint(1)
+
+    debug_window.debug_current()
+    pump(app, 3000)
+
+    checks.check("Debug starts a session", debug_window.debug_session is not None)
+    checks.check("the program stops at the breakpoint",
+                 debug_window.debug_panel.state.text().startswith("Paused on breakpoint"),
+                 debug_window.debug_panel.state.text())
+    frame_names = [debug_window.debug_panel.frames.topLevelItem(i).text(0)
+                   for i in range(debug_window.debug_panel.frames.topLevelItemCount())]
+    checks.check("the Debug window shows the stack", frame_names[:2] == ["double", "<module>"],
+                 str(frame_names))
+
+    def variable_map():
+        panel = debug_window.debug_panel
+        return {panel.variables.topLevelItem(i).text(0): panel.variables.topLevelItem(i).text(1)
+                for i in range(panel.variables.topLevelItemCount())}
+
+    values = variable_map()
+    checks.check("the Debug window shows the parameters", values.get("n") in ("1", "2", "3"),
+                 str(values))
+
+    debug_window.debug_step_over()
+    pump(app, 900)
+    checks.check("Step Over advances the line",
+                 debug_window.debug_panel.state.text().startswith("Paused on step"),
+                 debug_window.debug_panel.state.text())
+    values = variable_map()
+    checks.check("the stepped-over locals are still shown", "n" in values, str(values))
+
+    # The loop calls `double` four times, so the breakpoint fires again; clear it
+    # before letting the program finish.
+    debug_editor.toggle_breakpoint(1)
+    debug_window.debug_resume()
+    pump(app, 3000)
+    checks.check("the program finishes and the panel says so",
+                 debug_window.debug_panel.state.text() in ("Program finished", "Not debugging"),
+                 debug_window.debug_panel.state.text())
+    checks.check("the program's own output arrives in the Run window",
+                 "20" in debug_window.console.output.toPlainText(),
+                 debug_window.console.output.toPlainText()[-100:])
+    checks.check("the stopped marker is cleared", debug_editor.stopped_line == -1,
+                 str(debug_editor.stopped_line))
+
+    if shots:
+        os.makedirs(os.path.join(ROOT, "docs", "ide", "img"), exist_ok=True)
+        debug_editor.toggle_breakpoint(1) if 2 not in debug_editor.breakpoints else None
+        debug_window.debug_current()
+        pump(app, 3000)
+        debug_window._show_dock(debug_window.debug_dock)
+        pump(app, 300)
+        debug_window.grab().save(os.path.join(ROOT, "docs", "ide", "img", "debug.png"))
+        print("       wrote docs/ide/img/debug.png")
+        debug_window.debug_resume()
+        pump(app, 1500)
+
+    debug_window._shutdown()
+    pump(app, 300)
+    debug_window.deleteLater()
+    shutil_quiet(debug_root)
+
     # -------------------------------------------------------------- VCS
     # A throwaway repository: the panel is exercised against real git output,
     # including a commit, without touching the project under test.
@@ -415,6 +501,11 @@ def main():
     for name in checks.failed:
         print(f"  failed: {name}")
     return 1 if checks.failed else 0
+
+
+def shutil_quiet(path):
+    import shutil
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _uri(path):

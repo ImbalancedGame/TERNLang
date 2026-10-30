@@ -26,9 +26,10 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDockWidget, QFileDialog
 
 from .editor import EditorArea
 from .lsp import LanguageServer, path_for, uri_for
-from .panels import (ChangesPanel, ConsolePanel, DiffPanel, ProblemsPanel, ProjectPanel,
-                     RecentFilesDialog, StructurePanel, TerminalPanel,
+from .panels import (ChangesPanel, ConsolePanel, DebugPanel, DiffPanel, ProblemsPanel,
+                     ProjectPanel, RecentFilesDialog, StructurePanel, TerminalPanel,
                      SearchEverywhereDialog)
+from .debugger import DebugSession
 from .vcs import parse_diff
 from .theme import THEMES, monospace, stylesheet
 
@@ -54,6 +55,7 @@ class StudioWindow(QMainWindow):
         self.tabs = {}                       # path -> EditorArea
         self.diff_tabs = {}                  # "work:/abs/path" -> DiffPanel
         self._recent = []                    # paths, most recent first
+        self.debug_session = None            # the DebugSession, while there is one
         self.pending_hover = (None, None)
         self.run_process = None
         self.log_lines = []
@@ -162,6 +164,14 @@ class StudioWindow(QMainWindow):
         self.terminal_dock.setWidget(self.terminal)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.terminal_dock)
 
+        self.debug_panel = DebugPanel(self.theme)
+        self.debug_panel.frameSelected.connect(self._show_frame_variables)
+        self.debug_panel.evaluate_callback = self._evaluate_expression
+        self.debug_dock = QDockWidget("Debug", self)
+        self.debug_dock.setObjectName("debugDock")
+        self.debug_dock.setWidget(self.debug_panel)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.debug_dock)
+
         self.changes_panel = ChangesPanel(self.root, self.theme)
         self.changes_panel.openRequested.connect(self.open_file)
         self.changes_panel.diffRequested.connect(self.show_diff)
@@ -173,11 +183,12 @@ class StudioWindow(QMainWindow):
 
         self.setTabPosition(Qt.BottomDockWidgetArea, QTabWidget.North)
         for dock in (self.console_dock, self.problems_dock, self.terminal_dock,
-                     self.structure_dock, self.changes_dock):
+                     self.structure_dock, self.changes_dock, self.debug_dock):
             dock.setTitleBarWidget(QWidget())
         self.tabifyDockWidget(self.console_dock, self.problems_dock)
         self.tabifyDockWidget(self.problems_dock, self.terminal_dock)
-        self.tabifyDockWidget(self.terminal_dock, self.changes_dock)
+        self.tabifyDockWidget(self.terminal_dock, self.debug_dock)
+        self.tabifyDockWidget(self.debug_dock, self.changes_dock)
         self.console_dock.raise_()
 
         self.resizeDocks([self.project_dock, self.structure_dock], [260, 260], Qt.Horizontal)
@@ -186,6 +197,7 @@ class StudioWindow(QMainWindow):
         self.resizeDocks([self.console_dock, self.problems_dock, self.terminal_dock],
                          [170, 170, 170], Qt.Vertical)
         self.resizeDocks([self.changes_dock], [250], Qt.Vertical)
+        self.resizeDocks([self.debug_dock], [250], Qt.Vertical)
 
     def _action(self, text, shortcut=None, slot=None, checkable=False):
         action = QAction(text, self)
@@ -234,6 +246,15 @@ class StudioWindow(QMainWindow):
             "compile": self._action("Compile with Native Backend and Run", "Ctrl+F5", self.compile_and_run),
             "stop": self._action("Stop", "Ctrl+F2", self.stop_run),
             "check": self._action("Check File", "Ctrl+Alt+F5", self.check_file),
+            "debug": self._action("Debug", "Shift+F9", self.debug_current),
+            "resume": self._action("Resume Program", "Alt+F9", self.debug_resume),
+            "step_over": self._action("Step Over", "F8", self.debug_step_over),
+            "step_into": self._action("Step Into", "F7", self.debug_step_into),
+            "step_out": self._action("Step Out", "Shift+F8", self.debug_step_out),
+            "toggle_breakpoint": self._action("Toggle Breakpoint", "Ctrl+F8",
+                                              self.toggle_breakpoint),
+            "debug_window": self._action("Debug", "Alt+5",
+                                         lambda: self._show_dock(self.debug_dock)),
             "terminal": self._action("Terminal", "Alt+F12", lambda: self._show_dock(self.terminal_dock)),
             "commit": self._action("Commit", "Alt+0", lambda: self._show_dock(self.changes_dock)),
             "refresh_vcs": self._action("Refresh VCS", "Ctrl+Alt+F5", self.refresh_vcs),
@@ -290,6 +311,7 @@ class StudioWindow(QMainWindow):
         view_menu.addAction(a["run_window"])
         view_menu.addAction(a["problems"])
         view_menu.addAction(a["terminal"])
+        view_menu.addAction(a["debug_window"])
         view_menu.addAction(a["commit"])
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("Theme")
@@ -314,8 +336,16 @@ class StudioWindow(QMainWindow):
 
         run_menu = bar.addMenu("&Run")
         run_menu.addAction(a["run"])
+        run_menu.addAction(a["debug"])
         run_menu.addAction(a["compile"])
         run_menu.addAction(a["stop"])
+        run_menu.addSeparator()
+        run_menu.addAction(a["resume"])
+        run_menu.addAction(a["step_over"])
+        run_menu.addAction(a["step_into"])
+        run_menu.addAction(a["step_out"])
+        run_menu.addSeparator()
+        run_menu.addAction(a["toggle_breakpoint"])
         run_menu.addSeparator()
         run_menu.addAction(a["check"])
 
@@ -346,6 +376,12 @@ class StudioWindow(QMainWindow):
         run_button.setToolTip("Run the current file (F5)")
         run_button.clicked.connect(self.run_current)
         bar.addWidget(run_button)
+
+        debug_button = QToolButton()
+        debug_button.setText("Debug")
+        debug_button.setToolTip("Debug the current file (Shift+F9)")
+        debug_button.clicked.connect(self.debug_current)
+        bar.addWidget(debug_button)
 
         compile_button = QToolButton()
         compile_button.setText("⚙  Compile")
@@ -533,6 +569,9 @@ class StudioWindow(QMainWindow):
         editor.cursorMoved.connect(self._cursor_moved)
         editor.modificationChanged.connect(self._tab_changed)
         editor.completionRequested.connect(lambda offset: self._completion(editor, offset))
+        editor.breakpointsChanged.connect(
+            lambda _lines: self.debug_session.set_breakpoints(sorted(editor.breakpoints))
+            if self.debug_session is not None and self.debug_session.running else None)
         editor.hoverRequested.connect(lambda x, y, point: self._hover(editor, point))
         editor.setStyleSheet(
             f"QPlainTextEdit {{ background: {self.theme['bg']}; color: {self.theme['fg']};"
@@ -1065,6 +1104,118 @@ class StudioWindow(QMainWindow):
         self._recent.insert(0, path)
         del self._recent[30:]
 
+    # --------------------------------------------------------------- debugging
+
+    def toggle_breakpoint(self):
+        """Sets or clears a breakpoint on the line the caret is on."""
+        editor = self._editor()
+        if editor is None:
+            return
+        line0 = editor.textCursor().blockNumber()
+        present = editor.toggle_breakpoint(line0)
+        self.status_problems.setText(
+            f"Breakpoint {'set' if present else 'removed'} at line {line0 + 1}")
+        if self.debug_session is not None and self.debug_session.running:
+            self.debug_session.set_breakpoints(sorted(editor.breakpoints))
+
+    def debug_current(self):
+        """Starts the debugger on the current file, if it is not already going."""
+        editor = self._editor()
+        if editor is None:
+            return
+
+        if self.debug_session is not None and self.debug_session.running:
+            self.debug_session.stop()
+            self.debug_session = None
+
+        if editor.document().isModified():
+            self.save_current()
+
+        # Every open file's breakpoints go with the session, so a breakpoint set
+        # in a helper file the script imports is honoured too.
+        breakpoints = sorted(editor.breakpoints)
+        session = DebugSession(editor.path, breakpoints, self.install, self)
+        session.started.connect(lambda: self._debug_event("Debugger attached", None))
+        session.stopped.connect(self._debug_stopped)
+        session.output.connect(lambda text: self.console.write(text))
+        session.exited.connect(self._debug_exited)
+        session.failed.connect(self._debug_failed)
+        session.server_log.connect(lambda text: self.console.write(f"[debug] {text}\n", info=True))
+
+        if not session.start():
+            self.debug_session = None
+            return
+
+        self.debug_session = session
+        self.debug_panel.set_running()
+        self._show_dock(self.debug_dock)
+
+    def _debug_event(self, message, _payload):
+        self.debug_panel.state.setText(message)
+
+    def _debug_stopped(self, message):
+        frames = message.get("frames", [])
+        line = message.get("line", 0)
+        reason = message.get("reason", "breakpoint")
+        self.debug_panel.set_stopped(f"Paused on {reason} at line {line}", frames)
+
+        editor = self._editor()
+        if editor is not None:
+            editor.set_stopped_line(line)
+        self._show_dock(self.debug_dock)
+        self._show_frame_variables(self.debug_panel.current_frame() or 0)
+
+    def _show_frame_variables(self, frame):
+        if self.debug_session is None:
+            return
+        index = 0 if frame is None else int(frame)
+        self.debug_session.variables(
+            index, lambda response: self.debug_panel.set_variables(response.get("variables", [])))
+
+    def _evaluate_expression(self, expression):
+        if self.debug_session is None or not expression.strip():
+            return
+        frame = self.debug_panel.current_frame() or 0
+        self.debug_session.evaluate(
+            expression, lambda response: self.debug_panel.set_evaluated(
+                f"{expression} = {response.get('value', '?')}"))
+
+    def _debug_exited(self, ok, message):
+        if ok:
+            self.debug_panel.set_idle("Program finished")
+            self.console.write("[debug] exited\n", info=True)
+        else:
+            self.debug_panel.set_idle(f"Stopped: {message}")
+            self.console.write(f"[debug] {message}\n", error=True)
+        editor = self._editor()
+        if editor is not None:
+            editor.set_stopped_line(-1)
+        self.debug_session = None
+
+    def _debug_failed(self, message):
+        self.debug_panel.set_idle("Not debugging")
+        self.console.write(f"[debug] {message}\n", error=True)
+        self.debug_session = None
+
+    def _debug_command(self, name):
+        if self.debug_session is None or not self.debug_session.running:
+            return False
+        getattr(self.debug_session, name)()
+        self.debug_panel.state.setText("Running")
+        return True
+
+    def debug_resume(self):
+        self._debug_command("resume")
+
+    def debug_step_over(self):
+        self._debug_command("step_over")
+
+    def debug_step_into(self):
+        self._debug_command("step_into")
+
+    def debug_step_out(self):
+        self._debug_command("step_out")
+
     # -------------------------------------------------------------------- run
 
     def run_current(self):
@@ -1177,7 +1328,7 @@ class StudioWindow(QMainWindow):
             app.setStyleSheet(stylesheet(self.theme))
 
         for panel in (self.project_panel, self.structure_panel, self.problems_panel,
-                      self.console, self.terminal, self.changes_panel):
+                      self.console, self.terminal, self.changes_panel, self.debug_panel):
             panel.apply_theme(self.theme)
 
         for area in self.tabs.values():
@@ -1242,6 +1393,9 @@ class StudioWindow(QMainWindow):
         self.settings.sync()
 
     def _shutdown(self):
+        if self.debug_session is not None:
+            self.debug_session.stop()
+            self.debug_session = None
         if hasattr(self, "server"):
             self.server.stop()
         self.stop_run()

@@ -681,3 +681,115 @@ class RecentFilesDialog(QDialog):
         if item is not None:
             self.chosen = item.data(Qt.UserRole)
             self.accept()
+
+
+class DebugPanel(QWidget):
+    """The Debug tool window: call stack on top, variables below.
+
+    Rider splits these into two windows; a debugger is used with both eyes at
+    once, so they are stacked in one with the frame selection driving the
+    variables.
+    """
+
+    frameSelected = Signal(int)
+
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self._frames = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.state = QLabel("Not debugging")
+        layout.addWidget(self.state)
+
+        self.frames = QTreeWidget()
+        self.frames.setHeaderLabels(["Frame", "Line"])
+        self.frames.setRootIsDecorated(False)
+        self.frames.setMaximumHeight(120)
+        self.frames.currentItemChanged.connect(self._on_frame)
+        layout.addWidget(self.frames)
+
+        self.variables = QTreeWidget()
+        self.variables.setHeaderLabels(["Name", "Value", "Type"])
+        self.variables.setRootIsDecorated(False)
+        self.variables.setColumnWidth(0, 160)
+        self.variables.setColumnWidth(2, 70)
+        layout.addWidget(self.variables, 1)
+
+        self.evaluate_field = QLineEdit()
+        self.evaluate_field.setPlaceholderText("Evaluate an expression")
+        self.evaluate_field.returnPressed.connect(self._evaluate)
+        self.evaluated = QLabel("")
+        layout.addWidget(self.evaluate_field)
+        layout.addWidget(self.evaluated)
+
+        self.apply_theme(theme)
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        self.state.setStyleSheet(
+            f"color: {theme['fg_dim']}; padding: 4px 8px;"
+            f" border-bottom: 1px solid {theme['border']};")
+        for tree in (self.frames, self.variables):
+            tree.setStyleSheet(
+                f"QTreeWidget {{ background: {theme['panel']}; color: {theme['fg']}; border: none; }}"
+                f"QTreeWidget::item:selected {{ background: {theme['accent']}; color: #ffffff; }}")
+        self.evaluate_field.setStyleSheet(
+            f"background: {theme['bg']}; color: {theme['fg']};"
+            f" border: 1px solid {theme['border']}; padding: 3px 6px;")
+        self.evaluated.setStyleSheet(f"color: {theme['fg_dim']}; padding: 2px 8px;")
+
+    # ---------------------------------------------------------------- state
+
+    def set_running(self):
+        self.state.setText("Running")
+        self.frames.clear()
+        self.variables.clear()
+        self._frames = []
+
+    def set_idle(self, message="Not debugging"):
+        self.state.setText(message)
+        self.frames.clear()
+        self.variables.clear()
+        self._frames = []
+
+    def set_stopped(self, message, frames):
+        """Shows where the program stopped and asks the window for the variables."""
+        self.state.setText(message)
+        self._frames = frames
+        self.frames.clear()
+        for frame in frames:
+            item = QTreeWidgetItem([frame.get("name", "?"), str(frame.get("line", ""))])
+            item.setData(0, Qt.UserRole, frame.get("index", 0))
+            self.frames.addTopLevelItem(item)
+        if self.frames.topLevelItemCount():
+            self.frames.setCurrentItem(self.frames.topLevelItem(0))
+
+    def set_variables(self, variables):
+        self.variables.clear()
+        for variable in variables:
+            item = QTreeWidgetItem([
+                str(variable.get("name", "")),
+                str(variable.get("value", "")),
+                str(variable.get("type", "")),
+            ])
+            item.setToolTip(1, str(variable.get("value", "")))
+            self.variables.addTopLevelItem(item)
+
+    def current_frame(self):
+        item = self.frames.currentItem()
+        return item.data(0, Qt.UserRole) if item is not None else None
+
+    def _on_frame(self, item, _previous):
+        if item is not None:
+            self.frameSelected.emit(item.data(0, Qt.UserRole))
+
+    def _evaluate(self):
+        if hasattr(self, "evaluate_callback") and self.evaluate_callback is not None:
+            self.evaluate_callback(self.evaluate_field.text())
+
+    def set_evaluated(self, text):
+        self.evaluated.setText(text)

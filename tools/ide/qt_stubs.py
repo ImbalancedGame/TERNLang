@@ -43,20 +43,39 @@ void tern_stub_anchor(void) {}
 """
 
 
+def interpreters():
+    """Pythons that might have PySide6: the one running this, then the usual ones."""
+    candidates = [os.environ.get("TERN_PYTHON"), sys.executable,
+                  os.path.join(ROOT, ".venv", "bin", "python"),
+                  "/tmp/qtenv/bin/python", "python3"]
+    seen = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            yield candidate
+
+
 def qt_lib_dir():
     """Where Qt's own libraries live: from PySide6 if it is importable."""
     override = os.environ.get("TERN_QT_LIB")
     if override:
         return override
 
-    probe = subprocess.run(
-        [sys.executable, "-c", "import PySide6, os; print(os.path.join(os.path.dirname(PySide6.__file__), 'Qt', 'lib'))"],
-        capture_output=True, text=True)
-    if probe.returncode != 0:
-        return None
+    for python in interpreters():
+        try:
+            probe = subprocess.run(
+                [python, "-c", "import PySide6, os; print(os.path.join(os.path.dirname(PySide6.__file__), 'Qt', 'lib'))"],
+                capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode != 0:
+            continue
 
-    path = probe.stdout.strip()
-    return path if os.path.isdir(path) else None
+        path = probe.stdout.strip()
+        if os.path.isdir(path):
+            return path
+
+    return None
 
 
 def undefined_symbols(libraries, prefixes):

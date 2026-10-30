@@ -26,13 +26,14 @@ caveats below.
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (36) |
-| TERN Studio, the desktop IDE | complete for editing, running, navigating, committing | `tools/ide/ui_test.py` (49) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating, committing | `tools/ide/ui_test.py` (60) |
+| Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints, stepping, stack, locals, evaluate | `tools/debug_test.py` (35) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       38 passed
+./tools/test.sh                                       39 passed
 python3 native/run_tests.py                           32 passed
 python3 native/parity.py                              42 compared, 0 differing
 bash tools/test-gl.sh                                 ok
@@ -40,6 +41,7 @@ bash tools/test-tls.sh                                ok
 bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
 bash tools/test-ide.sh                                36 passed
+python3 tools/debug_test.py                           35 passed
 python3 tools/gen-reference.py --check                278 pages up to date
 ```
 
@@ -96,11 +98,15 @@ what `tools/tern run` reports.
 * **Version control** (`ide/Studio/vcs.py`) — git status, staging, commit and a
   coloured diff view, all through the `git` CLI; degrades to "not a git
   repository" when there is none.
-* **Not there**: a debugger, a project model beyond "a directory", and
-  multi-file *background* analysis. None of these are blocked by the sandbox.
-  The debugger is the one that needs design work: a per-instruction hook in the
-  VM costs 3-15% on the benchmarks (measured), so it has to be built on
-  breakpoint patching rather than polling, which is the next piece of work.
+* **Debugger** (`ide/Debug`, `TERN.Debug.dll`) — breakpoints, step over/in/out,
+  call stack, locals and an expression evaluator, over a line-oriented protocol
+  of its own. Breakpoints are patched instructions (`Op.Break`), not a
+  per-instruction check: the hook costs 3-15% when polled that way, measured,
+  and nothing this way. Interpreter only; the compiled backend has no VM to
+  hook.
+* **Not there**: a project model beyond "a directory", multi-file *background*
+  analysis, conditional breakpoints and watch expressions. None of these are
+  blocked by the sandbox; they are simply not written.
 
 ## What still needs fixing
 

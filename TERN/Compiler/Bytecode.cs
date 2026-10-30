@@ -13,6 +13,16 @@ namespace TERN.Compiler
     public enum Op : byte
     {
         Nop = 0,
+
+        /// <summary>
+        /// A debugger's hook, never emitted by the compiler: it replaces one
+        /// instruction while a breakpoint is set there and hands control to
+        /// <c>VM.OnBreak</c>, which either returns to re-execute the original or
+        /// keeps the frame where it is. Without a debugger attached the opcode
+        /// never appears in a program.
+        /// </summary>
+        Break,
+
         Pop,
         Dup,
         Swap,
@@ -248,6 +258,13 @@ namespace TERN.Compiler
         public required int LocalCount { get; init; }
         public required int MaxStack { get; init; }
         public required int[] Lines { get; init; }
+
+        /// <summary>Slot to local name, for the debugger; null where a slot is a temporary.</summary>
+        public string?[] LocalNames { get; init; } = Array.Empty<string?>();
+
+        /// <summary>The line a debugger should highlight when it stops at an instruction.</summary>
+        public int LineAt(int index) =>
+            index >= 0 && index < Lines.Length ? Lines[index] : 0;
         public DivMagic[] Divisions { get; init; } = Array.Empty<DivMagic>();
         public string? SourceName { get; init; }
         public bool IsMethod { get; init; }
@@ -350,6 +367,23 @@ namespace TERN.Compiler
         public ModuleScope Scope { get; }
         public Value[] Globals { get; private set; }
         public bool Initialized { get; set; }
+
+        /// <summary>
+        /// The module's globals by name, for a debugger or a REPL that wants to
+        /// look at a script's top-level state.
+        /// </summary>
+        public IEnumerable<KeyValuePair<string, Value>> NamedGlobals()
+        {
+            var slots = Scope.Slots;
+            var limit = Math.Min(slots.Count, Globals.Length);
+            for (var index = 0; index < limit; index++)
+            {
+                if (!string.IsNullOrEmpty(slots[index].Name))
+                {
+                    yield return new KeyValuePair<string, Value>(slots[index].Name, Globals[index]);
+                }
+            }
+        }
 
         /// <summary>Replaces the body (used by the REPL, which recompiles into one module).</summary>
         public void ReplaceEntry(FunctionProto entry)

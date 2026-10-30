@@ -123,6 +123,7 @@ namespace TERN.Compiler
             private readonly List<FinallyContext> _finally = new();
 
             private int _nextSlot;
+            private readonly List<string?> _slotNames = new();
             private int _maxSlots;
             private int _depth;
             private int _maxDepth;
@@ -220,6 +221,7 @@ namespace TERN.Compiler
                     HasRest = _hasRest,
                     IsMethod = _isMethod && _hasThis,
                     LocalCount = Math.Max(_maxSlots, _nextSlot),
+                    LocalNames = _slotNames.ToArray(),
                     MaxStack = Math.Max(_maxDepth, 8),
                     Lines = _lines.ToArray(),
                     Divisions = _divisions.ToArray(),
@@ -486,8 +488,24 @@ namespace TERN.Compiler
                     _maxSlots = _nextSlot;
                 }
 
+                NameSlot(slot, name);
                 _locals.Add(new Local { Name = name, Slot = slot, Depth = _scopeDepth, IsConst = isConst });
                 return slot;
+            }
+
+            /// <summary>
+            /// Records the name in a slot for the debugger. A slot may be reused
+            /// by a later block; the last name that claimed it wins, which is the
+            /// one worth showing.
+            /// </summary>
+            private void NameSlot(int slot, string name)
+            {
+                while (_slotNames.Count <= slot)
+                {
+                    _slotNames.Add(null);
+                }
+
+                _slotNames[slot] = name;
             }
 
             private bool TryResolveLocal(string name, out Local local)

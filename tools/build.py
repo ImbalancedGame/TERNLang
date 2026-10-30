@@ -2,7 +2,7 @@
 """Compile the TERN solution with Roslyn and emit build/TERN.Runner.dll.
 
 Also builds the IDE's syntax server (build/TERN.Ide.dll) when asked for with
-`--ide`, or both with `--all`.
+`--ide` and the debugger with `--debugger`, or all three with `--all`.
 
 This is the sandbox-friendly equivalent of `dotnet build`: it uses the
 Microsoft.CodeAnalysis assemblies recovered by setup-toolchain.sh, driven from
@@ -64,6 +64,7 @@ from System.IO import MemoryStream  # noqa: E402
 TARGETS = {
     "runner": ("TERN.Runner", ("TERN/**/*.cs", "TernRunner/**/*.cs")),
     "ide": ("TERN.Ide", ("TERN/**/*.cs", "ide/Server/**/*.cs")),
+    "debugger": ("TERN.Debug", ("TERN/**/*.cs", "ide/Debug/**/*.cs")),
 }
 
 
@@ -151,9 +152,11 @@ def main() -> int:
     OUT.mkdir(exist_ok=True)
 
     if "--all" in sys.argv:
-        wanted = ["runner", "ide"]
+        wanted = ["runner", "ide", "debugger"]
     elif "--ide" in sys.argv:
         wanted = ["ide"]
+    elif "--debugger" in sys.argv:
+        wanted = ["debugger"]
     else:
         wanted = ["runner"]
 

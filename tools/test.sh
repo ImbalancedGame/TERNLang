@@ -77,6 +77,19 @@ if [[ $UPDATE -eq 0 && -f "$HERE/tools/test-ide.sh" ]]; then
   fi
 fi
 
+if [[ $UPDATE -eq 0 && -f "$HERE/tools/debug_test.py" && -f "$HERE/build/TERN.Debug.dll" ]]; then
+  if debug_output="$($(bash "$HERE/tools/tern-python") "$HERE/tools/debug_test.py" 2>&1)"; then
+    echo "ok    debugger    $(tail -1 <<<"$debug_output")"
+    pass=$((pass+1))
+  else
+    echo "FAIL debugger"
+    tail -20 <<<"$debug_output" | sed 's/^/      /'
+    fail=$((fail+1)); failed_names+=("debugger")
+  fi
+else
+  [[ $UPDATE -eq 0 ]] && echo "skip  debugger (needs build/TERN.Debug.dll and a .NET runtime)"
+fi
+
 if [[ $UPDATE -eq 0 && -f "$HERE/tools/ide/ui_test.py" ]]; then
   ide_python=""
   for candidate in "$HERE/.venv/bin/python" "/tmp/qtenv/bin/python" python3; do

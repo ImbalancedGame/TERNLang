@@ -10,7 +10,8 @@ import re
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (QColor, QFontMetrics, QKeyEvent, QPainter, QPen,
-                           QTextCharFormat, QTextCursor, QTextDocument, QTextFormat)
+                           QPolygon, QTextCharFormat, QTextCursor, QTextDocument,
+                           QTextFormat)
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QPlainTextEdit, QPushButton,
                                QTextEdit, QToolTip, QVBoxLayout, QWidget)
@@ -32,6 +33,18 @@ class LineNumberArea(QWidget):
 
     def paintEvent(self, event):
         self.editor.paint_gutter(event)
+
+    def mousePressEvent(self, event):
+        # Clicking the gutter is how a breakpoint is set, as in every IDE.
+        block = self.editor.firstVisibleBlock()
+        top = 0
+        while block.isValid():
+            bottom = top + self.editor.blockBoundingRect(block).height()
+            if top <= event.position().y() <= bottom:
+                self.editor.toggle_breakpoint(block.blockNumber())
+                return
+            top = bottom
+            block = block.next()
 
 
 class ErrorStrip(QWidget):
@@ -151,6 +164,7 @@ class Editor(QPlainTextEdit):
     referencesRequested = Signal()
     definitionRequested = Signal()
     completionRequested = Signal(int)
+    breakpointsChanged = Signal(list)
     hoverRequested = Signal(int, int, QPoint)
 
     def __init__(self, path, text, theme, parent=None):
@@ -158,6 +172,8 @@ class Editor(QPlainTextEdit):
         self.path = path
         self.theme = theme
         self.problems = []          # (severity, line, message)
+        self.breakpoints = set()    # 1-based line numbers with a breakpoint
+        self.stopped_line = -1      # the line a debugger is paused on, or -1
         self._completion_items = []
         self._completion_start = 0
         self._brackets = (None, None)
@@ -230,9 +246,24 @@ class Editor(QPlainTextEdit):
         error_lines = {line for severity, line, _ in self.problems if severity == 1}
         warning_lines = {line for severity, line, _ in self.problems if severity == 2}
 
+        radius = 5
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 line = number
+                if line + 1 in self.breakpoints:
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor(self.theme.get("error", "#cc4444")))
+                    painter.drawEllipse(4, int(top + (bottom - top - 2 * radius) / 2),
+                                        2 * radius, 2 * radius)
+                    painter.setBrush(Qt.NoBrush)
+                if line == self.stopped_line:
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor(self.theme.get("accent", "#4a88c7")))
+                    arrow = QPolygon([
+                        QPoint(2, int(top + 2)), QPoint(10, int(top + 2)),
+                        QPoint(6, int(top + 12))])
+                    painter.drawPolygon(arrow)
+                    painter.setBrush(Qt.NoBrush)
                 if line in error_lines:
                     painter.setPen(QPen(colour(self.theme, "error")))
                 elif line in warning_lines:
@@ -660,6 +691,30 @@ class Editor(QPlainTextEdit):
         QToolTip.showText(point, markdown, self)
 
     # --------------------------------------------------------------- problems
+
+    def toggle_breakpoint(self, line0):
+        """Adds or removes a breakpoint on a 0-based line. True if one is set now.
+
+        Breakpoints are kept as 1-based line numbers, which is what the debugger
+        protocol and every other tool counts in.
+        """
+        line = line0 + 1
+        if line in self.breakpoints:
+            self.breakpoints.discard(line)
+            present = False
+        else:
+            self.breakpoints.add(line)
+            present = True
+        self.gutter.update()
+        self.breakpointsChanged.emit(sorted(self.breakpoints))
+        return present
+
+    def set_stopped_line(self, line):
+        """Marks the line a debugger is paused on (1-based), or 0 to clear."""
+        self.stopped_line = line - 1 if line > 0 else -1
+        self.gutter.update()
+        if line > 0:
+            self.goto(line - 1, 0)
 
     def set_problems(self, problems):
         """problems: [(severity, line0, message)], plus underlines in the editor."""

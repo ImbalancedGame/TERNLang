@@ -73,6 +73,7 @@ machine `tools/ide/qt_stubs.py` writes stand-ins for them into
 | Reformat | Ctrl+Alt+L | the server's formatter, 4-space indent |
 | Themes | View → Theme | Darcula and light, applied to editor *and* tool windows |
 | Tool windows | View | Project, Structure, Run, Problems, Terminal |
+| Debugging | Debug window, gutter | breakpoints, stepping, call stack, locals, evaluate |
 | Version control | Commit window | git status, stage, commit and a coloured diff view |
 | Remembers state | settings | last project, theme, size, open files |
 
@@ -133,13 +134,64 @@ What it does not do: pushing, pulling, branch switching, merges, conflict
 resolution and blame. Those are terminal work; this panel is for the loop you
 do twenty times an hour — see what changed, check the diff, commit it.
 
+## Debugging
+
+Studio debugs through a third process, for the same reason the language server is
+one: the debugger has to be able to stop a program mid-instruction, and that
+belongs next to the VM, not in the window.
+
+```
+ide/Studio ── one JSON object per line, over stdio ──► ide/Debug (TERN.Debug.dll)
+```
+
+Click a gutter line for a breakpoint (Ctrl+F8), Shift+F9 to start. When a
+breakpoint fires the program parks inside the VM, the Debug window shows the
+call stack and the frame's locals, and Alt+F9 / F8 / F7 / Shift+F8 resume, step
+over, step in and step out. Double-clicking a stack frame switches the variables
+to it, and a field at the bottom evaluates an expression in the paused frame.
+
+![Stopped at a breakpoint](ide/img/debug.png)
+
+### How a breakpoint works
+
+A debugger cannot simply ask the VM to check a list of lines on every
+instruction — that check costs 3–15% on the benchmarks, and the language's speed
+is one of its features. So a breakpoint *is* the program: the debugger rewrites
+the first instruction of the target line into `Op.Break`, an opcode the compiler
+never emits. The dispatch loop already has a `switch`, so a new case costs a
+jump-table slot and nothing else; when the case runs it parks the thread until
+the client says what to do.
+
+That leaves the problem of code that has not been compiled when the breakpoint
+is set. The VM calls `OnFunctionEnter` once per invocation, which the debugger
+uses to install breakpoints in functions it has just seen — one predictable
+branch per call when a debugger is attached, and a null rather than a call when
+it is not.
+
+Measured with `bench/compare/debug_overhead.py`, which runs the benchmarks
+through the debugger's own executable with no client attached (the worst case
+for the hook): the two columns are within noise of each other, 7.20 s against
+7.31 s on a 7-second `fib`.
+
+### What the debugger does not do
+
+* **No conditional breakpoints** — a condition would have to be compiled and
+  evaluated per hit; the expression evaluator is there, the trigger is not.
+* **No watch expressions** and no data breakpoints.
+* **No changing values** while paused: the debugger reads, it does not write.
+* **One program at a time**, the file in the current tab. The compiled backend
+  (`Ctrl+F5`) is not debuggable — a compiled binary has no VM to hook.
+* **Stack frames are a list, not a tree**, so a thread panel would be a lie:
+  TERN has no threads.
+
 ## Testing
 
 Both halves are covered, and both are part of `tools/test.sh`:
 
 ```bash
 bash tools/test-ide.sh                                   # 36 assertions, protocol only
-LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 49 checks, real window
+python3 tools/debug_test.py                              # 35 checks, debugger only
+LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 60 checks, real window
 ```
 
 `tools/test-ide.sh` drives `TERN.Ide.dll` over stdio with no UI at all: framing,
@@ -168,16 +220,13 @@ LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/shots.py
 
 Honest list, in the order they would annoy someone:
 
-* **No debugger.** There are no breakpoints, no stepping and no variable pane.
-  Run and Compile work; debugging does not exist yet. The compiler has no
-  breakpoint hook to attach to, so this is a feature to build, not a switch to
-  turn on.
+* **The debugger is interpreter-only, one program at a time**, with no
+  conditional breakpoints, watch expressions or value editing.
 * **No VCS beyond commit.** Status, staging, diffs and commits are there;
   pushing, pulling, branching and merging are not, and modified files are not
   marked in the editor gutter.
 * **No project model.** The tree is a file browser; a directory is a project.
   There are no build configurations beyond "run this file".
-* **No debugger** — see above; it needs bytecode-level work in the VM.
 * **Single-file analysis by default.** Cross-file navigation follows `import`,
   but a symbol defined in a file you have never opened is only found by the
   workspace symbol index, which scans on demand.
