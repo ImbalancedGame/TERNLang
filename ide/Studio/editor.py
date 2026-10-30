@@ -10,10 +10,10 @@ import re
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (QColor, QFontMetrics, QKeyEvent, QPainter, QPen,
-                           QTextCharFormat, QTextCursor, QTextFormat)
-from PySide6.QtWidgets import (QLabel, QListWidget, QListWidgetItem,
-                               QPlainTextEdit, QTextEdit, QToolTip,
-                               QVBoxLayout, QWidget)
+                           QTextCharFormat, QTextCursor, QTextDocument, QTextFormat)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QPlainTextEdit, QPushButton,
+                               QTextEdit, QToolTip, QVBoxLayout, QWidget)
 
 from .highlighter import TernHighlighter
 from .theme import colour, monospace
@@ -348,6 +348,9 @@ class Editor(QPlainTextEdit):
             self.newline_with_indent()
             return
 
+        if self._type_pair(event):
+            return
+
         super().keyPressEvent(event)
 
         # Autocompletion after typing, or immediately after a dot.
@@ -357,6 +360,59 @@ class Editor(QPlainTextEdit):
                 self.request_completion()
             else:
                 self.request_completion()
+
+    PAIRS = {"(": ")", "[": "]", "{": "}", '"': '"', "'": "'"}
+
+    def _type_pair(self, event):
+        """Closes brackets and quotes as you type, and steps over the closer.
+
+        Returns True when the key was handled here. A selection is wrapped
+        rather than replaced, which is what everyone expects from a quote.
+        """
+        if event.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            return False
+
+        text = event.text()
+        if not text or text not in self.PAIRS and text not in self.PAIRS.values():
+            return False
+
+        cursor = self.textCursor()
+        document_text = self.toPlainText()
+        position = cursor.position()
+        following = document_text[position:position + 1]
+        preceding = document_text[position - 1:position] if position else ""
+
+        if text in self.PAIRS.values():
+            # Typing the closer that is already there steps over it, so
+            # finishing `println("x")` does not produce `println("x"))`.
+            if following == text and not cursor.hasSelection():
+                cursor.setPosition(position + 1)
+                self.setTextCursor(cursor)
+                return True
+            return False
+
+        closer = self.PAIRS[text]
+
+        if cursor.hasSelection():
+            selected = cursor.selectedText()
+            cursor.insertText(text + selected + closer)
+            cursor.setPosition(cursor.position() - len(closer))
+            cursor.setPosition(cursor.position() + len(selected), QTextCursor.KeepAnchor)
+            self.setTextCursor(cursor)
+            return True
+
+        # An apostrophe after a word is more likely a typo than a quote; and a
+        # quote next to an identifier is usually closing one.
+        if text in ("'", '"') and preceding and (preceding.isalnum() or preceding in "_]"):
+            if following in ("", " ", "\n", ",", ";", ")", "]"):
+                cursor.insertText(text)
+                self.setTextCursor(cursor)
+                return True
+
+        cursor.insertText(text + closer)
+        cursor.setPosition(position + 1)
+        self.setTextCursor(cursor)
+        return True
 
     def newline_with_indent(self):
         """Enter keeps the indentation and adds a level after an opening brace."""
@@ -380,6 +436,159 @@ class Editor(QPlainTextEdit):
                 cursor = self.textCursor()
                 cursor.setPosition(position)
                 self.setTextCursor(cursor)
+
+    # ------------------------------------------------------------- edit commands
+
+    def _selected_lines(self):
+        """(first, last) block numbers touched by the selection."""
+        cursor = self.textCursor()
+        document = self.document()
+        first = document.findBlock(cursor.selectionStart()).blockNumber()
+        last = document.findBlock(cursor.selectionEnd()).blockNumber()
+        return first, last
+
+    def toggle_comment(self):
+        """Comments or uncomments the selected lines, as Ctrl+/ does everywhere."""
+        first, last = self._selected_lines()
+        document = self.document()
+        block = document.findBlockByNumber(first)
+
+        lines = []
+        while block.isValid() and block.blockNumber() <= last:
+            lines.append(block)
+            block = block.next()
+
+        indents = [len(line.text()) - len(line.text().lstrip(" ")) for line in lines]
+        indent = min(indents) if indents else 0
+        commented = all(line.text()[indent:].startswith("//") for line in lines if line.text().strip())
+
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        for line in lines:
+            if not line.text().strip():
+                continue
+            text = line.text()
+            edit = QTextCursor(line)
+            if commented:
+                start = indent
+                if text[start:start + 3] == "// ":
+                    edit.setPosition(line.position() + start)
+                    edit.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 3)
+                else:
+                    edit.setPosition(line.position() + start)
+                    edit.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 2)
+                edit.removeSelectedText()
+            else:
+                edit.setPosition(line.position() + indent)
+                edit.insertText("// ")
+        cursor.endEditBlock()
+        self._on_cursor()
+
+    def duplicate_line(self):
+        """Repeats the selection, or the current line, below itself."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText().replace("\u2029", "\n")
+            end = cursor.selectionEnd()
+            cursor.setPosition(end)
+            cursor.insertText(text)
+            self.setTextCursor(cursor)
+            return
+
+        block = cursor.block()
+        text = block.text()
+        position = cursor.position() - block.position()
+        cursor.setPosition(block.position() + len(text))
+        cursor.insertText("\n" + text)
+        cursor.setPosition(block.position() + len(text) + 1 + position)
+        self.setTextCursor(cursor)
+
+    def move_lines(self, delta):
+        """Swaps the selection (or the current line) with its neighbour."""
+        first, last = self._selected_lines()
+        document = self.document()
+        block = document.findBlockByNumber(first if delta < 0 else last)
+        neighbour = block.previous() if delta < 0 else block.next()
+        if not neighbour.isValid():
+            return
+
+        cursor = self.textCursor()
+        had_selection = cursor.hasSelection()
+        column = cursor.positionInBlock()
+        if delta < 0:
+            first_block, second_block = neighbour, block
+        else:
+            first_block, second_block = block, neighbour
+
+        first_text = first_block.text()
+        second_text = second_block.text()
+
+        editor_cursor = QTextCursor(document)
+        editor_cursor.beginEditBlock()
+        editor_cursor.setPosition(first_block.position())
+        editor_cursor.setPosition(second_block.position() + len(second_text), QTextCursor.KeepAnchor)
+        editor_cursor.insertText(second_text + "\n" + first_text)
+        editor_cursor.endEditBlock()
+
+        target = document.findBlockByNumber(max(0, first - (1 if delta < 0 else -1)))
+        cursor = QTextCursor(target)
+        cursor.setPosition(target.position() + min(column, len(target.text())))
+        if had_selection:
+            end = document.findBlockByNumber(max(0, last - (1 if delta < 0 else -1)))
+            selection = QTextCursor(document)
+            selection.setPosition(cursor.position())
+            selection.setPosition(end.position() + len(end.text()), QTextCursor.KeepAnchor)
+            self.setTextCursor(selection)
+        else:
+            self.setTextCursor(cursor)
+
+    # ---------------------------------------------------------------- find
+
+    def find_next(self, term, backwards=False, wrapper=True):
+        """Moves to the next occurrence, wrapping at the end. Returns True on a hit."""
+        if not term:
+            return False
+        flags = QTextDocument.FindFlags()
+        if backwards:
+            flags |= QTextDocument.FindBackward
+        if self.find(term, flags):
+            self.centerCursor()
+            return True
+        # Wrap once, from the other end.
+        cursor = self.textCursor()
+        boundary = QTextCursor.MoveOperation.End if backwards else QTextCursor.MoveOperation.Start
+        cursor.movePosition(boundary)
+        self.setTextCursor(cursor)
+        if self.find(term, flags):
+            self.centerCursor()
+            return True
+        return False
+
+    def replace_current(self, term, replacement):
+        cursor = self.textCursor()
+        if cursor.hasSelection() and cursor.selectedText() == term:
+            cursor.insertText(replacement)
+            self.setTextCursor(cursor)
+            return self.find_next(term)
+        return self.find_next(term)
+
+    def replace_all(self, term, replacement):
+        if not term:
+            return 0
+        count = 0
+        cursor = QTextCursor(self.document())
+        cursor.beginEditBlock()
+        while True:
+            found = self.document().find(term, cursor)
+            if found.isNull():
+                break
+            cursor.setPosition(found.selectionStart())
+            cursor.setPosition(found.selectionEnd(), QTextCursor.KeepAnchor)
+            cursor.insertText(replacement)
+            count += 1
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+        return count
 
     def _unindent(self):
         cursor = self.textCursor()
@@ -492,6 +701,114 @@ class Editor(QPlainTextEdit):
         self.hoverRequested.emit(event.pos().x(), event.pos().y(), event.globalPosition().toPoint())
 
 
+class FindBar(QWidget):
+    """The find-and-replace strip that slides over the bottom of an editor."""
+
+    def __init__(self, editor, theme, parent=None):
+        super().__init__(parent)
+        self.editor = editor
+        self.theme = theme
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        self.find_field = QLineEdit()
+        self.find_field.setPlaceholderText("Find")
+        self.find_field.setFixedWidth(200)
+        layout.addWidget(self.find_field)
+
+        self.replace_field = QLineEdit()
+        self.replace_field.setPlaceholderText("Replace with")
+        self.replace_field.setFixedWidth(180)
+        self.replace_field.hide()
+        layout.addWidget(self.replace_field)
+
+        self.count = QLabel("")
+        layout.addWidget(self.count)
+
+        self.previous_button = QPushButton("‹")
+        self.previous_button.setFixedWidth(26)
+        self.next_button = QPushButton("›")
+        self.next_button.setFixedWidth(26)
+        self.replace_button = QPushButton("Replace")
+        self.replace_button.hide()
+        self.replace_all_button = QPushButton("Replace all")
+        self.replace_all_button.hide()
+        self.close_button = QPushButton("✕")
+        self.close_button.setFixedWidth(26)
+
+        for button in (self.previous_button, self.next_button, self.replace_button,
+                       self.replace_all_button):
+            layout.addWidget(button)
+        layout.addStretch(1)
+        layout.addWidget(self.close_button)
+
+        self.find_field.textChanged.connect(self._update_count)
+        self.find_field.returnPressed.connect(self.find_next)
+        self.replace_field.returnPressed.connect(self.replace_one)
+        self.next_button.clicked.connect(self.find_next)
+        self.previous_button.clicked.connect(self.find_previous)
+        self.replace_button.clicked.connect(self.replace_one)
+        self.replace_all_button.clicked.connect(self.replace_all)
+        self.close_button.clicked.connect(self.hide)
+        self.apply_theme(theme)
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        self.setStyleSheet(
+            f"QWidget {{ background: {theme['panel']}; }}"
+            f"QLineEdit {{ background: {theme['bg']}; color: {theme['fg']};"
+            f" border: 1px solid {theme['border']}; padding: 2px 4px; }}"
+            f"QLabel {{ color: {theme['fg_dim']}; }}")
+
+    def open(self, with_replace=False, term=None):
+        """Shows the bar, seeded with the selection or the given term."""
+        if term is None:
+            term = self.editor.textCursor().selectedText().split("\u2029")[0]
+        if term:
+            self.find_field.setText(term)
+        self.replace_field.setVisible(with_replace)
+        self.replace_button.setVisible(with_replace)
+        self.replace_all_button.setVisible(with_replace)
+        self.show()
+        self.find_field.setFocus()
+        self.find_field.selectAll()
+        self._update_count()
+
+    def _matches(self):
+        term = self.find_field.text()
+        if not term:
+            return 0
+        text = self.editor.toPlainText()
+        return text.count(term)
+
+    def _update_count(self):
+        term = self.find_field.text()
+        if not term:
+            self.count.setText("")
+            return
+        total = self._matches()
+        self.count.setText(f"{total} match{'es' if total != 1 else ''}")
+
+    def find_next(self):
+        if not self.editor.find_next(self.find_field.text()):
+            self.count.setText("not found")
+
+    def find_previous(self):
+        if not self.editor.find_next(self.find_field.text(), backwards=True):
+            self.count.setText("not found")
+
+    def replace_one(self):
+        self.editor.replace_current(self.find_field.text(), self.replace_field.text())
+        self._update_count()
+
+    def replace_all(self):
+        count = self.editor.replace_all(self.find_field.text(), self.replace_field.text())
+        self.count.setText(f"replaced {count}")
+        return count
+
+
 class EditorArea(QWidget):
     """A tab's worth of editor plus a breadcrumb bar above it, like Rider's."""
 
@@ -510,6 +827,10 @@ class EditorArea(QWidget):
         self.editor = Editor(path, text, theme, self)
         layout.addWidget(self.editor, 1)
 
+        self.find_bar = FindBar(self.editor, theme, self)
+        self.find_bar.hide()
+        layout.addWidget(self.find_bar)
+
         self.set_breadcrumbs([path.rsplit("/", 1)[-1]])
 
     def set_breadcrumbs(self, parts):
@@ -517,5 +838,6 @@ class EditorArea(QWidget):
 
     def apply_theme(self, theme):
         self.editor.apply_theme(theme)
+        self.find_bar.apply_theme(theme)
         self.breadcrumbs.setStyleSheet(
             f"background: {theme['panel']}; color: {theme['fg_dim']}; border-bottom: 1px solid {theme['border']};")

@@ -210,6 +210,62 @@ def main():
         window.tabs_widget.setCurrentIndex(window.tabs_widget.indexOf(window.tabs[editor.path]))
         pump(app, 200)
 
+    # ----------------------------------------------------------- editing
+    editor.setPlainText("let a = 1;\nlet b = 2;\nlet c = 3;\n")
+    window.server.did_change(_uri(editor.path), editor.toPlainText())
+    pump(app, 200)
+
+    cursor = editor.textCursor()
+    cursor.setPosition(0)
+    editor.setTextCursor(cursor)
+    window.toggle_comment()
+    checks.check("Ctrl+/ comments the line", editor.toPlainText().startswith("// let a = 1;"),
+                 editor.toPlainText().splitlines()[0])
+    window.toggle_comment()
+    checks.check("Ctrl+/ uncomments it again", editor.toPlainText().startswith("let a = 1;"),
+                 editor.toPlainText().splitlines()[0])
+
+    cursor = editor.textCursor()
+    cursor.setPosition(0)
+    editor.setTextCursor(cursor)
+    window.duplicate_line()
+    lines = editor.toPlainText().splitlines()
+    checks.check("Ctrl+D duplicates the line", lines[0] == "let a = 1;" and lines[1] == "let a = 1;",
+                 str(lines[:3]))
+
+    cursor = editor.textCursor()
+    cursor.setPosition(0)
+    editor.setTextCursor(cursor)
+    window.move_lines(1)
+    lines = editor.toPlainText().splitlines()
+    checks.check("Alt+Shift+Down moves the line", lines[1] == "let a = 1;" and lines[0] == "let a = 1;"
+                 and lines[2] == "let b = 2;", str(lines[:3]))
+
+    # The find bar: open with a seeded term, count the matches, replace them.
+    editor.setPlainText("alpha beta alpha gamma\n")
+    area = window._area()
+    area.find_bar.open(term="alpha")
+    pump(app, 100)
+    checks.check("the find bar opens with the term", area.find_bar.isVisible()
+                 and area.find_bar.find_field.text() == "alpha")
+    checks.check("the find bar counts the matches", "2 matches" in area.find_bar.count.text(),
+                 area.find_bar.count.text())
+    area.find_bar.replace_field.setText("delta")
+    replaced = area.find_bar.replace_all()
+    checks.check("Replace all rewrites every match", replaced == 2
+                 and editor.toPlainText() == "delta beta delta gamma\n", editor.toPlainText())
+    area.find_bar.hide()
+
+    # Recent files: the ones opened this session, filtered by typing.
+    from ide.Studio.panels import RecentFilesDialog
+    recent = RecentFilesDialog([editor.path, other], THEMES["darcula"])
+    recent.filter.setText("fizzbuzz")
+    checks.check("recent files filters as you type", recent.list.count() == 1,
+                 str(recent.list.count()))
+    checks.check("recent files carries the path", recent.list.currentItem().data(Qt.UserRole) == other,
+                 str(recent.list.currentItem().data(Qt.UserRole)))
+    recent.deleteLater()
+
     # -------------------------------------------------------------- VCS
     # A throwaway repository: the panel is exercised against real git output,
     # including a commit, without touching the project under test.

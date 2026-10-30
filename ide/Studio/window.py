@@ -27,7 +27,8 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDockWidget, QFileDialog
 from .editor import EditorArea
 from .lsp import LanguageServer, path_for, uri_for
 from .panels import (ChangesPanel, ConsolePanel, DiffPanel, ProblemsPanel, ProjectPanel,
-                     StructurePanel, TerminalPanel, SearchEverywhereDialog)
+                     RecentFilesDialog, StructurePanel, TerminalPanel,
+                     SearchEverywhereDialog)
 from .vcs import parse_diff
 from .theme import THEMES, monospace, stylesheet
 
@@ -52,6 +53,7 @@ class StudioWindow(QMainWindow):
         self.theme = THEMES[theme]
         self.tabs = {}                       # path -> EditorArea
         self.diff_tabs = {}                  # "work:/abs/path" -> DiffPanel
+        self._recent = []                    # paths, most recent first
         self.pending_hover = (None, None)
         self.run_process = None
         self.log_lines = []
@@ -101,6 +103,7 @@ class StudioWindow(QMainWindow):
             "===========\n\n"
             "Open a file from the Project tool window, or press Ctrl+Shift+O to open one.\n\n"
             "  Ctrl+Shift+A    Search everywhere\n"
+            "  Ctrl+E          Recent files\n"
             "  Ctrl+P          Go to file\n"
             "  F12             Go to definition\n"
             "  Ctrl+B          Go to declaration\n"
@@ -108,8 +111,14 @@ class StudioWindow(QMainWindow):
             "  Shift+F6        Rename\n"
             "  Ctrl+Alt+L      Reformat code\n"
             "  Ctrl+Space      Code completion\n"
+            "  Ctrl+F / Ctrl+H Find and replace\n"
+            "  Ctrl+/          Comment the line\n"
+            "  Ctrl+D          Duplicate the line\n"
+            "  Alt+Shift+Up    Move the line up (Down for down)\n"
+            "  Ctrl+G          Go to line\n"
             "  F5              Run\n"
-            "  Ctrl+F5         Compile with the native backend and run\n\n"
+            "  Ctrl+F5         Compile with the native backend and run\n"
+            "  Alt+0           Commit window\n\n"
             "The editor is powered by a language server: diagnostics, completion,\n"
             "hover documentation, navigation and rename all come from the same\n"
             "parser and analyser that compile the program.\n")
@@ -203,7 +212,15 @@ class StudioWindow(QMainWindow):
             "paste": self._action("Paste", "Ctrl+V", lambda: self._editor() and self._editor().paste()),
             "select_all": self._action("Select All", "Ctrl+A", lambda: self._editor() and self._editor().selectAll()),
             "find": self._action("Find...", "Ctrl+F", self.find),
-            "replace": self._action("Replace...", "Ctrl+R", self.find),
+            "replace": self._action("Replace...", "Ctrl+H", lambda: self.find(with_replace=True)),
+            "find_next": self._action("Find Next", "F3", self.find_next),
+            "find_previous": self._action("Find Previous", "Shift+F3", self.find_previous),
+            "comment": self._action("Comment with Line Comment", "Ctrl+/", self.toggle_comment),
+            "duplicate": self._action("Duplicate Line or Selection", "Ctrl+D", self.duplicate_line),
+            "move_up": self._action("Move Line Up", "Alt+Shift+Up", lambda: self.move_lines(-1)),
+            "move_down": self._action("Move Line Down", "Alt+Shift+Down", lambda: self.move_lines(1)),
+            "goto_line": self._action("Go to Line...", "Ctrl+G", self.goto_line),
+            "recent": self._action("Recent Files...", "Ctrl+E", self.recent_files),
             "complete": self._action("Code Completion", "Ctrl+Space", self.complete),
             "goto_definition": self._action("Go to Definition", "F12", self.goto_definition),
             "find_usages": self._action("Find Usages", "Alt+F7", self.find_usages),
@@ -220,7 +237,7 @@ class StudioWindow(QMainWindow):
             "terminal": self._action("Terminal", "Alt+F12", lambda: self._show_dock(self.terminal_dock)),
             "commit": self._action("Commit", "Alt+0", lambda: self._show_dock(self.changes_dock)),
             "refresh_vcs": self._action("Refresh VCS", "Ctrl+Alt+F5", self.refresh_vcs),
-            "diff_selected": self._action("Show Diff", "Ctrl+D", self._diff_selected),
+            "diff_selected": self._action("Show Diff", "Ctrl+Shift+D", self._diff_selected),
             "project": self._action("Project", "Alt+1", lambda: self._show_dock(self.project_dock)),
             "structure": self._action("Structure", "Alt+7", lambda: self._show_dock(self.structure_dock)),
             "run_window": self._action("Run Window", "Alt+4", lambda: self._show_dock(self.console_dock)),
@@ -254,7 +271,17 @@ class StudioWindow(QMainWindow):
         for name in ("cut", "copy", "paste"):
             edit_menu.addAction(a[name])
         edit_menu.addSeparator()
+        edit_menu.addSeparator()
         edit_menu.addAction(a["find"])
+        edit_menu.addAction(a["replace"])
+        edit_menu.addAction(a["find_next"])
+        edit_menu.addAction(a["find_previous"])
+        edit_menu.addSeparator()
+        edit_menu.addAction(a["comment"])
+        edit_menu.addAction(a["duplicate"])
+        edit_menu.addAction(a["move_up"])
+        edit_menu.addAction(a["move_down"])
+        edit_menu.addSeparator()
         edit_menu.addAction(a["select_all"])
 
         view_menu = bar.addMenu("&View")
@@ -270,6 +297,8 @@ class StudioWindow(QMainWindow):
         theme_menu.addAction(a["theme_light"])
 
         navigate_menu = bar.addMenu("&Navigate")
+        navigate_menu.addAction(a["goto_line"])
+        navigate_menu.addAction(a["recent"])
         navigate_menu.addAction(a["goto_file"])
         navigate_menu.addAction(a["goto_symbol"])
         navigate_menu.addAction(a["search_everywhere"])
@@ -512,6 +541,7 @@ class StudioWindow(QMainWindow):
         index = self.tabs_widget.addTab(area, os.path.basename(path))
         self.tabs_widget.setTabToolTip(index, path)
         self.tabs[path] = area
+        self._note_recent(path)
         self.tabs_widget.setCurrentIndex(index)
 
         if self.welcome in [self.tabs_widget.widget(i) for i in range(self.tabs_widget.count())]:
@@ -969,17 +999,71 @@ class StudioWindow(QMainWindow):
     def goto_symbol(self):
         self.search_everywhere()
 
-    def find(self):
-        editor = self._editor()
-        if editor is None:
+    def find(self, with_replace=False):
+        """Opens the find bar on the current editor, seeded with the selection."""
+        area = self._area()
+        if area is None:
             return
-        text, ok = QInputDialog.getText(self, "Find", "Text:")
-        if ok and text:
-            if not editor.find(text):
-                cursor = editor.textCursor()
-                cursor.movePosition(cursor.Start)
-                editor.setTextCursor(cursor)
-                editor.find(text)
+        area.find_bar.open(with_replace=with_replace)
+
+    def find_next(self):
+        area = self._area()
+        if area is not None:
+            if area.find_bar.isVisible() and area.find_bar.find_field.text():
+                area.find_bar.find_next()
+            else:
+                area.find_bar.open()
+
+    def find_previous(self):
+        area = self._area()
+        if area is not None:
+            if area.find_bar.isVisible() and area.find_bar.find_field.text():
+                area.find_bar.find_previous()
+            else:
+                area.find_bar.open()
+
+    def toggle_comment(self):
+        editor = self._editor()
+        if editor is not None:
+            editor.toggle_comment()
+
+    def duplicate_line(self):
+        editor = self._editor()
+        if editor is not None:
+            editor.duplicate_line()
+
+    def move_lines(self, delta):
+        editor = self._editor()
+        if editor is not None:
+            editor.move_lines(delta)
+
+    def goto_line(self):
+        editor = self._editor()
+        if editor is not None:
+            total = editor.blockCount()
+            number, ok = QInputDialog.getInt(self, "Go to Line", f"Line (1-{total}):",
+                                             editor.textCursor().blockNumber() + 1, 1, total)
+            if ok:
+                editor.goto(number - 1, 0)
+                editor.setFocus()
+
+    def recent_files(self):
+        """The files this session has had open, most recent first."""
+        paths = [path for path in self._recent if os.path.exists(path)]
+        paths += [path for path in self.tabs if path not in paths]
+        if not paths:
+            self.console.write("No files opened yet.\n", info=True)
+            return
+
+        dialog = RecentFilesDialog(paths, self.theme, self)
+        if dialog.exec() == dialog.Accepted and dialog.chosen:
+            self.open_file(dialog.chosen)
+
+    def _note_recent(self, path):
+        if path in self._recent:
+            self._recent.remove(path)
+        self._recent.insert(0, path)
+        del self._recent[30:]
 
     # -------------------------------------------------------------------- run
 

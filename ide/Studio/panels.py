@@ -8,8 +8,9 @@ import os
 
 from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import (QAbstractItemView, QFileSystemModel, QHBoxLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileSystemModel,
+                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QPlainTextEdit, QPushButton,
                                QTreeView, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -628,3 +629,55 @@ class DiffPanel(QWidget):
                 cursor.mergeCharFormat(fmt)
             block = block.next()
         del document
+
+
+class RecentFilesDialog(QDialog):
+    """Rider's Ctrl+E: the files that have been open lately, filterable."""
+
+    def __init__(self, paths, theme, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Recent Files")
+        self.resize(620, 420)
+        self.chosen = None
+        self._paths = list(paths)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText("Filter")
+        layout.addWidget(self.filter)
+
+        self.list = QListWidget()
+        layout.addWidget(self.list, 1)
+
+        self.setStyleSheet(
+            f"QDialog {{ background: {theme['panel']}; }}"
+            f"QLineEdit {{ background: {theme['bg']}; color: {theme['fg']};"
+            f" border: 1px solid {theme['border']}; padding: 3px 5px; }}"
+            f"QListWidget {{ background: {theme['panel']}; color: {theme['fg']}; border: none; }}"
+            f"QListWidget::item:selected {{ background: {theme['accent']}; color: #ffffff; }}")
+
+        self.filter.textChanged.connect(self._fill)
+        self.filter.returnPressed.connect(self._accept_current)
+        self.list.itemActivated.connect(lambda _item: self._accept_current())
+        self._fill()
+
+    def _fill(self):
+        needle = self.filter.text().strip().lower()
+        self.list.clear()
+        for path in self._paths:
+            if needle and needle not in path.lower():
+                continue
+            item = QListWidgetItem(f"{os.path.basename(path)}    —    {path}")
+            item.setData(Qt.UserRole, path)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _accept_current(self):
+        item = self.list.currentItem()
+        if item is not None:
+            self.chosen = item.data(Qt.UserRole)
+            self.accept()
