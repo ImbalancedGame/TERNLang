@@ -129,6 +129,11 @@ asked for:
 
 ![Find and replace](ide/img/find.png)
 
+When a line is broken, the error shows in three places at once — the gutter, the
+Problems window with every message and its line, and the status bar's count:
+
+![Live diagnostics](ide/img/diagnostics.png)
+
 `ide/Studio/vcs.py` shells out to `git` rather than binding a library: git is
 already on the machine that has a repository, and `status --porcelain=v1 -z`
 and `diff --unified=3` are stable interfaces. Every call is read-only except
