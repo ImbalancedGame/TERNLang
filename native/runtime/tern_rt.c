@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <netdb.h>
+#include <stdarg.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -3910,21 +3911,23 @@ static void json_write(Buf *buf, Value v, int indent, int level) {
         Map *map = (Map *)v.as.o;
         if (map->count == 0) { buf_add_cstr(buf, "{}"); return; }
         buf_add_char(buf, '{');
+        // Insertion order, like every other map traversal (and the interpreter):
+        // walking the hash slots instead would reorder the document.
         bool first = true;
-        for (int32_t i = 0; i < map->cap; i++) {
-            MapEntry *entry = &map->entries[i];
-            if (!entry->used || entry->dead) continue;
+        for (int32_t i = 0; i < map->order_count; i++) {
+            Value value;
+            if (!map_get(map, map->order[i], &value)) continue;
             if (!first) buf_add_char(buf, ',');
             first = false;
             if (indent) {
                 buf_add_char(buf, '\n');
                 for (int k = 0; k < (level + 1) * indent; k++) buf_add_char(buf, ' ');
             }
-            Value key = tern_to_string(entry->key);
+            Value key = tern_to_string(map->order[i]);
             json_escape(buf, (Str *)key.as.o);
             buf_add_char(buf, ':');
             if (indent) buf_add_char(buf, ' ');
-            json_write(buf, entry->value, indent, level + 1);
+            json_write(buf, value, indent, level + 1);
         }
         if (indent) {
             buf_add_char(buf, '\n');
@@ -3950,10 +3953,15 @@ typedef struct JsonParser {
     const char *text;
     int length;
     int pos;
-    int failed;     // set on the first syntax error; parsing stops there
+    int failed;          // set on the first syntax error; parsing stops there
+    char message[128];   // the error text, formatted where the failure happened
 } JsonParser;
 
-static Value json_parse_value(JsonParser *p);
+// Parsing is recursive, so the depth is bounded: past this the interpreter
+// would die of a stack overflow rather than raise a catchable error.
+#define JSON_MAX_DEPTH 512
+
+static Value json_parse_value(JsonParser *p, int depth);
 
 static void json_skip(JsonParser *p) {
     while (p->pos < p->length) {
@@ -3964,25 +3972,86 @@ static void json_skip(JsonParser *p) {
 }
 
 /// Records a syntax error and returns nil, so callers can just `return`.
-static Value json_fail(JsonParser *p) {
+/// The message is formatted on the spot: it carries the offset where the
+/// problem was found, which later moves `pos` out of reach. The wording
+/// matches JsonParser in TERN/Builtins/StandardLibrary.cs.
+static Value json_failf(JsonParser *p, const char *format, ...) {
     p->failed = 1;
-    p->pos = p->length;
+    va_list args;
+    va_start(args, format);
+    vsnprintf(p->message, sizeof p->message, format, args);
+    va_end(args);
     return v_nil();
 }
 
-static bool json_expect(JsonParser *p, char wanted) {
-    json_skip(p);
-    if (p->pos < p->length && p->text[p->pos] == wanted) {
-        p->pos++;
-        return true;
+static JsonParser json_parser_new(Str *text) {
+    JsonParser parser;
+    parser.text = text->chars;
+    parser.length = (int)text->len;
+    parser.pos = 0;
+    parser.failed = 0;
+    parser.message[0] = '\0';
+    return parser;
+}
+
+/// `true`, `false` and `null` are matched whole; a prefix that runs off the end
+/// of the text fails like any other wrong literal.
+static Value json_literal(JsonParser *p, const char *literal, Value result) {
+    size_t length = strlen(literal);
+    if (p->pos + (int)length > p->length ||
+        memcmp(p->text + p->pos, literal, length) != 0) {
+        return json_failf(p, "invalid literal at offset %d", p->pos);
     }
-    json_fail(p);
-    return false;
+    p->pos += (int)length;
+    return result;
+}
+
+/// Numbers are scanned first and parsed second, so `1-2` is one bad number
+/// rather than a 1 followed by trailing content.
+static Value json_parse_number(JsonParser *p, char first) {
+    const char *start = p->text + p->pos;
+    int begin = p->pos;
+    if (first == '-' || first == '+') {
+        p->pos++;
+    }
+
+    bool is_float = false;
+    while (p->pos < p->length) {
+        char c = p->text[p->pos];
+        if (c == '.' || c == 'e' || c == 'E') {
+            is_float = true;
+        } else if (c != '+' && c != '-' && (c < '0' || c > '9')) {
+            break;
+        }
+        p->pos++;
+    }
+
+    int length = p->pos - begin;
+    if (length == 0) {
+        return json_failf(p, "unexpected character '%c' at offset %d", first, begin);
+    }
+
+    char *consumed = NULL;
+    if (!is_float) {
+        errno = 0;
+        long long whole = strtoll(start, &consumed, 10);
+        if (consumed == start + length && errno != ERANGE) {
+            return v_int((int64_t)whole);
+        }
+    }
+
+    errno = 0;
+    double number = strtod(start, &consumed);
+    if (consumed == start + length) {
+        return v_float(number);
+    }
+
+    return json_failf(p, "invalid number '%.*s'", length, start);
 }
 
 static Value json_parse_string(JsonParser *p) {
     if (p->text[p->pos] != '"') {
-        return json_fail(p);
+        return json_failf(p, "expected a string key at offset %d", p->pos);
     }
 
     Buf buf;
@@ -4012,7 +4081,7 @@ static Value json_parse_string(JsonParser *p) {
             case '/': buf_add_char(&buf, '/'); break;
             case 'u': {
                 if (p->pos + 4 > p->length) {
-                    return json_fail(p);
+                    return json_failf(p, "invalid unicode escape");
                 }
                 char hex[5];
                 memcpy(hex, p->text + p->pos, 4);
@@ -4020,29 +4089,57 @@ static Value json_parse_string(JsonParser *p) {
                 char *hex_end = NULL;
                 long code = strtol(hex, &hex_end, 16);
                 if (!hex_end || hex_end != hex + 4) {
-                    return json_fail(p);
+                    return json_failf(p, "invalid unicode escape");
                 }
                 p->pos += 4;
+
+                // A high surrogate followed by a low one is a single code point;
+                // encoded apart they would be two invalid sequences.
+                if (code >= 0xD800 && code <= 0xDBFF && p->pos + 6 <= p->length &&
+                    p->text[p->pos] == '\\' && p->text[p->pos + 1] == 'u') {
+                    char low_hex[5];
+                    memcpy(low_hex, p->text + p->pos + 2, 4);
+                    low_hex[4] = 0;
+                    char *low_end = NULL;
+                    long low = strtol(low_hex, &low_end, 16);
+                    if (low_end && low_end == low_hex + 4 && low >= 0xDC00 && low <= 0xDFFF) {
+                        p->pos += 6;
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    }
+                }
+
+                // An unpaired surrogate is not a code point: it cannot be encoded
+                // as UTF-8, so it becomes the replacement character, which is
+                // also what the interpreter prints for one.
+                if (code >= 0xD800 && code <= 0xDFFF) {
+                    code = 0xFFFD;
+                }
+
                 if (code < 0x80) {
                     buf_add_char(&buf, (char)code);
                 } else if (code < 0x800) {
                     buf_add_char(&buf, (char)(0xC0 | (code >> 6)));
                     buf_add_char(&buf, (char)(0x80 | (code & 0x3F)));
-                } else {
+                } else if (code < 0x10000) {
                     buf_add_char(&buf, (char)(0xE0 | (code >> 12)));
+                    buf_add_char(&buf, (char)(0x80 | ((code >> 6) & 0x3F)));
+                    buf_add_char(&buf, (char)(0x80 | (code & 0x3F)));
+                } else {
+                    buf_add_char(&buf, (char)(0xF0 | (code >> 18)));
+                    buf_add_char(&buf, (char)(0x80 | ((code >> 12) & 0x3F)));
                     buf_add_char(&buf, (char)(0x80 | ((code >> 6) & 0x3F)));
                     buf_add_char(&buf, (char)(0x80 | (code & 0x3F)));
                 }
                 break;
             }
             default:
-                return json_fail(p);
+                return json_failf(p, "invalid escape '\\%c'", esc);
         }
     }
-    return json_fail(p);   // unterminated string
+    return json_failf(p, "unterminated string");
 }
 
-static Value json_parse_object(JsonParser *p) {
+static Value json_parse_object(JsonParser *p, int depth) {
     Map *map = map_new();
     p->pos++;   // {
     json_skip(p);
@@ -4054,35 +4151,43 @@ static Value json_parse_object(JsonParser *p) {
     while (!p->failed) {
         json_skip(p);
         if (p->pos >= p->length || p->text[p->pos] != '"') {
-            return json_fail(p);
+            return json_failf(p, "expected a string key at offset %d", p->pos);
         }
         Value key = json_parse_string(p);
         if (p->failed) {
             return v_nil();
         }
-        if (!json_expect(p, ':')) {
-            return v_nil();
+
+        json_skip(p);
+        if (p->pos >= p->length || p->text[p->pos] != ':') {
+            return json_failf(p, "expected ':' at offset %d", p->pos);
         }
-        Value value = json_parse_value(p);
+        p->pos++;
+
+        Value value = json_parse_value(p, depth + 1);
         if (p->failed) {
             return v_nil();
         }
         map_set(map, key, value);
 
         json_skip(p);
-        if (p->pos < p->length && p->text[p->pos] == ',') {
+        if (p->pos >= p->length) {
+            return json_failf(p, "unexpected end of object");
+        }
+        if (p->text[p->pos] == ',') {
             p->pos++;
             continue;
         }
-        if (json_expect(p, '}')) {
+        if (p->text[p->pos] == '}') {
+            p->pos++;
             return v_obj((Obj *)map);
         }
-        return v_nil();
+        return json_failf(p, "expected ',' or '}' at offset %d", p->pos);
     }
     return v_nil();
 }
 
-static Value json_parse_array(JsonParser *p) {
+static Value json_parse_array(JsonParser *p, int depth) {
     List *list = list_new(4);
     p->pos++;   // [
     json_skip(p);
@@ -4092,74 +4197,73 @@ static Value json_parse_array(JsonParser *p) {
     }
 
     while (!p->failed) {
-        Value item = json_parse_value(p);
+        Value item = json_parse_value(p, depth + 1);
         if (p->failed) {
             return v_nil();
         }
         list_push(list, item);
 
         json_skip(p);
-        if (p->pos < p->length && p->text[p->pos] == ',') {
+        if (p->pos >= p->length) {
+            return json_failf(p, "unexpected end of array");
+        }
+        if (p->text[p->pos] == ',') {
             p->pos++;
             continue;
         }
-        if (json_expect(p, ']')) {
+        if (p->text[p->pos] == ']') {
+            p->pos++;
             return v_obj((Obj *)list);
         }
-        return v_nil();
+        return json_failf(p, "expected ',' or ']' at offset %d", p->pos);
     }
     return v_nil();
 }
 
-static Value json_parse_value(JsonParser *p) {
+static Value json_parse_value(JsonParser *p, int depth) {
+    if (depth > JSON_MAX_DEPTH) {
+        return json_failf(p, "JSON nested too deeply (limit %d)", JSON_MAX_DEPTH);
+    }
     json_skip(p);
     if (p->pos >= p->length) {
-        return json_fail(p);
+        return json_failf(p, "unexpected end of input");
     }
 
     char c = p->text[p->pos];
     if (c == '{') {
-        return json_parse_object(p);
+        return json_parse_object(p, depth);
     }
     if (c == '[') {
-        return json_parse_array(p);
+        return json_parse_array(p, depth);
     }
     if (c == '"') {
         return json_parse_string(p);
     }
+    if (c == 't') {
+        return json_literal(p, "true", v_bool(true));
+    }
+    if (c == 'f') {
+        return json_literal(p, "false", v_bool(false));
+    }
+    if (c == 'n') {
+        return json_literal(p, "null", v_nil());
+    }
+    return json_parse_number(p, c);
+}
 
-    if (p->pos + 4 <= p->length && memcmp(p->text + p->pos, "true", 4) == 0) {
-        p->pos += 4;
-        return v_bool(true);
+/// Runs one parse to completion. Returns false when the text is not valid
+/// JSON, leaving the reason in `parser.message`.
+static bool json_parse_document(JsonParser *parser, Value *result) {
+    *result = json_parse_value(parser, 0);
+    if (parser->failed) {
+        return false;
     }
-    if (p->pos + 5 <= p->length && memcmp(p->text + p->pos, "false", 5) == 0) {
-        p->pos += 5;
-        return v_bool(false);
+    json_skip(parser);
+    if (parser->pos != parser->length) {
+        json_failf(parser, "unexpected trailing content at offset %d", parser->pos);
+        return false;
     }
-    if (p->pos + 4 <= p->length && memcmp(p->text + p->pos, "null", 4) == 0) {
-        p->pos += 4;
-        return v_nil();
-    }
-
-    if (c == '-' || (c >= '0' && c <= '9')) {
-        char *end = NULL;
-        const char *start = p->text + p->pos;
-        double as_double = strtod(start, &end);
-        if (!end || end == start) {
-            return json_fail(p);
-        }
-        bool whole = true;
-        for (const char *cursor = start; cursor < end; cursor++) {
-            if (*cursor == '.' || *cursor == 'e' || *cursor == 'E') {
-                whole = false;
-                break;
-            }
-        }
-        p->pos = (int)(end - p->text);
-        return whole ? v_int((int64_t)as_double) : v_float(as_double);
-    }
-
-    return json_fail(p);
+    return true;
 }
 
 static Value js_parse(int argc, Value *argv) {
@@ -4167,12 +4271,10 @@ static Value js_parse(int argc, Value *argv) {
     if (!v_is_str(text)) {
         bad_argument("parse");
     }
-    Str *str = (Str *)text.as.o;
-    JsonParser parser = { str->chars, (int)str->len, 0, 0 };
-    Value value = json_parse_value(&parser);
-    json_skip(&parser);
-    if (parser.failed || parser.pos != parser.length) {
-        tern_panic("JsonError", "invalid JSON at offset %d", parser.pos);
+    JsonParser parser = json_parser_new((Str *)text.as.o);
+    Value value = v_nil();
+    if (!json_parse_document(&parser, &value)) {
+        tern_panic("JsonError", "%s", parser.message);
     }
     return value;
 }
@@ -4185,11 +4287,9 @@ static Value js_tryparse(int argc, Value *argv) {
     if (!v_is_str(text)) {
         return fallback;
     }
-    Str *str = (Str *)text.as.o;
-    JsonParser parser = { str->chars, (int)str->len, 0, 0 };
-    Value value = json_parse_value(&parser);
-    json_skip(&parser);
-    if (parser.failed || parser.pos != parser.length) {
+    JsonParser parser = json_parser_new((Str *)text.as.o);
+    Value value = v_nil();
+    if (!json_parse_document(&parser, &value)) {
         return fallback;
     }
     return value;

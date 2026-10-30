@@ -1014,8 +1014,20 @@ namespace TERN.Builtins
     /// <summary>Minimal JSON reader producing TERN values (ints stay integers).</summary>
     internal static class JsonParser
     {
-        public static Value Parse(string text, ref int index, VM vm)
+        /// <summary>
+        /// How deeply a document may nest. Parsing is recursive, so without a
+        /// cap a hostile document kills the process with a stack overflow
+        /// instead of raising a catchable error; 512 is far beyond real data.
+        /// </summary>
+        public const int MaxDepth = 512;
+
+        public static Value Parse(string text, ref int index, VM vm, int depth = 0)
         {
+            if (depth > MaxDepth)
+            {
+                throw vm.Error("JsonError", $"JSON nested too deeply (limit {MaxDepth})");
+            }
+
             SkipWhitespace(text, ref index);
 
             if (index >= text.Length)
@@ -1055,7 +1067,7 @@ namespace TERN.Builtins
                         }
 
                         index++;
-                        var value = Parse(text, ref index, vm);
+                        var value = Parse(text, ref index, vm, depth + 1);
                         map.Set(Value.Str(key), value);
                         SkipWhitespace(text, ref index);
 
@@ -1094,7 +1106,7 @@ namespace TERN.Builtins
 
                     while (true)
                     {
-                        list.Add(Parse(text, ref index, vm));
+                        list.Add(Parse(text, ref index, vm, depth + 1));
                         SkipWhitespace(text, ref index);
 
                         if (index >= text.Length)

@@ -25,10 +25,34 @@ class CodegenError(Exception):
     pass
 
 
+def lone_surrogates(text):
+    """Replace unpaired UTF-16 surrogates with U+FFFD.
+
+    A `"\\ud83d"` escape leaves a lone surrogate in the constant. Python can
+    hold it but not encode it, so the emitter used to die with a traceback;
+    the interpreter prints the replacement character for the same program.
+    """
+    if not any(0xD800 <= ord(char) <= 0xDFFF for char in text):
+        return text
+    out = []
+    index = 0
+    while index < len(text):
+        code = ord(text[index])
+        if 0xD800 <= code <= 0xDBFF and index + 1 < len(text) and \
+                0xDC00 <= ord(text[index + 1]) <= 0xDFFF:
+            low = ord(text[index + 1])
+            out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
+            index += 2
+            continue
+        out.append("\ufffd" if 0xD800 <= code <= 0xDFFF else text[index])
+        index += 1
+    return "".join(out)
+
+
 def c_string(text):
     """A C string literal for `text` (UTF-8 bytes, escaped)."""
     out = ['"']
-    for byte in text.encode("utf-8"):
+    for byte in lone_surrogates(text).encode("utf-8"):
         char = chr(byte)
         if char == '"':
             out.append('\\"')

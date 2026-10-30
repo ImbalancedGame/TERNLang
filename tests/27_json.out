@@ -1,0 +1,73 @@
+value: {"a": 1, "b": [true, false, nil]}
+value: {"nested": {"list": [1, [2, [3]]]}}
+value: []
+value: {}
+value: [1, 2]
+value: plain
+value: tab	here
+value: quote: " and backslash: \
+value: Aé
+value: 😀
+value: 1234567890123456789
+value: -42
+value: 7
+value: 1500.0
+value: -0.25
+value: 1E+20
+value: 1E+20
+value: inf
+value: 1
+error: unexpected end of input
+error: unexpected end of input
+error: expected a string key at offset 1
+error: expected ':' at offset 4
+error: unexpected end of input
+error: unexpected end of object
+error: expected a string key at offset 7
+error: expected a string key at offset 1
+error: expected ':' at offset 5
+error: unexpected end of input
+error: unexpected end of array
+error: unexpected end of input
+error: expected ',' or ']' at offset 3
+error: invalid literal at offset 0
+error: invalid literal at offset 0
+error: invalid literal at offset 0
+error: unexpected character 'x' at offset 0
+error: unexpected trailing content at offset 1
+error: unexpected trailing content at offset 2
+error: invalid number '-'
+error: unexpected trailing content at offset 2
+error: unexpected trailing content at offset 7
+error: unexpected trailing content at offset 3
+error: unterminated string
+error: expected ',' or '}' at offset 7
+error: unexpected character ':' at offset 5
+value: 1.0
+value: 0.5
+error: invalid number '1e'
+error: invalid literal at offset 5
+error: invalid escape '\q'
+error: invalid unicode escape
+error: unexpected trailing content at offset 8
+list
+error: JSON nested too deeply (limit 512)
+nil
+fallback
+{"ok": 1}
+{"a":[1,{"b":null}]}
+[
+  1,
+  2
+]
+{
+  "nested": {
+    "x": [
+      true,
+      false
+    ]
+  }
+}
+{"x": 1, "y": [1, 2]}
+"quote \" and \\ and \n"
+{"list":[1,2.5,true,null,"s"],"map":{"k":"v"}}

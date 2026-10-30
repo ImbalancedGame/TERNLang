@@ -1,0 +1,110 @@
+// JSON parsing and printing: one golden for both back ends.
+// Every error below is raised by the interpreter with this exact wording
+// and offset, and the native runtime matches it character for character.
+import "std:json";
+
+fn kind(block) {
+    try {
+        let value = block();
+        return "value: " + str(value);
+    } catch (e) {
+        return "error: " + str(e);
+    }
+}
+
+fn parse(text) {
+    return json.parse(text);
+}
+
+// --- values ---
+println(kind(fn() { return parse("{\"a\": 1, \"b\": [true, false, null]}"); }));
+println(kind(fn() { return parse("{\"nested\": {\"list\": [1, [2, [3]]]}}"); }));
+println(kind(fn() { return parse("[]"); }));
+println(kind(fn() { return parse("{}"); }));
+println(kind(fn() { return parse("  [ 1 , 2 ]  "); }));
+println(kind(fn() { return parse("\"plain\""); }));
+println(kind(fn() { return parse("\"tab\\there\""); }));
+println(kind(fn() { return parse("\"quote: \\\" and backslash: \\\\\""); }));
+println(kind(fn() { return parse("\"\\u0041\\u00e9\""); }));
+println(kind(fn() { return parse("\"\\ud83d\\ude00\""); }));
+println(kind(fn() { return parse("1234567890123456789"); }));
+println(kind(fn() { return parse("-42"); }));
+println(kind(fn() { return parse("+7"); }));
+println(kind(fn() { return parse("1.5e3"); }));
+println(kind(fn() { return parse("-0.25"); }));
+println(kind(fn() { return parse("1E+20"); }));
+
+// --- numbers that do not fit an integer become floats ---
+println(kind(fn() { return parse("99999999999999999999"); }));
+println(kind(fn() { return parse("1e400"); }));
+println(kind(fn() { return parse("01"); }));
+
+// --- syntax errors, with the offset the interpreter reports ---
+println(kind(fn() { return parse(""); }));
+println(kind(fn() { return parse("   "); }));
+println(kind(fn() { return parse("{"); }));
+println(kind(fn() { return parse("{\"a\""); }));
+println(kind(fn() { return parse("{\"a\":"); }));
+println(kind(fn() { return parse("{\"a\":1"); }));
+println(kind(fn() { return parse("{\"a\":1,"); }));
+println(kind(fn() { return parse("{a:1}"); }));
+println(kind(fn() { return parse("{\"a\" 1}"); }));
+println(kind(fn() { return parse("["); }));
+println(kind(fn() { return parse("[1"); }));
+println(kind(fn() { return parse("[1,"); }));
+println(kind(fn() { return parse("[1 2]"); }));
+println(kind(fn() { return parse("tru"); }));
+println(kind(fn() { return parse("fals"); }));
+println(kind(fn() { return parse("nul"); }));
+println(kind(fn() { return parse("x"); }));
+println(kind(fn() { return parse("1x"); }));
+println(kind(fn() { return parse("1 2"); }));
+println(kind(fn() { return parse("-"); }));
+println(kind(fn() { return parse("+1x"); }));
+println(kind(fn() { return parse("{\"a\":1}}"); }));
+println(kind(fn() { return parse("[1]]"); }));
+println(kind(fn() { return parse("\"abc"); }));
+println(kind(fn() { return parse("{\"a\":1 \"b\":2}"); }));
+println(kind(fn() { return parse("{\"a\"::1}"); }));
+println(kind(fn() { return parse("1."); }));
+println(kind(fn() { return parse(".5"); }));
+println(kind(fn() { return parse("1e"); }));
+println(kind(fn() { return parse("{\"a\":tru}"); }));
+println(kind(fn() { return parse("\"\\q\""); }));
+println(kind(fn() { return parse("\"\\u12\""); }));
+println(kind(fn() { return parse("{\"a\":1} extra"); }));
+
+// --- nesting is capped so a hostile document cannot overflow the stack ---
+let deep = fn(n) {
+    let text = "";
+    let i = 0;
+    while (i < n) {
+        text = text + "[";
+        i = i + 1;
+    }
+    text = text + "1";
+    i = 0;
+    while (i < n) {
+        text = text + "]";
+        i = i + 1;
+    }
+    return text;
+};
+println(type(json.parse(deep(512))));
+println(kind(fn() { return json.parse(deep(513)); }));
+
+// --- tryParse never raises ---
+println(json.tryParse("{bad"));
+println(json.tryParse("{bad", "fallback"));
+println(json.tryParse("{\"ok\": 1}"));
+
+// --- stringify ---
+println(json.stringify({"a": [1, {"b": nil}]}));
+println(json.stringify([1, 2], true));
+println(json.stringify({"nested": {"x": [true, false]}}, true));
+println(json.parse(json.stringify({"x": 1, "y": [1, 2]})));
+println(json.stringify("quote \" and \\ and \n"));
+
+// Round-tripping a parsed document keeps its shape and its values.
+let original = "{\"list\": [1, 2.5, true, null, \"s\"], \"map\": {\"k\": \"v\"}}";
+println(json.stringify(json.parse(original)));
