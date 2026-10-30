@@ -115,6 +115,12 @@ namespace TERN.Builtins
             public string Host { get; set; } = string.Empty;
             public string User { get; set; } = string.Empty;
             public string? Key { get; set; }
+
+            /// <summary>
+            /// The program to run. It is `sftp` from OpenSSH by default; the
+            /// option exists for a client installed somewhere off PATH.
+            /// </summary>
+            public string Binary { get; set; } = "sftp";
             public int Port { get; set; } = 22;
             public int Timeout { get; set; } = DefaultTimeout;
         }
@@ -142,6 +148,15 @@ namespace TERN.Builtins
             if (map.TryGet(Value.Str("key"), out var key))
             {
                 options.Key = Text(vm, key, "option 'key'");
+            }
+
+            if (map.TryGet(Value.Str("binary"), out var binary))
+            {
+                options.Binary = Text(vm, binary, "option 'binary'");
+                if (options.Binary.Length == 0)
+                {
+                    throw vm.Error("ArgumentError", "option 'binary' must not be empty");
+                }
             }
 
             if (map.TryGet(Value.Str("port"), out var port))
@@ -229,7 +244,7 @@ namespace TERN.Builtins
 
         private static List<string> Command(Options options)
         {
-            var argv = new List<string> { "sftp", "-b", "-", "-P", options.Port.ToString() };
+            var argv = new List<string> { options.Binary, "-b", "-", "-P", options.Port.ToString() };
             if (options.Key is not null)
             {
                 argv.Add("-i");
@@ -276,7 +291,7 @@ namespace TERN.Builtins
                 throw vm.Error("SftpError", $"cannot read the key file '{options.Key}'");
             }
 
-            var startInfo = new ProcessStartInfo("sftp")
+            var startInfo = new ProcessStartInfo(options.Binary)
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
@@ -301,7 +316,7 @@ namespace TERN.Builtins
             }
             catch (Exception error) when (error is System.ComponentModel.Win32Exception or IOException)
             {
-                throw vm.Error("SftpError", "cannot run sftp: is the OpenSSH client installed?");
+                throw vm.Error("SftpError", $"cannot run '{options.Binary}': is it installed?");
             }
 
             using (process)
@@ -329,7 +344,7 @@ namespace TERN.Builtins
                         // Already gone.
                     }
 
-                    throw vm.Error("SftpError", $"sftp timed out after {options.Timeout} ms");
+                    throw vm.Error("SftpError", $"'{options.Binary}' timed out after {options.Timeout} ms");
                 }
 
                 return new Result(process.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());

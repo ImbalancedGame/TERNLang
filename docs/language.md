@@ -663,7 +663,8 @@ println(sftp.list("/srv", server));
 ```
 
 Options are `host` and `user` (both required), `key` (a private key file),
-`port` (default 22) and `timeout` (milliseconds, default 30000). A local file
+`port` (default 22), `timeout` (milliseconds, default 30000) and `binary` (the
+client to run, `sftp` from `PATH` unless you point it somewhere else). A local file
 that is missing, or a key that cannot be read, is reported before anything is
 started. `sftp.run(commands, options)` runs your own batch commands and returns
 `{"status", "output", "error"}` without raising, which is what `upload`,
@@ -673,7 +674,15 @@ non-zero, with the first line of its error output. `sftp.batch(commands)` and
 can print exactly what would run. Paths with spaces are quoted.
 
 The `sftp` program must be installed (OpenSSH client) and the host must accept
-key-based authentication: there is no password prompt to drive.
+key-based authentication: there is no password prompt to drive. Use `binary`
+when the client lives off `PATH`.
+
+This is the only place TERN starts an external program. It is a deliberate
+trade: SFTP is a subsystem inside an SSH connection, and SSH is cryptography
+end to end, so the alternatives were linking an SSH library — which would stop
+compiled programs from being self-contained — or writing the transport by hand,
+which this project does not do. Everything else in the networking stack,
+including TLS, is implemented in the two back ends themselves.
 
 ---
 

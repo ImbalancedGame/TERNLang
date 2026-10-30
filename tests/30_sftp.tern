@@ -27,6 +27,12 @@ println(kind(fn() { sftp.command({"host": "example.com"}); }));
 println(kind(fn() { sftp.command({"host": "example.com", "user": 5}); }));
 println(kind(fn() { sftp.command({"host": "example.com", "user": "me", "port": 0}); }));
 println(kind(fn() { sftp.command({"host": "example.com", "user": "me", "timeout": -1}); }));
+// A client installed off PATH is started from the path given, and a program
+// that is not there is named before any transfer starts.
+println(sftp.command({"host": "example.com", "user": "me", "binary": "/opt/openssh/bin/sftp"}));
+println(kind(fn() { sftp.command({"host": "example.com", "user": "me", "binary": 5}); }));
+println(kind(fn() { sftp.command({"host": "example.com", "user": "me", "binary": ""}); }));
+println(kind(fn() { sftp.run(["ls -1 /"], {"host": "h", "user": "u", "binary": "/nope/sftp"}); }));
 println(kind(fn() { sftp.upload("/nope/file.txt", "/remote", {"host": "h", "user": "u"}); }));
 println(kind(fn() { sftp.upload(1, "x", {"host": "h", "user": "u"}); }));
 println(kind(fn() { sftp.download("/x", "/y", {"host": "h", "user": "u", "key": "/nope/key"}); }));

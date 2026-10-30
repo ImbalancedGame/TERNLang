@@ -15,6 +15,10 @@ option 'user' is required
 option 'user' must be a string, not int
 option 'port' must be between 1 and 65535
 option 'timeout' must not be negative
+["/opt/openssh/bin/sftp", "-b", "-", "-P", "22", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "me@example.com"]
+option 'binary' must be a string, not int
+option 'binary' must not be empty
+cannot run '/nope/sftp': is it installed?
 local file '/nope/file.txt' does not exist
 local must be a string, not int
 cannot read the key file '/nope/key'

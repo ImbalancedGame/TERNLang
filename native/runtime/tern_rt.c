@@ -7634,6 +7634,7 @@ typedef struct {
     const char *host;
     const char *user;
     const char *key;
+    const char *binary;
     int port;
     int timeout;
 } SftpOptions;
@@ -7646,6 +7647,7 @@ static void sftp_parse_options(Value v, const char *operation, SftpOptions *opti
     options->host = NULL;
     options->user = NULL;
     options->key = NULL;
+    options->binary = "sftp";
     options->port = 22;
     options->timeout = SFTP_DEFAULT_TIMEOUT;
 
@@ -7663,6 +7665,12 @@ static void sftp_parse_options(Value v, const char *operation, SftpOptions *opti
     }
     if (map_get(map, str_from_cstr("key"), &found)) {
         options->key = sftp_arg_text(found, "option 'key'");
+    }
+    if (map_get(map, str_from_cstr("binary"), &found)) {
+        options->binary = sftp_arg_text(found, "option 'binary'");
+        if (options->binary[0] == '\0') {
+            tern_panic("ArgumentError", "option 'binary' must not be empty");
+        }
     }
     if (map_get(map, str_from_cstr("port"), &found)) {
         double port = net_arg_number(found, "option 'port'");
@@ -7744,7 +7752,7 @@ static int sftp_argv(SftpOptions *options, char *port_text, size_t port_size,
     sprintf(target, "%s@%s", options->user, options->host);
 
     int at = 0;
-    argv[at++] = "sftp";
+    argv[at++] = options->binary;
     argv[at++] = "-b";
     argv[at++] = "-";
     argv[at++] = "-P";
@@ -7770,13 +7778,13 @@ static int sftp_exec(char *const argv[], const char *batch, size_t batch_length,
     int from_child[2];
     int errors[2];
     if (pipe(to_child) != 0 || pipe(from_child) != 0 || pipe(errors) != 0) {
-        snprintf(why, why_size, "cannot run sftp: %s", strerror(errno));
+        snprintf(why, why_size, "cannot run '%s': %s", argv[0], strerror(errno));
         return -1;
     }
 
     pid_t pid = fork();
     if (pid < 0) {
-        snprintf(why, why_size, "cannot run sftp: %s", strerror(errno));
+        snprintf(why, why_size, "cannot run '%s': %s", argv[0], strerror(errno));
         return -1;
     }
 
@@ -7827,7 +7835,7 @@ static int sftp_exec(char *const argv[], const char *batch, size_t batch_length,
         if (remaining <= 0) {
             kill(pid, SIGKILL);
             waitpid(pid, NULL, 0);
-            snprintf(why, why_size, "sftp timed out after %d ms", timeout_ms);
+            snprintf(why, why_size, "'%s' timed out after %d ms", argv[0], timeout_ms);
             return -1;
         }
 
@@ -7836,7 +7844,7 @@ static int sftp_exec(char *const argv[], const char *batch, size_t batch_length,
             if (errno == EINTR) continue;
             kill(pid, SIGKILL);
             waitpid(pid, NULL, 0);
-            snprintf(why, why_size, "cannot run sftp: %s", strerror(errno));
+            snprintf(why, why_size, "cannot run '%s': %s", argv[0], strerror(errno));
             return -1;
         }
 
@@ -7899,7 +7907,7 @@ static Value sftp_run_batch(Value options_value, const char *operation, List *co
     if (status == 127) {
         bb_free(&out);
         bb_free(&err);
-        tern_panic("SftpError", "cannot run sftp: is the OpenSSH client installed?");
+        tern_panic("SftpError", "cannot run '%s': is it installed?", options.binary);
     }
 
     if (status != 0 && raise) {
