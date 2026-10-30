@@ -1,0 +1,6 @@
+24_parse_errors:4:21: error TRN0102: expected a field name or 'fn' in a struct body
+24_parse_errors:5:19: error TRN0102: expected a field name or 'fn' in a struct body
+24_parse_errors:6:25: error TRN0115: expected an expression but found '}'
+24_parse_errors:7:1: error TRN0102: expected a field name or 'fn' in a struct body
+24_parse_errors:7:19: error TRN0100: expected ']' but found ';'
+24_parse_errors:8:1: error TRN0100: expected '}' but found 'end of file'

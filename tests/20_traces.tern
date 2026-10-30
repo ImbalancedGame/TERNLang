@@ -1,0 +1,57 @@
+// Uncaught errors print a stack trace with exact source lines, and a caught
+// error must not leave stale frames behind.
+
+fn inner(n) {
+    if (n == 0) {
+        throw "bottom";
+    }
+    return inner(n - 1);
+}
+
+fn middle(n) {
+    return inner(n);
+}
+
+fn outer(n) {
+    return middle(n);
+}
+
+fn fails() {
+    try {
+        let m = {"a": 1};
+        return m.missing;
+    } catch (e) {
+        return "caught: " + e;
+    }
+}
+
+fn report() {
+    let list = [1, 2];
+    return list[9];
+}
+
+println(fails());
+
+try {
+    println(outer(3));
+} catch (e) {
+    println("swallowed: " + e);
+}
+
+try {
+    report();
+} catch (e) {
+    println("index: " + e);
+}
+
+// Errors raised inside a builtin start life without a trace; the frame that
+// raises them adds one before the exception leaves.
+fn convert(text) {
+    return int(text);
+}
+
+fn parseAll(values) {
+    return convert(values[0]);
+}
+
+parseAll(["nope"]);

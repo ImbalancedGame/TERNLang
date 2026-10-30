@@ -1,0 +1,54 @@
+// Method tables are identical in the interpreter and in compiled code: the
+// same names exist, the same names are missing, and rounding matches.
+
+// string.format uses the receiver as the template.
+println("{} + {} = {}".format(1, 2, 3));
+println("{0}-{0}".format("again"));
+println("literal {{braces}}".format());
+
+// map.contains is an alias of map.has.
+let counts = {"a": 1, "b": 2};
+println(counts.contains("a"), counts.contains("z"));
+
+// ranges are lazy, but map/each materialise them like a list would.
+println(range(5).map(fn(x) { return x * x; }));
+let seen = [];
+range(1, 4).each(fn(x) { seen.push(x); });
+println(seen);
+println(range(3).map(fn(x) { return x + 1; }).sum());
+
+// int and float methods do not leak into each other.
+fn attempt(block) {
+    try {
+        return block();
+    } catch (e) {
+        return "MemberError";
+    }
+}
+
+println(attempt(fn() { return (5.5).times(2); }));
+println(attempt(fn() { return (5).round(); }));
+println(attempt(fn() { return (5).toInt(); }));
+println(attempt(fn() { return (5.5).toFloat(); }));
+
+// The methods that do exist.
+println((5).abs(), (5).toFloat(), (5).clamp(0, 3));
+println((5.5).abs(), (5.5).toInt(), (5.5).round(), (5.5).round(1), (5.5).clamp(0, 3.0));
+let total = 0;
+(4).times(fn(i) { total += i; });
+println(total);
+
+// Several values at once, and ranges with a step.
+let grown = [1];
+grown.push(2, 3);
+println(grown);
+println(range(0, 10, 3).toList(), len(range(0, 10, 3)));
+println(range(5, 0, -2).toList(), len(range(5, 0, -2)));
+println(range(0, 10, 3).contains(9), range(0, 10, 3).contains(8));
+println(range(10, 0, -3)[1], range(10, 0, -3)[-1], len(range(10, 0, -3)));
+let stepped = [];
+for i in range(0, 7, 2) {
+    stepped.push(i);
+}
+println(stepped);
+println(range(0, 5, 0).toList());

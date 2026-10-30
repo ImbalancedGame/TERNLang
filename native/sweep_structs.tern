@@ -1,0 +1,118 @@
+// Struct and instance sweep: defaults, positional construction, methods,
+// `this` mutation, method values, equality, copy and nesting. `native/parity.py`
+// diffs this against the interpreter.
+
+fn show(label, block) {
+    try {
+        println(label + " => " + repr(block()));
+    } catch (e) {
+        println(label + " => ERR");
+    }
+}
+
+struct Point {
+    x = 0,
+    y = 0
+
+    fn sum() { return this.x + this.y; }
+    fn scaled(k) { return Point(this.x * k, this.y * k); }
+    fn label() { return "(" + this.x + ", " + this.y + ")"; }
+}
+
+struct Counter {
+    n = 0
+
+    fn bump() { this.n = this.n + 1; return this.n; }
+    fn bumpBy(k) { this.n = this.n + k; return this; }
+}
+
+struct Stack { items = [] }
+
+struct Box { value = nil }
+
+struct Outer {
+    inner = nil,
+    tag = "outer"
+
+    fn describe() { return this.tag + ":" + str(this.inner); }
+}
+
+println(Point(1, 2), repr(Point(1, 2)), str(Point(1, 2)), type(Point(1, 2)));
+
+let p = Point(1, 2);
+println(p.sum(), p.label(), p.scaled(3), p.scaled(3).sum());
+
+show("field-read", fn() { return p.x; });
+show("field-write", fn() { p.x = 10; return p.sum(); });
+show("field-missing", fn() { return p.z; });
+show("field-write-missing", fn() { p.z = 1; return p.z; });
+show("method-missing", fn() { return p.nope(); });
+
+// Method values detach from the instance in the interpreter; both back ends
+// must agree on what calling one does.
+let bound = p.label;
+println("method-value-type", type(bound));
+show("method-value-call", fn() { return bound(); });
+
+let c = Counter();
+println(c.n, c.bump(), c.bump(), c.n);
+println(type(c.bumpBy(5)), c.n);
+show("chain-write", fn() { c.bumpBy(5).bump(); return c.n; });
+
+// Each instance gets its own default: a shared list would show up here.
+let s1 = Stack();
+let s2 = Stack();
+s1.items.push(1);
+s1.items.push(2);
+s2.items.push(9);
+println(s1.items, s2.items, s1.items == s2.items);
+
+// Equality is structural for instances.
+let same = p;
+println(Point(1, 2) == Point(1, 2), Point(1, 2) == Point(2, 1), same == p);
+
+let box = Box();
+let inner = Point(4, 5);
+box.value = inner;
+let outer = Outer();
+outer.inner = box;
+println(box.value.sum(), outer.describe(), repr(outer));
+
+// copy() of an instance is shallow: the nested instance is shared.
+let c2 = copy(p);
+c2.x = 99;
+println(p.x, c2.x, copy(p) == p);
+
+// Instances inside collections and as map values.
+let points = [];
+for i in 0..<3 {
+    points.push(Point(i, i * 2));
+}
+println(points, points[1].sum(), type(points[0]));
+
+let byName = {"origin": Point(0, 0)};
+byName["corner"] = Point(3, 3);
+println(byName["corner"].sum(), keys(byName), len(points));
+
+// Methods see the instance they were called on, not the last constructed one.
+let first = Counter();
+let second = Counter();
+first.bump();
+second.bump();
+second.bump();
+println(first.n, second.n);
+
+// Struct defaults may be expressions evaluated per instance.
+struct Stamped { now = 1 + 1 }
+println(Stamped().now, Stamped(7).now);
+
+// Recursive-ish nesting through a list.
+struct Node {
+    value = 0,
+    links = []
+
+    fn link(other) { this.links.push(other); return this; }
+}
+let root = Node(1);
+root.link(Node(2)).link(Node(3));
+println(root.value, len(root.links), root.links[0].value, root.links[1].value);

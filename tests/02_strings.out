@@ -1,0 +1,31 @@
+hello, TERN!
+sum: 3, nested: inner
+tab:	here
+quote: "q"
+unicode: 😀
+4
+ABC
+pad
+["a", "b", "c"]
+a-b-c
+true
+true
+true
+2
+heLLo
+el
+ababab
+..x
+13
+7.0
+b
+bcd
+["a", "b", "c"]
+h.e.y.
+421.5niltrue
+42 -1 7.5 0.5
+él héllo lo él
+4 5
+["a", "", "b"] [""] [] ["a", "b"]
+[] ["a", "b"]
+cannot parse 'nope' as an integer cannot parse '12abc' as an integer

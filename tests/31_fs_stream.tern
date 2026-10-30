@@ -1,0 +1,53 @@
+// Reading a file in pieces: byte offsets, a handle that remembers where it is,
+// and chunks that never split a UTF-8 character. A log or an archive can be far
+// larger than memory, so nothing here has to read the whole file.
+import "std:fs";
+
+
+fn kind(block) {
+    try {
+        return str(block());
+    } catch (e) {
+        return "!" + str(e);
+    }
+}
+
+let dir = ".fs_stream";
+if (fs.exists(dir)) { fs.remove(dir); }
+fs.mkdir(dir);
+
+let path = dir + "/data.txt";
+fs.write(path, "0123456789");
+println(fs.readAt(path, 0, 4), fs.readAt(path, 4, 4), fs.readAt(path, 8, 4));
+println("[" + fs.readAt(path, 10, 4) + "]", "[" + fs.readAt(path, 99, 4) + "]");
+println("[" + fs.readAt(path, 2) + "]");
+
+let file = fs.open(path);
+println(fs.fileSize(file), fs.position(file));
+println(fs.readChunk(file, 3), fs.position(file));
+println(fs.readChunk(file, 3), fs.position(file));
+println(fs.readChunk(file, 6), fs.position(file));
+println("[" + fs.readChunk(file, 6) + "]", fs.position(file));
+fs.seek(file, 7);
+println(fs.readChunk(file, 100), fs.position(file));
+fs.close(file);
+
+let uni = dir + "/uni.txt";
+fs.write(uni, "h\u00e9llo w\u00f6rld");
+println(fs.size(uni));
+let u = fs.open(uni);
+println(fs.readChunk(u, 2), fs.position(u));
+println(fs.readChunk(u, 3), fs.position(u));
+println(fs.readChunk(u, 4), fs.position(u));
+println(fs.readChunk(u, 100), fs.position(u));
+fs.close(u);
+
+println(kind(fn() { fs.readAt(path, -1, 1); }));
+println(kind(fn() { fs.readAt(path, 0, 0); }));
+println(kind(fn() { fs.readAt(path, 0, 1073741825); }));
+println(kind(fn() { fs.readChunk(99, 1); }));
+println(kind(fn() { fs.readChunk("x", 1); }));
+println(kind(fn() { fs.seek(1, -1); }));
+println(kind(fn() { fs.close(1); }));
+println(kind(fn() { fs.readAt(5, 0, 1); }));
+fs.remove(dir);

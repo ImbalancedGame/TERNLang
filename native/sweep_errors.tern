@@ -1,0 +1,147 @@
+// Error-handling sweep: thrown values of every kind, catch bindings, finally
+// ordering, rethrow, and the error types the runtime raises itself.
+
+fn show(label, block) {
+    try {
+        println(label + " => " + repr(block()));
+    } catch (e) {
+        println(label + " => throw " + type(e) + " " + repr(e));
+    }
+}
+
+// Throwing arbitrary values.
+show("throw-string", fn() { throw "boom"; });
+show("throw-int", fn() { throw 42; });
+show("throw-list", fn() { throw [1, 2]; });
+show("throw-map", fn() { throw {"code": 7}; });
+show("throw-nil", fn() { throw nil; });
+show("throw-struct", fn() {
+    struct E { msg = "custom" }
+    throw E();
+});
+
+// finally runs, in order, whether or not the body threw.
+fn order(shouldThrow) {
+    let log = [];
+    try {
+        log.push("try");
+        if (shouldThrow) {
+            throw "x";
+        }
+        log.push("no throw");
+    } catch (e) {
+        log.push("catch " + repr(e));
+    } finally {
+        log.push("finally");
+    }
+    return log;
+}
+println(order(true), order(false));
+
+// finally runs when the body returns.
+fn withReturn() {
+    let seen = [];
+    try {
+        seen.push("body");
+        return seen;
+    } finally {
+        seen.push("finally");
+    }
+}
+println(withReturn());
+
+// Nested try: the inner catch does not swallow unless it rethrows.
+fn nested() {
+    let log = [];
+    try {
+        try {
+            throw "inner";
+        } catch (e) {
+            log.push("caught " + e);
+            throw "rethrown";
+        }
+    } catch (e) {
+        log.push("outer " + e);
+    }
+    return log;
+}
+println(nested());
+
+// Uncaught errors from the runtime itself.
+show("index-oob", fn() { return [1, 2][9]; });
+show("missing-key", fn() { return {"a": 1}["zz"]; });
+show("div-zero", fn() { return 1 / 0; });
+show("mod-zero", fn() { return 1 % 0; });
+show("bad-call", fn() { let n = 1; return n(); });
+show("bad-method", fn() { return "abc".nope(); });
+show("bad-arg", fn() { return len(); });
+show("bad-concat", fn() { return "a" - 1; });
+show("bad-len", fn() { return len(1); });
+show("bad-compare", fn() { return 1 < "a"; });
+show("error-fn", fn() { error("explicit"); });
+show("assert-fn", fn() { assert(false, "asserted"); });
+show("panic-fn", fn() { panic("panicked"); });
+show("int-parse", fn() { return int("nope"); });
+show("float-parse", fn() { return float("nope"); });
+
+// Error values: message text, and rethrowing the caught value.
+show("message", fn() {
+    try {
+        [][1];
+    } catch (e) {
+        return str(e);
+    }
+});
+show("rethrow", fn() {
+    try {
+        try {
+            error("deep");
+        } catch (e) {
+            throw e;
+        }
+    } catch (e) {
+        return "second: " + str(e);
+    }
+});
+
+// A caught error does not disturb the enclosing function's locals.
+fn localsSurvive() {
+    let a = 1;
+    let b = [1, 2];
+    try {
+        throw "x";
+    } catch (e) {
+        a = 2;
+        b.push(3);
+    }
+    return [a, b];
+}
+println(localsSurvive());
+
+// Wrong argument counts for methods and namespace members, which are checked
+// with the receiver counted as the first argument.
+show("push-0", fn() { let l = [1]; l.push(); return l; });
+show("repeat-3", fn() { return "ab".repeat(1, 2); });
+show("upper-2", fn() { return "ab".upper(1); });
+show("slice-3", fn() { return "abc".slice(0, 1, 2); });
+show("get-0", fn() { return {"a": 1}.get(); });
+show("sort-bad-fn", fn() { return [2, 1].sort(1); });
+show("max-0", fn() { return max(); });
+show("str-0", fn() { return str(); });
+show("type-2", fn() { return type(1, 2); });
+
+// try/catch inside a loop, and a catch that runs every iteration.
+fn loopCatch() {
+    let caught = 0;
+    for i in 0..<4 {
+        try {
+            if i % 2 == 0 {
+                throw "even";
+            }
+        } catch (e) {
+            caught += 1;
+        }
+    }
+    return caught;
+}
+println(loopCatch());

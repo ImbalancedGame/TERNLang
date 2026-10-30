@@ -1,0 +1,20 @@
+while 0
+while 1
+while 2
+cfor 0
+cfor 2
+range 0
+range 1
+range 2
+range 3
+excl 0
+excl 1
+excl 2
+item a
+item b
+loop total 3
+do 2
+if
+big
+2
+nonzero

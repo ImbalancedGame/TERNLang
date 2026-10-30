@@ -1,0 +1,83 @@
+nil true false
+42 -7 1.5 -2.25
+héllo 5
+[1, "two", 3.5, nil, true]
+{"a": 1, "b": [2, 3], "c": {"d": nil}}
+[1, 2, 3, 4]
+Data 7 seven ["x", "y"] {"k": 1}
+Data(id: 7, name: "seven", tags: ["x", "y"], meta: {"k": 1})
+true
+range 1..<5
+9 1
+truncated value
+length exceeds the payload
+cannot serialize a function; send data (nil, booleans, numbers, strings, lists, maps, ranges or structs)
+expected a list of bytes, not string
+listening: true
+peer: true
+Data 1 first [1, 2]
+true first
+[0, "frame"]
+[1, "frame"]
+[2, "frame"]
+listen() expects 1 to 3 argument(s) but got 0
+host must be a string, not int
+connect() expects 2 to 3 argument(s) but got 1
+timeout() expects 2 argument(s) but got 3
+accept() needs a server handle from listen()
+send() needs a connection handle, not a server
+closed: connection closed by the other side
+no open socket with handle 3
+option 'maxFrame' must be between 1 and 67108864 bytes
+option 'maxFrame' must be between 1 and 67108864 bytes
+option 'timeout' must not be negative
+option 'token' must not be empty
+option 'token' must be a string, not int
+listen() options must be a map, not string
+host must be a string, not int
+port must be a number, not string
+connect() options must be a map, not string
+token: trusted
+refused: token rejected
+refusal text: [116]
+refused again: token rejected
+too big: frame of 203 bytes is larger than this socket's limit of 32
+maxFrame() must be between 0 and 67108864 bytes
+maxFrame() must be between 0 and 67108864 bytes
+limit raised: frame of 96993656 bytes is larger than this socket's limit of 4096
+[120, 120, 120, 120]
+[104, 105]
+expected a list of bytes, not string
+byte 1 is not an integer in 0..255
+byte 1 is not an integer in 0..255
+receiveBytes() needs a count of 0 or more
+count must be a number, not string
+read timeout: no error
+frame timeout: frame timed out
+no timeout: no error
+bound: true true true
+from: true [1, 2, 3]
+[104, 195, 169, 108, 108, 111]
+[111, 110, 101] [116, 119, 111]
+nothing: nil
+[1, 2, 3]
+expected a string or a list of bytes, not bool
+host must be a string, not int
+byte 1 is not an integer in 0..255
+option 'timeout' must not be negative
+udpReceive() size must be between 0 and 65507 bytes
+udpReceive() size must be between 0 and 65507 bytes
+receive() needs a connection handle, not a datagram socket
+send() needs a connection handle, not a datagram socket
+udpSend() needs a datagram handle from udpListen()
+udpReceive() needs a datagram handle from udpListen()
+no open socket with handle 1
+listen tls: listen() cannot accept tls: server TLS is not supported
+option 'tls' must be a boolean, not string
+option 'sni' must be a string, not int
+option 'verify' must be a boolean, not int
+option 'ca' must be a string, not int
+cannot read the CA file '/nope/none.pem'
+handshake: TLS handshake failed
+refused is catchable: true
+refused names the address: true

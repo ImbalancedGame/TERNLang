@@ -1,0 +1,17 @@
+false false false
+hello world
+11
+[104, 101, 108, 108, 111]
+["a.txt", "deep"]
+["b.txt"]
+true true true
+true
+read: error
+size: error
+list: error
+true hello world
+["b.txt"]
+flat
+false
+false
+clean: false

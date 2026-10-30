@@ -1,0 +1,23 @@
+// Number formatting and constant pooling. Both back ends must print identical
+// text for every float, including exponent forms and negative zero, and the
+// constant pool must keep `1` and `1.0` (or `0.0` and `-0.0`) distinct.
+
+let zero = 0.0;
+
+let values = [-0.0, 0.0, 1e20, 1e21, 1e-7, 123456789012345678.0, 0.1 + 0.2, 1.0 / 3.0, 2.5, -2.5];
+for v in values {
+    println(v);
+}
+
+println(-0.0, str(-0.0), repr(-0.0), type(-0.0));
+println(-zero, zero * -1.0, -(0.0), float(0) * -1.0);
+println(int(-0.0), -0.0 == 0.0, -0.0 * 1.0);
+
+// The same pool slot must not serve both an int and a float of equal value.
+println(type(3000000000), type(3000000000.0));
+println(3000000000.0 == 3000000000, 3000000000.0, 3000000000);
+
+let mixed = [3000000000, 3000000000.0, 1, 1.0, 2.0];
+for v in mixed {
+    println(type(v), v);
+}

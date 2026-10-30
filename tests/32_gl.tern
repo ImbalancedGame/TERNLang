@@ -1,0 +1,26 @@
+// The OpenGL namespace, minus the driver: everything here is argument handling
+// and handle lookup, which happen before libEGL is touched, so the answers are
+// the same on a workstation and on a machine with no GPU at all. The rendering
+// path itself (context, shaders, vertex buffer, read-back, PNG) is exercised by
+// tools/test-gl.sh against tools/gl/mock_driver.c.
+import "std:gl";
+
+fn kind(block) {
+    try {
+        return str(block());
+    } catch (e) {
+        return "!" + str(e);
+    }
+}
+
+println(kind(fn() { gl.create(0, 4); }));
+println(kind(fn() { gl.create(4, 8193); }));
+println(kind(fn() { gl.create(4, "tall"); }));
+println(kind(fn() { gl.create("wide", 4); }));
+println(kind(fn() { gl.pixels("x"); }));
+println(kind(fn() { gl.pixels(9); }));
+println(kind(fn() { gl.size(1); }));
+println(kind(fn() { gl.clear(1, 0, 0, 0, 1); }));
+println(kind(fn() { gl.draw(1, 2, []); }));
+println(kind(fn() { gl.save(3, ".nope.png"); }));
+println(kind(fn() { gl.close(2); }));

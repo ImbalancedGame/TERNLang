@@ -1,0 +1,9 @@
+// The classic, in TERN.
+for n in 1..100 {
+    match [n % 3 == 0, n % 5 == 0] {
+        [true, true]  => println("FizzBuzz"),
+        [true, false] => println("Fizz"),
+        [false, true] => println("Buzz"),
+        _             => println(n),
+    }
+}

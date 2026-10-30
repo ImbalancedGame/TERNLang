@@ -1,0 +1,22 @@
+0123 4567 89
+[] []
+[23456789]
+10 0
+012 3
+345 6
+6789 10
+[] 10
+789 10
+13
+hé 3
+llo 6
+ wö 10
+rld 13
+!offset must not be negative
+!length must be between 1 and 1073741824
+!length must be between 1 and 1073741824
+!no open file with handle 99
+!expected a file handle, not string
+!no open file with handle 1
+!no open file with handle 1
+!path must be a string, got int

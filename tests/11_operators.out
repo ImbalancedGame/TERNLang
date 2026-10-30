@@ -1,0 +1,36 @@
+true
+false
+true
+false
+true
+true
+true
+[20, 30, 40]
+[20, 30]
+[10, 20, 30]
+[30, 40, 50]
+[10, 20, 30, 40, 50]
+[40, 50]
+bcd
+ab
+def
+a-b
+x and y
+["read", "write"]
+alert
+9.223372036854776E+18
+-1
+9.223372036854776E+18
+9.223372036854776E+18
+9.223372036854776E+18
+ab
+n=x
+n=y!
+pre-fix
+-1.0 0.5 -1.5 1.5
+-0.0 0.0
+0 4 -4 4
+operator '&' requires integers but got float
+operator '&' requires integers but got string
+operator '&' requires integers but got float
+true false true true

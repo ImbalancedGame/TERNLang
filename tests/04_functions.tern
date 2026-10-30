@@ -1,0 +1,41 @@
+fn add(a, b) { return a + b; }
+println(add(2, 3));
+
+fn withDefault(a, b = 10) { return a + b; }
+println(withDefault(1));
+println(withDefault(1, 2));
+
+fn rest(first, ...others) { return "${first}:${others.length}:${others}"; }
+println(rest(1));
+println(rest(1, 2, 3));
+
+fn factorial(n) { return n <= 1 ? 1 : n * factorial(n - 1); }
+println(factorial(10));
+
+let apply = fn(f, v) => f(v);
+println(apply(fn(x) => x * 3, 7));
+println(apply((x) => x + 1, 7));
+
+fn makeCounter() {
+    let count = 0;
+    return fn() { count += 1; return count; };
+}
+let counter = makeCounter();
+println(counter());
+println(counter());
+let other = makeCounter();
+println(other());
+
+fn fibonacci(n) { if (n < 2) { return n; } return fibonacci(n - 1) + fibonacci(n - 2); }
+println(fibonacci(15));
+
+fn noReturn() { let x = 1; }
+println(noReturn());
+
+fn makeAdder(n) { return fn(x) => x + n; }
+let add5 = makeAdder(5);
+println(add5(10));
+
+// recursion depth
+fn depth(n) { if n == 0 { return 0; } return 1 + depth(n - 1); }
+println(depth(200));

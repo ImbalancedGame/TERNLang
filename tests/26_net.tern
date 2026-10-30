@@ -1,0 +1,251 @@
+// Networking and the wire format: every value kind survives a round trip,
+// structs arrive as their own type, and a server and client talk over a real
+// socket using length-prefixed frames.
+import "std:net";
+
+struct Data {
+    id = 0,
+    name = "anon",
+    tags = [],
+    meta = {},
+}
+
+fn roundtrip(value) {
+    let bytes = net.encode(value);
+    return net.decode(bytes);
+}
+
+println(roundtrip(nil), roundtrip(true), roundtrip(false));
+println(roundtrip(42), roundtrip(-7), roundtrip(1.5), roundtrip(-2.25));
+println(roundtrip("h\u00e9llo"), len(roundtrip("h\u00e9llo")));
+println(roundtrip([1, "two", 3.5, nil, true]));
+println(roundtrip({"a": 1, "b": [2, 3], "c": {"d": nil}}));
+
+let list = roundtrip([1, 2, 3]);
+list.push(4);
+println(list);
+
+// Structs keep their type and fields.
+let data = Data(7, "seven", ["x", "y"], {"k": 1});
+let copy = roundtrip(data);
+println(type(copy), copy.id, copy.name, copy.tags, copy.meta);
+println(copy);
+
+// Bytes are stable, so two encodings of the same value are identical.
+println(str(net.encode(data)) == str(net.encode(Data(7, "seven", ["x", "y"], {"k": 1}))));
+
+println(type(roundtrip(range(1, 5))), roundtrip(range(1, 5)));
+println(len(net.encode(42)), len(net.encode(nil)));
+
+// Decoding nonsense fails catchably.
+fn kind(block) {
+    try {
+        block();
+        return "no error";
+    } catch (e) {
+        return str(e);
+    }
+}
+println(kind(fn() { net.decode([9, 9, 9]); }));
+println(kind(fn() { net.decode([6, 5]); }));
+println(kind(fn() { net.encode(fn() { return 1; }); }));
+println(kind(fn() { net.decode("not bytes"); }));
+
+// A real socket: listen on an ephemeral port, connect to ourselves, exchange
+// messages in both directions.
+let server = net.listen("127.0.0.1", 0);
+let port = net.port(server);
+println("listening:", port > 0);
+
+let client = net.connect("127.0.0.1", port);
+net.timeout(client, 5000);
+let connection = net.accept(server);
+net.timeout(connection, 5000);
+
+println("peer:", net.peer(connection).startsWith("127.0.0.1:"));
+
+net.send(client, Data(1, "first", [1, 2], {}));
+let received = net.receive(connection);
+println(type(received), received.id, received.name, received.tags);
+
+net.send(connection, {"ok": true, "echo": received.name});
+let reply = net.receive(client);
+println(reply["ok"], reply["echo"]);
+
+// Several frames in a row keep their boundaries.
+for i in 0..<3 {
+    net.send(client, [i, "frame"]);
+}
+for i in 0..<3 {
+    println(net.receive(connection));
+}
+
+// Argument counts are checked, not read as nil.
+println(kind(fn() { net.listen(); }));
+println(kind(fn() { net.listen(1, 2, 3); }));
+println(kind(fn() { net.connect("127.0.0.1"); }));
+println(kind(fn() { net.timeout(1, 2, 3); }));
+
+// Handles of the wrong kind fail catchably.
+println(kind(fn() { net.accept(client); }));
+println(kind(fn() { net.send(server, 1); }));
+
+net.close(client);
+println("closed:", kind(fn() { net.receive(connection); }));
+
+net.close(connection);
+net.close(server);
+println(kind(fn() { net.receive(connection); }));
+
+// ---------------------------------------------------------------- handshake
+// Every connection opens with a hello frame, so a listener given a token can
+// refuse a peer before the script ever sees it.
+
+println(kind(fn() { net.listen(0, {"maxFrame": 0}); }));
+println(kind(fn() { net.listen(0, {"maxFrame": 70000000}); }));
+println(kind(fn() { net.listen(0, {"timeout": -1}); }));
+println(kind(fn() { net.listen(0, {"token": ""}); }));
+println(kind(fn() { net.listen(0, {"token": 5}); }));
+println(kind(fn() { net.listen(0, "nope"); }));
+println(kind(fn() { net.connect(1, 2); }));
+println(kind(fn() { net.connect("127.0.0.1", "port"); }));
+println(kind(fn() { net.connect("127.0.0.1", 1, "nope"); }));
+
+let guarded = net.listen(0, {"token": "s3cret", "maxFrame": 4096, "timeout": 2000});
+let guardedPort = net.port(guarded);
+
+let friend = net.connect("127.0.0.1", guardedPort, {"token": "s3cret"});
+let friendConn = net.accept(guarded);
+net.send(friend, "trusted");
+println("token:", net.receive(friendConn));
+
+// A peer without the token never becomes a connection.
+let stranger = net.connect("127.0.0.1", guardedPort, {"token": "wrong"});
+println("refused:", kind(fn() { net.accept(guarded); }));
+println("refusal text:", net.receiveBytes(stranger, 1));
+let silent = net.connect("127.0.0.1", guardedPort);
+println("refused again:", kind(fn() { net.accept(guarded); }));
+
+net.close(stranger);
+net.close(silent);
+net.close(friend);
+net.close(friendConn);
+net.close(guarded);
+
+// --------------------------------------------------------------- frame limits
+// A peer cannot make this side allocate more than its limit by claiming a huge
+// frame: the header is checked before the payload is read.
+
+let tiny = net.listen(0, {"maxFrame": 32});
+let tinyPort = net.port(tiny);
+let talker = net.connect("127.0.0.1", tinyPort);
+let tinyConn = net.accept(tiny);
+net.send(talker, "x".repeat(200));
+println("too big:", kind(fn() { net.receive(tinyConn); }));
+println(kind(fn() { net.maxFrame(tinyConn, 90000000); }));
+println(kind(fn() { net.maxFrame(tinyConn, -1); }));
+net.maxFrame(tinyConn, 4096);
+println("limit raised:", kind(fn() { net.receive(tinyConn); }));
+
+// ---------------------------------------------------------------- raw bytes
+// sendBytes/receiveBytes move bytes with no frame header, for protocols layered
+// on top of net.
+
+net.sendBytes(talker, [1, 2, 3, 255]);
+println(net.receiveBytes(tinyConn, 4));
+net.sendBytes(tinyConn, [104, 105]);
+println(net.receiveBytes(talker, 2));
+println(kind(fn() { net.sendBytes(talker, "text"); }));
+println(kind(fn() { net.sendBytes(talker, [1, 300]); }));
+println(kind(fn() { net.sendBytes(talker, [1, 2.5]); }));
+println(kind(fn() { net.receiveBytes(tinyConn, -1); }));
+println(kind(fn() { net.receiveBytes(tinyConn, "four"); }));
+
+// A timeout ends a silent read instead of hanging forever.
+net.timeout(tinyConn, 150);
+println("read timeout:", kind(fn() { net.receiveBytes(tinyConn, 8); }));
+net.timeout(talker, 150);
+println("frame timeout:", kind(fn() { net.receive(talker); }));
+net.timeout(talker, 0);
+println("no timeout:", kind(fn() { net.timeout(talker, 0); }));
+
+net.close(talker);
+net.close(tinyConn);
+net.close(tiny);
+
+// ---------------------------------------------------------------- datagrams
+// UDP keeps message boundaries: every send is exactly one receive, and a
+// timeout returns nil instead of raising, because a missing datagram is normal.
+
+let ping = net.udpListen(0);
+let pong = net.udpListen("127.0.0.1", 0);
+println("bound:", net.port(ping) > 0, net.port(pong) > 0, net.port(ping) != net.port(pong));
+
+net.udpSend(ping, "127.0.0.1", net.port(pong), [1, 2, 3]);
+let datagram = net.udpReceive(pong);
+println("from:", datagram["from"].startsWith("127.0.0.1:"), datagram["data"]);
+
+net.udpSend(pong, "127.0.0.1", net.port(ping), "h\u00e9llo");
+println(net.udpReceive(ping)["data"]);
+
+net.udpSend(ping, "127.0.0.1", net.port(pong), "one");
+net.udpSend(ping, "127.0.0.1", net.port(pong), "two");
+println(net.udpReceive(pong)["data"], net.udpReceive(pong)["data"]);
+
+net.timeout(ping, 150);
+println("nothing:", net.udpReceive(ping));
+
+// A short buffer truncates the datagram, as UDP does.
+net.udpSend(pong, "127.0.0.1", net.port(ping), [1, 2, 3, 4, 5, 6, 7, 8]);
+println(net.udpReceive(ping, 3)["data"]);
+
+println(kind(fn() { net.udpSend(pong, "127.0.0.1", 1, true); }));
+println(kind(fn() { net.udpSend(pong, 1, 2, [1]); }));
+println(kind(fn() { net.udpSend(pong, "127.0.0.1", 1, [1, 300]); }));
+println(kind(fn() { net.udpListen(0, {"timeout": -1}); }));
+println(kind(fn() { net.udpReceive(pong, 70000); }));
+println(kind(fn() { net.udpReceive(pong, -1); }));
+
+// Handles keep their kind: datagram calls reject streams and the other way round.
+println(kind(fn() { net.receive(ping); }));
+println(kind(fn() { net.send(ping, 1); }));
+let stream = net.listen(0);
+println(kind(fn() { net.udpSend(stream, "127.0.0.1", 1, "x"); }));
+println(kind(fn() { net.udpReceive(stream); }));
+net.close(stream);
+
+net.close(ping);
+net.close(pong);
+println(kind(fn() { net.udpReceive(ping); }));
+
+// ------------------------------------------------------------------- TLS
+// TLS is a transport for a connection, so every net call keeps working; the
+// options are checked here, and tools/test-tls.sh covers the handshake itself
+// against a real certificate.
+
+let plain = net.listen(0);
+println("listen tls:", kind(fn() { net.listen(0, {"tls": true}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"tls": "yes"}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"sni": 5}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"verify": 5}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"ca": 5}); }));
+println(kind(fn() { net.connect("127.0.0.1", net.port(plain), {"tls": true, "ca": "/nope/none.pem"}); }));
+println("handshake:", kind(fn() {
+    net.connect("127.0.0.1", net.port(plain), {"tls": true, "timeout": 1000});
+}));
+net.close(plain);
+
+// ------------------------------------------------------- refused connections
+// A refused connection with a timeout is an ordinary NetError. It used to abort
+// the interpreter instead: the timeout path waited on a Task, whose
+// AggregateException is not a TernError and so escaped try/catch entirely.
+let refused = false;
+let refusedText = "";
+try {
+    net.connect("127.0.0.1", 1, {"timeout": 5000});
+} catch (e) {
+    refused = true;
+    refusedText = e;
+}
+println("refused is catchable:", refused);
+println("refused names the address:", refusedText.startsWith("cannot connect to 127.0.0.1:1:"));

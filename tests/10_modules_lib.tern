@@ -1,0 +1,4 @@
+const VERSION = "2.0";
+fn greet(name) { return "hello from lib, ${name}"; }
+fn double(n) { return n * 2; }
+fn privateHelper() { return "hidden"; }

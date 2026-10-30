@@ -1,0 +1,7 @@
+caught: map has no member 'missing'
+swallowed: bottom
+index: index 9 out of range for list of length 2
+ArgumentError: cannot convert 'nope' to an integer
+  at convert (20_traces:50)
+  at parseAll (20_traces:54)
+  at <module> (20_traces:57)

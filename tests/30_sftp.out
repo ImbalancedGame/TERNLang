@@ -1,0 +1,24 @@
+put a.txt b.txt
+ls -1 /tmp
+get x y
+
+["sftp", "-b", "-", "-P", "22", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "me@example.com"]
+["sftp", "-b", "-", "-P", "2222", "-i", "/k/id_ed25519", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "me@example.com"]
+put "a b.txt" c.txt
+
+expected a list of commands, not string
+command 0 must be a string, not int
+command 0 contains a line break
+command() options must be a map, not string
+option 'host' is required
+option 'user' is required
+option 'user' must be a string, not int
+option 'port' must be between 1 and 65535
+option 'timeout' must not be negative
+["/opt/openssh/bin/sftp", "-b", "-", "-P", "22", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "me@example.com"]
+option 'binary' must be a string, not int
+option 'binary' must not be empty
+cannot run '/nope/sftp': is it installed?
+local file '/nope/file.txt' does not exist
+local must be a string, not int
+cannot read the key file '/nope/key'

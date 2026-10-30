@@ -1,0 +1,54 @@
+// A support triage script: classify log lines and print a summary.
+// This mirrors what TERN was originally built for - small, sandboxed scripts
+// that support engineers can edit without a compiler toolchain.
+struct Rule {
+    severity, pattern, advice
+}
+
+let rules = [
+    Rule("critical", "out of memory", "raise the heap limit and check for leaks"),
+    Rule("critical", "disk full", "free space on the data volume"),
+    Rule("warning", "timeout", "check upstream latency"),
+    Rule("warning", "retry", "watch for a flapping dependency"),
+    Rule("info", "started", "no action needed"),
+];
+
+fn classify(line) {
+    let lower = line.lower();
+    for rule in rules {
+        if lower.contains(rule.pattern) {
+            return rule;
+        }
+    }
+    return Rule("unknown", "", "escalate to the on-call engineer");
+}
+
+let log = [
+    "12:01 service started",
+    "12:04 request timeout after 30s",
+    "12:05 retry attempt 2",
+    "12:07 disk full on /var/data",
+    "12:09 out of memory while indexing",
+    "12:10 heartbeat ok",
+];
+
+let summary = {};
+for line in log {
+    let rule = classify(line);
+    summary[rule.severity] = (summary[rule.severity] ?? 0) + 1;
+    println("[${rule.severity}] ${line}");
+}
+
+println("");
+for severity, count in summary {
+    println("${text.pad(severity, 10)} ${count}");
+}
+
+let critical = log.filter(fn(l) => classify(l).severity == "critical");
+if critical.length > 0 {
+    println("");
+    println("action list:");
+    for line in critical {
+        println(" - ${classify(line).advice}");
+    }
+}

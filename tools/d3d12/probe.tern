@@ -1,0 +1,64 @@
+// std:d3d12 against tools/d3d12/mock_d3d12.c: a fake d3d12.dll with the same COM
+// vtables, so device creation, the offscreen target, the clear, the copy to the
+// readback buffer and the PNG all run without Windows and without a GPU.
+// tools/test-d3d12.sh points TERN_D3D12_LIBRARY at it and diffs the two back ends.
+import "std:d3d12";
+import "std:fs";
+import "std:os";
+
+fn kind(block) {
+    try {
+        return str(block());
+    } catch (e) {
+        return "!" + str(e);
+    }
+}
+
+println("available:", d3d12.available());
+println(d3d12.info());
+
+let target = d3d12.create(3, 2);
+println("size:", d3d12.size(target));
+d3d12.clear(target, 0.25, 0.5, 0.75, 1);
+let pixels = d3d12.pixels(target);
+println("pixels:", len(pixels), pixels[0..4], pixels[8..12]);
+
+// The bottom row comes first, so the last row of the surface is first here.
+println("row order:", pixels[0..4], pixels[len(pixels) - 4..len(pixels)]);
+
+// -------------------------------------------------------------- the pipeline
+// HLSL through d3dcompiler (the mock answers with a stand-in blob), a root
+// signature, a pipeline state, an upload buffer and a draw. The mock paints the
+// target with the first vertex's colour, so the readback shows the vertex data
+// made it through IASetVertexBuffers.
+
+let vertexShader = "struct Vertex {\n    float3 position : POSITION;\n    float4 colour : COLOR;\n};\nstruct Pixel {\n    float4 position : SV_Position;\n    float4 colour : COLOR;\n};\nPixel main(Vertex input) {\n    Pixel output;\n    output.position = float4(input.position, 1.0);\n    output.colour = input.colour;\n    return output;\n}\n";
+let pixelShader = "struct Pixel {\n    float4 position : SV_Position;\n    float4 colour : COLOR;\n};\nfloat4 main(Pixel input) : SV_Target {\n    return input.colour;\n}\n";
+
+let pipeline = d3d12.pipeline(target, vertexShader, pixelShader);
+d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1, 1, -1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]);
+let drawn = d3d12.pixels(target);
+println("drawn:", drawn[0..4]);
+println(kind(fn() { d3d12.pipeline(target, "FAIL", pixelShader); }));
+println(kind(fn() { d3d12.pipeline(target, vertexShader, "fail"); }));
+println(kind(fn() { d3d12.pipeline(target, 1, pixelShader); }));
+println(kind(fn() { d3d12.draw(target, 99, []); }));
+println(kind(fn() { d3d12.draw(target, pipeline, "nope"); }));
+println(kind(fn() { d3d12.draw(target, pipeline, [1, 2]); }));
+println(kind(fn() { d3d12.draw(target, pipeline, [1, 2, 3, 4, 5, "x"]); }));
+
+let png = os.env("TERN_D3D12_PNG", ".d3d12_probe.png");
+d3d12.save(target, png);
+println("png written:", fs.size(png) > 0, fs.readBytes(png)[0..4]);
+
+println(kind(fn() { d3d12.create(0, 4); }));
+println(kind(fn() { d3d12.create(4, 20000); }));
+println(kind(fn() { d3d12.create("wide", 4); }));
+println(kind(fn() { d3d12.clear(target, 2, 0, 0, 1); }));
+println(kind(fn() { d3d12.clear(target, "red", 0, 0, 1); }));
+println(kind(fn() { d3d12.pixels(7); }));
+println(kind(fn() { d3d12.pixels("x"); }));
+println(kind(fn() { d3d12.save(target, 5); }));
+d3d12.close(target);
+println(kind(fn() { d3d12.close(target); }));
+println(kind(fn() { d3d12.size(target); }));

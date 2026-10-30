@@ -1,0 +1,66 @@
+caught: boom
+index: index 5 out of range for list of length 1
+member: nil has no method 'foo'
+fn: negative input
+inner a
+finally runs
+cleanup
+outer caught: deep
+ok
+assert: math is broken
+len() expects 1 argument(s) but got 0
+len() expects 1 argument(s) but got 2
+str() expects 1 argument(s) but got 0
+type() expects 1 argument(s) but got 2
+input() expects 0 to 1 argument(s) but got 2
+assert() expects 1 to 2 argument(s) but got 3
+range() argument 1 must be an integer, got "x"
+repeat() argument 2 must be an integer, got "x"
+insert() argument 2 must be an integer, got "x"
+take() argument 2 must be an integer, got 1.7
+len() is not defined for 1
+operator '-' is not defined for string and int
+operator '&' requires integers but got string
+bitwise not requires an integer
+list index must be an integer, not string
+keys(): argument is not of the expected type
+push() expects at least 1 argument(s) but got 0
+repeat() expects 1 to 1 argument(s) but got 2
+upper() expects 0 to 0 argument(s) but got 1
+slice() expects 0 to 2 argument(s) but got 3
+get() expects 1 to 2 argument(s) but got 0
+int is not callable
+max() expects at least 1 argument(s) but got 0
+floor() expects 1 argument(s) but got 0
+floor() expects 1 argument(s) but got 2
+round() expects 1 to 2 argument(s) but got 3
+clamp() expects 3 argument(s) but got 2
+gcd() expects 2 argument(s) but got 1
+min() expects at least 1 argument(s) but got 0
+read() expects 1 argument(s) but got 0
+write() expects 2 argument(s) but got 1
+parse() expects 1 argument(s) but got 0
+stringify() expects 1 to 2 argument(s) but got 0
+env() expects 1 to 2 argument(s) but got 0
+millis() expects 0 argument(s) but got 1
+int() expects 1 to 2 argument(s) but got 3
+format() expects at least 1 argument(s) but got 0
+trim() expects 1 argument(s) but got 0
+zip() expects at least 1 argument(s) but got 0
+chunk() expects 2 argument(s) but got 3
+index -9 out of range for list of length 3
+index -9 out of range for string of length 2
+index -9 out of range for range of length 5
+range index must be an integer, not range
+repeat count cannot be negative
+split expects a string, not nil
+slice() argument 2 must be an integer, got nil
+slice() argument 3 must be an integer, got nil
+insert index -3 out of range for list of length 2
+nil is not callable
+operator '+' is not defined for map and nil
+{}a {"k": 1}
+9223372036854775807 -9223372036854775808 0
+9223372036854775807 -9223372036854775808
+Error: custom failure
+  at <module> (08_errors:138)

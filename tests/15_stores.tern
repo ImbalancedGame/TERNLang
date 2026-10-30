@@ -1,0 +1,51 @@
+// Member and index stores: the fast single-opcode statement form must agree with
+// the general form (which is used whenever the value expression contains a jump).
+struct Point { x, y }
+
+let p = Point(0, 0);
+p.x = 3;
+p.y = 4;
+println("fields ${p.x},${p.y}");
+
+let m = {};
+m["a"] = 1;
+let value = (m["b"] = 2);
+println("chained ${value} ${m["b"]}");
+
+fn pick(flag) {
+    let target = {};
+    target[flag ? "yes" : "no"] = flag ? 10 : 20;
+    target.value = flag ? 1 : 2;
+    return "${target["yes"]} ${target["no"]} ${target.value}";
+}
+println(pick(true));
+println(pick(false));
+
+let list = [1, 2, 3];
+list[0] = 10;
+list[2] += 5;
+println(list);
+
+fn mutate() {
+    let things = [{ "n": 1 }];
+    things[0].n = 42;
+    things[0]["n"] = things[0]["n"] + 1;
+    return things[0].n;
+}
+println("nested ${mutate()}");
+
+let counter = { "hits": 0 };
+for (let i = 0; i < 5; i++) { counter["hits"] = counter["hits"] + 1; }
+println("hits ${counter["hits"]}");
+
+fn setField(pt) {
+    pt.x = pt.x + 1;
+    pt.y = pt.x * 2;
+    return pt;
+}
+let grown = setField(Point(1, 1));
+println("grown ${grown.x} ${grown.y}");
+
+let safe = nil;
+safe?.length;
+println("safe ok");

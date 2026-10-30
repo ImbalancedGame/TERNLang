@@ -1,0 +1,147 @@
+// Differential sweep: every documented method and global with representative
+// arguments, each result printed as `repr` (or `ERR` when it raises). Compiled
+// and interpreted output must be identical; `native/parity.py` diffs them.
+// Not a golden test: it exists to find behaviour differences, not to pin text.
+
+fn show(label, block) {
+    try {
+        println(label + " => " + repr(block()));
+    } catch (e) {
+        println(label + " => ERR");
+    }
+}
+
+let s = "  Hello World  ";
+show("upper", fn() { return s.upper(); });
+show("lower", fn() { return s.lower(); });
+show("trim", fn() { return s.trim(); });
+show("trimStart", fn() { return s.trimStart(); });
+show("trimEnd", fn() { return s.trimEnd(); });
+show("split", fn() { return s.split(" "); });
+show("split-empty", fn() { return "abc".split(""); });
+show("lines", fn() { return "a\nb\nc".lines(); });
+show("replace", fn() { return "a-b-c".replace("-", "+"); });
+show("replaceFirst", fn() { return "a-b-c".replaceFirst("-", "+"); });
+show("startsWith", fn() { return "hello".startsWith("he"); });
+show("endsWith", fn() { return "hello".endsWith("lo"); });
+show("contains", fn() { return "hello".contains("ell"); });
+show("indexOf", fn() { return "hello".indexOf("l"); });
+show("lastIndexOf", fn() { return "hello".lastIndexOf("l"); });
+show("count", fn() { return "hello".count("l"); });
+show("substring", fn() { return "hello".substring(1, 3); });
+show("slice", fn() { return "hello".slice(1, 3); });
+show("slice-neg", fn() { return "hello".slice(-2); });
+show("chars", fn() { return "hey".chars(); });
+show("words", fn() { return " a  b ".words(); });
+show("isEmpty", fn() { return "".isEmpty(); });
+show("toInt", fn() { return "42".toInt(); });
+show("toFloat", fn() { return "4.5".toFloat(); });
+show("toString", fn() { return "x".toString(); });
+show("padStart", fn() { return "7".padStart(3, "0"); });
+show("padEnd", fn() { return "7".padEnd(3, "0"); });
+show("reversed", fn() { return "abc".reversed(); });
+show("repeat", fn() { return "ab".repeat(3); });
+show("str-len", fn() { return len("héllo"); });
+show("str-index", fn() { return "hello"[1]; });
+show("str-slice", fn() { return "hello"[1..3]; });
+
+show("int-abs", fn() { return (-5).abs(); });
+show("int-clamp", fn() { return (9).clamp(0, 5); });
+show("int-toFloat", fn() { return (5).toFloat(); });
+show("int-toString", fn() { return (5).toString(); });
+show("int-times", fn() { let acc = []; (3).times(fn(i) { acc.push(i); }); return acc; });
+show("float-abs", fn() { return (-5.5).abs(); });
+show("float-clamp", fn() { return (9.5).clamp(0, 5); });
+show("float-round", fn() { return (5.5).round(); });
+show("float-round2", fn() { return (5.567).round(2); });
+show("float-toInt", fn() { return (5.9).toInt(); });
+
+let list = [3, 1, 2];
+show("list-push", fn() { let l = [1]; l.push(2, 3); return l; });
+show("list-pop", fn() { let l = [1, 2]; return [l.pop(), l]; });
+show("list-shift", fn() { let l = [1, 2]; return [l.shift(), l]; });
+show("list-unshift", fn() { let l = [2]; l.unshift(1); return l; });
+show("list-join", fn() { return [1, 2, 3].join("-"); });
+show("list-contains", fn() { return list.contains(2); });
+show("list-indexOf", fn() { return list.indexOf(2); });
+show("list-slice", fn() { return list.slice(1); });
+show("list-reverse", fn() { let l = [1, 2, 3]; l.reverse(); return l; });
+show("list-sort", fn() { let l = [3, 1, 2]; l.sort(); return l; });
+show("list-sort-fn", fn() { let l = [3, 1, 2]; l.sort(fn(a, b) { return b - a; }); return l; });
+show("list-first", fn() { return list.first(); });
+show("list-last", fn() { return list.last(); });
+show("list-isEmpty", fn() { return [].isEmpty(); });
+show("list-sum", fn() { return list.sum(); });
+show("list-min", fn() { return list.min(); });
+show("list-max", fn() { return list.max(); });
+show("list-clear", fn() { let l = [1, 2]; l.clear(); return l; });
+show("list-clone", fn() { let l = [1]; let c = l.clone(); c.push(2); return [l, c]; });
+show("list-concat", fn() { return [1].concat([2, 3]); });
+show("list-insert", fn() { let l = [1, 3]; l.insert(1, 2); return l; });
+show("list-remove", fn() { let l = [1, 2, 3]; return [l.remove(1), l]; });
+show("list-map", fn() { return list.map(fn(x) { return x * 2; }); });
+show("list-filter", fn() { return list.filter(fn(x) { return x > 1; }); });
+show("list-each", fn() { let a = []; list.each(fn(x) { a.push(x); }); return a; });
+show("list-reduce", fn() { return list.reduce(fn(acc, x) { return acc + x; }, 0); });
+show("list-toString", fn() { return [1, "a", nil].toString(); });
+show("list-flatten", fn() { return [[1, 2], [3]].flatten(); });
+show("list-unique", fn() { return [1, 1, 2, 1].unique(); });
+show("list-take", fn() { return list.take(2); });
+show("list-drop", fn() { return list.drop(1); });
+show("list-all", fn() { return list.all(fn(x) { return x > 0; }); });
+show("list-any", fn() { return list.any(fn(x) { return x > 2; }); });
+show("list-find", fn() { return list.find(fn(x) { return x > 1; }); });
+show("list-findIndex", fn() { return list.findIndex(fn(x) { return x > 1; }); });
+show("list-removeValue", fn() { let l = [1, 2, 1]; l.removeValue(1); return l; });
+show("list-len", fn() { return len(list); });
+show("list-index", fn() { return list[0]; });
+show("list-neg-index", fn() { return list[-1]; });
+show("list-slice-op", fn() { return list[1..2]; });
+show("list-plus", fn() { return [1] + [2]; });
+
+let map = {"a": 1, "b": 2};
+show("map-keys", fn() { return map.keys(); });
+show("map-values", fn() { return map.values(); });
+show("map-has", fn() { return map.has("a"); });
+show("map-contains", fn() { return map.contains("z"); });
+show("map-get", fn() { return map.get("a"); });
+show("map-get-default", fn() { return map.get("z", 99); });
+show("map-set", fn() { let m = {"a": 1}; m.set("b", 2); return m; });
+show("map-remove", fn() { let m = {"a": 1, "b": 2}; return [m.remove("a"), m]; });
+show("map-isEmpty", fn() { return {}.isEmpty(); });
+show("map-clear", fn() { let m = {"a": 1}; m.clear(); return m; });
+show("map-clone", fn() { let m = {"a": 1}; let c = m.clone(); c.set("b", 2); return [m, c]; });
+show("map-entries", fn() { return {"a": 1, "b": 2}.entries(); });
+show("map-merge", fn() { let m = {"a": 1}; m.merge({"a": 9, "b": 2}); return m; });
+show("map-toString", fn() { return {"a": 1}.toString(); });
+show("map-len", fn() { return len(map); });
+
+let r = range(1, 5);
+show("range-toList", fn() { return r.toList(); });
+show("range-contains", fn() { return r.contains(3); });
+show("range-length", fn() { return r.length(); });
+show("range-toString", fn() { return r.toString(); });
+show("range-map", fn() { return range(3).map(fn(x) { return x + 1; }); });
+show("range-each", fn() { let a = []; range(3).each(fn(x) { a.push(x); }); return a; });
+show("range-excl", fn() { return range(0, 5, 2).toList(); });
+show("range-desc", fn() { return range(5, 0, -2).toList(); });
+
+show("len", fn() { return [len("abc"), len([1, 2]), len({"a": 1}), len(range(4))]; });
+show("type", fn() { return [type(1), type(1.5), type("s"), type([]), type({}), type(nil), type(true), type(range(2)), type(fn() { return 1; })]; });
+show("str", fn() { return str([1, "a"]); });
+show("repr", fn() { return [repr("a\"b"), repr([1, "a"]), repr({"k": nil})]; });
+show("int", fn() { return [int("42"), int(4.9), int(true)]; });
+show("float", fn() { return [float("4.5"), float(3)]; });
+show("bool", fn() { return [bool(0), bool(""), bool([]), bool(nil), bool(1)]; });
+show("chr", fn() { return [chr(65), chr(233)]; });
+show("ord", fn() { return [ord("A"), ord("é")]; });
+show("keys", fn() { return keys({"a": 1, "b": 2}); });
+show("values", fn() { return values({"a": 1, "b": 2}); });
+show("has", fn() { return [has({"a": 1}, "a"), has([1], 0)]; });
+show("copy", fn() { let l = [1, 2]; let c = copy(l); c.push(3); return [l, c]; });
+show("min-max", fn() { return [min(3, 1, 2), max(3, 1, 2), min([3, 1]), max([3, 1])]; });
+show("abs", fn() { return [abs(-3), abs(-3.5)]; });
+show("assert-ok", fn() { assert(true, "fine"); return "ok"; });
+show("assert-fail", fn() { assert(false, "boom"); return "no"; });
+show("error", fn() { error("custom"); return "no"; });
+show("interp", fn() { return "${1 + 1} and ${[1, 2]}"; });

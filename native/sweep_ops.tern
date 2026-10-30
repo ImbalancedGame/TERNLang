@@ -1,0 +1,95 @@
+// Operator sweep: arithmetic, comparison, conversion and indexing edge cases in
+// both back ends. `native/parity.py` diffs the two outputs.
+
+fn show(label, block) {
+    try {
+        println(label + " => " + repr(block()));
+    } catch (e) {
+        println(label + " => ERR");
+    }
+}
+
+// int arithmetic, including overflow into floats or wrap
+show("int-add", fn() { return 2 + 3; });
+show("int-sub", fn() { return 2 - 3; });
+show("int-mul", fn() { return 7 * 6; });
+show("int-div", fn() { return 7 / 2; });
+show("int-div-exact", fn() { return 8 / 2; });
+show("int-mod", fn() { return 7 % 3; });
+show("int-mod-neg", fn() { return -7 % 3; });
+show("int-mod-neg-div", fn() { return 7 % -3; });
+show("div-zero", fn() { return 1 / 0; });
+show("mod-zero", fn() { return 1 % 0; });
+show("pow", fn() { return 2 ** 10; });
+show("pow-neg", fn() { return 2 ** -1; });
+show("overflow-add", fn() { return 9223372036854775807 + 1; });
+show("overflow-mul", fn() { return 3037000500 * 3037000500; });
+show("neg-int", fn() { return -5; });
+show("bitand", fn() { return 12 & 10; });
+show("bitor", fn() { return 12 | 10; });
+show("bxor", fn() { return 12 ^ 10; });
+show("shl", fn() { return 1 << 10; });
+show("shr", fn() { return -8 >> 1; });
+show("bnot", fn() { return ~5; });
+
+// float arithmetic and mixing
+show("float-add", fn() { return 1.5 + 2.25; });
+show("mix-add", fn() { return 1 + 2.5; });
+show("mix-mul", fn() { return 2 * 2.5; });
+show("float-div", fn() { return 7.0 / 2; });
+show("float-mod", fn() { return 7.5 % 2; });
+show("float-compare", fn() { return [1 < 1.5, 1 == 1.0, 2.0 > 1]; });
+show("float-precision", fn() { return 0.1 + 0.2; });
+show("float-repr", fn() { return [1.0, 1e20, 1e-7, -0.0]; });
+show("inf", fn() { return 1.0 / 0.0; });
+show("nan", fn() { return 0.0 / 0.0; });
+show("nan-eq", fn() { return (0.0 / 0.0) == (0.0 / 0.0); });
+
+// strings
+show("concat", fn() { return "a" + "b"; });
+show("concat-mixed", fn() { return "a" + 1; });
+show("concat-both", fn() { return 1 + "a"; });
+show("compare", fn() { return ["a" < "b", "abc" == "abc", "B" < "a"]; });
+show("repeat-op", fn() { return "ab" * 3; });
+show("interp-nested", fn() { return "x${1 + 2}y${"z"}"; });
+
+// equality across types and identity
+show("eq-mixed", fn() { return [1 == "1", nil == nil, nil == false, true == 1]; });
+show("cmp-mixed", fn() { return 1 < "a"; });
+show("list-eq", fn() { let a = [1]; let b = [1]; return a == b; });
+show("list-eq-alias", fn() { let a = [1]; let b = a; return a == b; });
+show("map-eq", fn() { let a = {"k": 1}; let b = {"k": 1}; return a == b; });
+
+// logical operators and truthiness
+show("and-or", fn() { return [true and false, true or false, nil or "x", 0 and "y"]; });
+show("not", fn() { return [!true, !nil, !0, !""]; });
+show("ternary", fn() { return 1 > 0 ? "yes" : "no"; });
+show("nullish", fn() { return [nil ?? 1, 0 ?? 1]; });
+
+// indexing and slicing edge cases
+show("list-oob", fn() { return [1, 2][5]; });
+show("list-neg-oob", fn() { return [1, 2][-5]; });
+show("list-neg", fn() { return [1, 2, 3][-2]; });
+show("list-slice-open", fn() { return [1, 2, 3, 4][1..3]; });
+show("list-slice-excl", fn() { return [1, 2, 3, 4][1..<3]; });
+show("list-slice-neg", fn() { return [1, 2, 3, 4][-2..]; });
+show("string-slice", fn() { return "abcdef"[1..<3]; });
+show("string-oob", fn() { return "ab"[5]; });
+show("map-missing", fn() { return {"a": 1}["z"]; });
+show("assign-index", fn() { let l = [1, 2]; l[0] = 9; return l; });
+show("assign-index-grow", fn() { let l = [1]; l[3] = 9; return l; });
+show("assign-field", fn() { let m = {"a": 1}; m["a"] = 2; return m; });
+
+// unary and compound assignment
+show("plus-eq", fn() { let x = 1; x += 2; return x; });
+show("plus-eq-str", fn() { let s = "a"; s += "b"; return s; });
+show("plus-eq-list", fn() { let l = [1]; l += [2]; return l; });
+show("prefix-inc", fn() { let x = 1; x++; return x; });
+show("inc-in-loop", fn() { let total = 0; for i in 0..<5 { total += i * 2; } return total; });
+
+// casts and conversions
+show("int-float", fn() { return [int(2.9), int(-2.9), int("12"), float(3), float("1.5")]; });
+show("int-bad", fn() { return int("x"); });
+show("str-of-nil", fn() { return str(nil); });
+show("type-of-instance", fn() { struct S { a = 1 } return type(S(2)); });
+show("repr-nested", fn() { return repr([{"a": [1.5, nil, true]}]); });

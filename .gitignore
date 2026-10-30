@@ -1,0 +1,19 @@
+# build output
+build/
+bin/
+obj/
+out/
+
+# toolchain bootstrap artefacts (see tools/setup-toolchain.sh)
+.toolchain/
+
+# images the graphics probes write when run by hand
+.d3d12_probe.png
+.gl_probe.png
+
+# editor / OS noise
+.vs/
+.idea/
+*.user
+*.suo
+.DS_Store

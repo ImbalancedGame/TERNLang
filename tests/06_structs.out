@@ -1,0 +1,13 @@
+3 4 5.0
+Point(x: 4, y: 5)
+10
+Point(x: 3, y: 4)
+Config(name: "default", retries: 3)
+Config(name: "custom", retries: 3)
+2
+10 Wallet(cash: Money(amount: 10, currency: "GBP"))
+Point Counter
+false true
+true false true
+not nil
+1 true

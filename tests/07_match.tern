@@ -1,0 +1,27 @@
+match 1 { 1 => println("one"), 2 => println("two") }
+match 5 { 1 => println("one"), 2..9 => println("few"), _ => println("many") }
+match 50 { 1..9 => println("small"), _ => println("big") }
+match "hi" { "hi" => println("greeting"), _ => println("other") }
+match nil { nil => println("nil value"), _ => println("something") }
+match true { false => println("no"), true => println("yes") }
+
+let describe = fn(v) => match v {
+    1 | 2 | 3 => "small",
+    4..<10 => "medium",
+    n if n > 100 => "huge ${n}",
+    _ => "unknown",
+};
+println(describe(2));
+println(describe(7));
+println(describe(500));
+println(describe(42));
+
+match [1, 2] {
+    [] => println("empty"),
+    [a] => println("one: ${a}"),
+    [a, b] => println("pair: ${a}, ${b}"),
+    [a, ...rest] => println("many: ${a} + ${rest}"),
+}
+
+let classify = fn(n) => n < 0 ? "negative" : n == 0 ? "zero" : "positive";
+println(classify(-1), classify(0), classify(1));
