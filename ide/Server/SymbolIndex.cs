@@ -29,6 +29,9 @@ namespace TERN.Ide
         /// <summary>Nesting depth, for the structure view's tree.</summary>
         public int Depth { get; init; }
 
+        /// <summary>Parameter names, in order, for signature help.</summary>
+        public string[] Parameters { get; init; } = Array.Empty<string>();
+
         public string KindName => Kind switch
         {
             SymbolKind.Function => "function",
@@ -75,6 +78,20 @@ namespace TERN.Ide
         private readonly Dictionary<string, string> _receiverType = new(StringComparer.Ordinal);
 
         public List<Symbol> Symbols { get; } = new();
+
+        /// <summary>The declaration with this name, innermost first, if any.</summary>
+        public Symbol? Find(string name)
+        {
+            for (var index = Symbols.Count - 1; index >= 0; index--)
+            {
+                if (string.Equals(Symbols[index].Name, name, StringComparison.Ordinal))
+                {
+                    return Symbols[index];
+                }
+            }
+
+            return null;
+        }
 
         public HashSet<string> Structs { get; } = new(StringComparer.Ordinal);
 
@@ -134,6 +151,7 @@ namespace TERN.Ide
                         Line = declared.Function.Line,
                         Detail = Signature(declared.Function),
                         Depth = depth,
+                        Parameters = ParameterNames(declared.Function),
                     });
                     DeclareParameters(declared.Function, depth + 1);
                     if (declared.Function.Body is not null)
@@ -153,6 +171,7 @@ namespace TERN.Ide
                         Line = declared.Line,
                         Detail = $"struct {declared.Name}",
                         Depth = depth,
+                        Parameters = declared.Fields.Select(field => field.Name).ToArray(),
                     });
                     foreach (var field in declared.Fields)
                     {
@@ -182,6 +201,7 @@ namespace TERN.Ide
                             Line = method.Line,
                             Detail = Signature(method),
                             Depth = depth + 1,
+                            Parameters = ParameterNames(method),
                         });
                         DeclareParameters(method, depth + 2);
                         if (method.Body is not null)
@@ -320,6 +340,10 @@ namespace TERN.Ide
                 _receiverType[name] = callee.Name;
             }
         }
+
+        private static string[] ParameterNames(FunctionLiteral function) =>
+            function.Parameters.Select(parameter =>
+                (parameter.IsRest ? "..." : string.Empty) + parameter.Name).ToArray();
 
         private static string Signature(FunctionLiteral function)
         {

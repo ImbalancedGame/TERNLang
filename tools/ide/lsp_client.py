@@ -259,6 +259,27 @@ def run_cases(suite):
     suite.check("hover describes a local", hover is not None and "parameter" in json.dumps(hover).lower(),
                 json.dumps(hover)[:200] if hover else "null")
 
+    # ------------------------------------------------------- signature help
+    call_line = next(i for i, line in enumerate(lines) if "println(summary(" in line)
+    signature = client.request("textDocument/signatureHelp", {
+        "textDocument": {"uri": uri},
+        "position": {"line": call_line, "character": lines[call_line].index("println(summary(") + len("println(summary(")},
+    })
+    suite.show("signature", signature)
+    suite.check("signature help names the enclosing call",
+                signature is not None and "summary" in signature["signatures"][0]["label"],
+                json.dumps(signature)[:200] if signature else "null")
+    suite.check("signature help lists the parameters",
+                signature is not None and signature["signatures"][0]["parameters"][0]["label"])
+
+    first_argument = client.request("textDocument/signatureHelp", {
+        "textDocument": {"uri": uri},
+        "position": {"line": call_line, "character": lines[call_line].index("println(") + len("println(")},
+    })
+    suite.check("signature help follows the caret outwards",
+                first_argument is not None and "println" in first_argument["signatures"][0]["label"],
+                json.dumps(first_argument)[:160] if first_argument else "null")
+
     # ----------------------------------------------------------- definition
     call_line = next(i for i, line in enumerate(lines) if "println(summary(" in line)
     declaration_line = next(i for i, line in enumerate(lines) if line.startswith("fn summary"))

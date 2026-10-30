@@ -233,6 +233,136 @@ namespace TERN.Ide
 
         // ------------------------------------------------------------------ hover
 
+        /// <summary>
+        /// Signature help: which call the caret is inside, and which argument.
+        ///
+        /// The call is found by walking backwards over the argument list,
+        /// matching brackets, so `f(1, g(2|))` reports `g` and `f(1, 2|)` reports
+        /// `f` — which is what a reader expects the caret to belong to.
+        /// </summary>
+        public JsonObject? SignatureHelp(Document document, int offset, SymbolIndex index)
+        {
+            var text = document.Text;
+            var depth = 0;
+            var position = offset - 1;
+            for (; position >= 0; position--)
+            {
+                var character = text[position];
+                if (character is ')' or ']' or '}')
+                {
+                    depth++;
+                }
+                else if (character is '(' or '[' or '{')
+                {
+                    if (depth == 0)
+                    {
+                        break;
+                    }
+
+                    depth--;
+                }
+            }
+
+            if (position < 0 || text[position] != '(')
+            {
+                return null;
+            }
+
+            // The callee: the identifier just before the bracket.
+            var nameEnd = position;
+            var nameStart = nameEnd;
+            while (nameStart > 0 && (char.IsLetterOrDigit(text[nameStart - 1]) || text[nameStart - 1] == '_'))
+            {
+                nameStart--;
+            }
+
+            var name = text[nameStart..nameEnd];
+            if (name.Length == 0)
+            {
+                return null;
+            }
+
+            // How many commas at this nesting level come before the caret: that
+            // is the argument being typed.
+            var argument = 0;
+            var local = 0;
+            for (var index2 = position + 1; index2 < offset; index2++)
+            {
+                switch (text[index2])
+                {
+                    case '(' or '[' or '{':
+                        local++;
+                        break;
+                    case ')' or ']' or '}':
+                        local--;
+                        break;
+                    case ',' when local == 0:
+                        argument++;
+                        break;
+                }
+            }
+
+            var label = string.Empty;
+            var parameters = Array.Empty<string>();
+
+            // A member first: `math.sqrt(` is not a declaration but has arity.
+            var dot = nameStart - 1;
+            if (dot >= 0 && text[dot] == '.')
+            {
+                var (receiver, _, _) = document.WordAt(dot - 1);
+                if (_namespaces.TryGetValue(receiver, out var members))
+                {
+                    var entry = members.FirstOrDefault(member => member.Name == name && !member.IsConstant);
+                    if (entry is not null)
+                    {
+                        label = $"{receiver}.{Signature(entry)}";
+                        parameters = Enumerable.Repeat("arg", Math.Max(entry.MinArguments, 0)).ToArray();
+                    }
+                }
+            }
+
+            if (label.Length == 0)
+            {
+                var symbol = index.Find(name);
+                if (symbol is not null && symbol.Kind is SymbolKind.Function or SymbolKind.Method or SymbolKind.Struct)
+                {
+                    label = symbol.Detail;
+                    parameters = symbol.Parameters;
+                }
+            }
+
+            if (label.Length == 0)
+            {
+                var globalDoc = _globals.FirstOrDefault(global => global.Name == name && !global.IsConstant);
+                if (globalDoc is not null)
+                {
+                    label = Signature(globalDoc);
+                    parameters = Enumerable.Repeat("arg", Math.Max(globalDoc.MinArguments, 0)).ToArray();
+                }
+            }
+
+            if (label.Length == 0)
+            {
+                return null;
+            }
+
+            var signature = new JsonObject
+            {
+                ["label"] = label,
+                ["parameters"] = new JsonArray(parameters.Select(parameter => (JsonNode)new JsonObject
+                {
+                    ["label"] = parameter,
+                }).ToArray()),
+            };
+
+            return new JsonObject
+            {
+                ["signatures"] = new JsonArray(signature),
+                ["activeSignature"] = 0,
+                ["activeParameter"] = Math.Min(argument, Math.Max(0, parameters.Length - 1)),
+            };
+        }
+
         public JsonObject? Hover(Document document, int offset, SymbolIndex index)
         {
             var (word, start, end) = document.WordAt(offset);

@@ -164,6 +164,10 @@ namespace TERN.Ide
                                 ["triggerCharacters"] = new JsonArray(".", "\""),
                                 ["resolveProvider"] = false,
                             },
+                            ["signatureHelpProvider"] = new JsonObject
+                            {
+                                ["triggerCharacters"] = new JsonArray("(", ","),
+                            },
                             ["hoverProvider"] = true,
                             ["definitionProvider"] = true,
                             ["referencesProvider"] = true,
@@ -242,6 +246,12 @@ namespace TERN.Ide
                         ["isIncomplete"] = false,
                         ["items"] = _features.Completion(document, offset, SymbolIndex.Build(document)),
                     };
+                }
+
+                case "textDocument/signatureHelp":
+                {
+                    var (document, offset) = Locate(parameters);
+                    return document is null ? null : _features.SignatureHelp(document, offset, SymbolIndex.Build(document));
                 }
 
                 case "textDocument/hover":
