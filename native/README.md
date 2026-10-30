@@ -166,6 +166,18 @@ collections, bytes allocated and bytes live on exit.
 Compiling costs: export 80 ms, code generation 35 ms, `cc -O2` about 1.8 s for
 the whole single-translation-unit program.
 
+## Networking
+
+`std:net` works in compiled binaries with the same API and, more importantly,
+the same wire format as the interpreter ([`TERN/Builtins/Wire.cs`](../TERN/Builtins/Wire.cs)),
+so a compiled server talks to an interpreted client and the other way round. The
+format is a tag byte per value (`0` nil, `1` false, `2` true, `3` int, `4` float,
+`5` string, `6` list, `7` map, `8` struct, `9` range), ULEB128 lengths and
+counts, little-endian 64-bit numbers, and a 4-byte big-endian frame length.
+Struct values carry their type name and field names; the receiver looks the type
+up among its own globals and falls back to a plain map when it has not declared
+it.
+
 ## Limitations
 
 * The collector is conservative: an integer that happens to look like an object
@@ -181,9 +193,10 @@ the whole single-translation-unit program.
   Greek, Cyrillic, CJK — behaves identically.
 * Compiler diagnostics (the `12_lint` warnings) are not emitted by binaries;
   use `./tools/tern check` for that.
-* There is no sandbox: `--no-fs` and `engine.AllowFileSystem` belong to the
-  interpreter, because a compiled binary has no engine to configure. Restrict a
-  binary with the operating system (user, container, `chroot`) instead.
+* There is no sandbox: `--no-fs`, `--no-net`, `engine.AllowFileSystem` and
+  `engine.AllowNetwork` belong to the interpreter, because a compiled binary has
+  no engine to configure. Restrict a binary with the operating system (user,
+  container, `chroot`, firewall) instead.
 * `fs` errors name the path as the script wrote it, while the interpreter
   reports the resolved absolute path.
 * Stack traces cost about a cycle per call: pushing and popping a frame is

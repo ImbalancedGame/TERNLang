@@ -46,7 +46,11 @@ match tickets.length {
   catchable runtime errors and stack traces with exact line numbers, on both
   the interpreter and the compiled backend.
 * **Batteries included** — `math`, `json`, `fs`, `os`, `time`, `random`,
-  `text`, `lists` namespaces and rich methods on every built-in type.
+  `text`, `lists` and `net` namespaces and rich methods on every built-in type.
+* **Networking** — `std:net` sends values, not bytes: `net.send` encodes and
+  frames any value (structs included) and `net.receive` decodes it back. The
+  wire format is shared with the compiled backend, so a native client can talk
+  to an interpreted server.
 * **Modules** — `import "lib/util.tern"` for files, `import "std:json"` for
   standard modules, with per-engine caching.
 * **A single dependency-free binary** — a bytecode VM with no runtime
@@ -54,8 +58,8 @@ match tickets.length {
 * **Ahead-of-time compilation** — `tern emit` plus `native/` turn the same
   bytecode into C and then into a standalone ELF binary with no runtime
   installed ([`native/README.md`](native/README.md)).
-* **Sandboxable** — file system access can be disabled per engine, so scripts
-  from a ticket or a chat bot can be run safely.
+* **Sandboxable** — file system and network access can be disabled per engine,
+  so scripts from a ticket or a chat bot can be run safely.
 * **Linted on the way in** — a fast AST pass warns about assignments used as
   conditions, impossible comparisons and shadowed locals before anything runs.
 
@@ -89,8 +93,8 @@ Script arguments are exposed as `os.args()`:
 ./tools/tern run examples/wordcount.tern notes.txt
 ```
 
-Add `--time` to `run` for a wall-clock measurement and `--no-fs` to run with the
-file system sandboxed.
+Add `--time` to `run` for a wall-clock measurement and `--no-fs` / `--no-net` to
+run with the file system or the network sandboxed.
 
 ## Language tour
 
@@ -306,6 +310,7 @@ using TERN.Runtime;
 // The standard library is installed by the constructor.
 var engine = new TernEngine(includeStandardLibrary: true);
 engine.AllowFileSystem = false;           // sandbox: no file system access
+engine.AllowNetwork = false;              // sandbox: no sockets (encode/decode still work)
 engine.ScriptArguments.Add("notes.txt");
 
 // Run source directly...

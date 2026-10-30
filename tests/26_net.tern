@@ -1,0 +1,98 @@
+// Networking and the wire format: every value kind survives a round trip,
+// structs arrive as their own type, and a server and client talk over a real
+// socket using length-prefixed frames.
+import "std:net";
+
+struct Data {
+    id = 0,
+    name = "anon",
+    tags = [],
+    meta = {},
+}
+
+fn roundtrip(value) {
+    let bytes = net.encode(value);
+    return net.decode(bytes);
+}
+
+println(roundtrip(nil), roundtrip(true), roundtrip(false));
+println(roundtrip(42), roundtrip(-7), roundtrip(1.5), roundtrip(-2.25));
+println(roundtrip("h\u00e9llo"), len(roundtrip("h\u00e9llo")));
+println(roundtrip([1, "two", 3.5, nil, true]));
+println(roundtrip({"a": 1, "b": [2, 3], "c": {"d": nil}}));
+
+let list = roundtrip([1, 2, 3]);
+list.push(4);
+println(list);
+
+// Structs keep their type and fields.
+let data = Data(7, "seven", ["x", "y"], {"k": 1});
+let copy = roundtrip(data);
+println(type(copy), copy.id, copy.name, copy.tags, copy.meta);
+println(copy);
+
+// Bytes are stable, so two encodings of the same value are identical.
+println(str(net.encode(data)) == str(net.encode(Data(7, "seven", ["x", "y"], {"k": 1}))));
+
+println(type(roundtrip(range(1, 5))), roundtrip(range(1, 5)));
+println(len(net.encode(42)), len(net.encode(nil)));
+
+// Decoding nonsense fails catchably.
+fn kind(block) {
+    try {
+        block();
+        return "no error";
+    } catch (e) {
+        return str(e);
+    }
+}
+println(kind(fn() { net.decode([9, 9, 9]); }));
+println(kind(fn() { net.decode([6, 5]); }));
+println(kind(fn() { net.encode(fn() { return 1; }); }));
+println(kind(fn() { net.decode("not bytes"); }));
+
+// A real socket: listen on an ephemeral port, connect to ourselves, exchange
+// messages in both directions.
+let server = net.listen("127.0.0.1", 0);
+let port = net.port(server);
+println("listening:", port > 0);
+
+let client = net.connect("127.0.0.1", port);
+net.timeout(client, 5000);
+let connection = net.accept(server);
+net.timeout(connection, 5000);
+
+println("peer:", net.peer(connection).startsWith("127.0.0.1:"));
+
+net.send(client, Data(1, "first", [1, 2], {}));
+let received = net.receive(connection);
+println(type(received), received.id, received.name, received.tags);
+
+net.send(connection, {"ok": true, "echo": received.name});
+let reply = net.receive(client);
+println(reply["ok"], reply["echo"]);
+
+// Several frames in a row keep their boundaries.
+for i in 0..<3 {
+    net.send(client, [i, "frame"]);
+}
+for i in 0..<3 {
+    println(net.receive(connection));
+}
+
+// Argument counts are checked, not read as nil.
+println(kind(fn() { net.listen(); }));
+println(kind(fn() { net.listen(1, 2, 3); }));
+println(kind(fn() { net.connect("127.0.0.1"); }));
+println(kind(fn() { net.timeout(1, 2, 3); }));
+
+// Handles of the wrong kind fail catchably.
+println(kind(fn() { net.accept(client); }));
+println(kind(fn() { net.send(server, 1); }));
+
+net.close(client);
+println("closed:", kind(fn() { net.receive(connection); }));
+
+net.close(connection);
+net.close(server);
+println(kind(fn() { net.receive(connection); }));

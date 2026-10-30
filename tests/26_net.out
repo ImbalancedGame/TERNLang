@@ -1,0 +1,30 @@
+nil true false
+42 -7 1.5 -2.25
+héllo 5
+[1, "two", 3.5, nil, true]
+{"a": 1, "b": [2, 3], "c": {"d": nil}}
+[1, 2, 3, 4]
+Data 7 seven ["x", "y"] {"k": 1}
+Data(id: 7, name: "seven", tags: ["x", "y"], meta: {"k": 1})
+true
+range 1..<5
+9 1
+truncated value
+length exceeds the payload
+cannot serialize a function; send data (nil, booleans, numbers, strings, lists, maps, ranges or structs)
+expected a list of bytes, not string
+listening: true
+peer: true
+Data 1 first [1, 2]
+true first
+[0, "frame"]
+[1, "frame"]
+[2, "frame"]
+listen() expects 1 to 2 argument(s) but got 0
+listen() expects 1 to 2 argument(s) but got 3
+connect() expects 2 argument(s) but got 1
+timeout() expects 2 argument(s) but got 3
+accept() needs a server handle from listen()
+send() needs a connection handle, not a server
+closed: connection closed by the other side
+no open socket with handle 3

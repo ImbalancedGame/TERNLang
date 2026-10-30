@@ -111,6 +111,22 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `toRadians` | `toRadians(arg)` | Degrees to radians. |
 | `trunc` | `trunc(arg)` | Drops the fractional part. |
 
+## `net`
+
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `accept` | `accept(arg)` | Waits for one connection and returns its handle. |
+| `close` | `close(arg)` | Closes a socket handle. |
+| `connect` | `connect(arg, arg)` | Connects to a server and returns the connection handle. |
+| `decode` | `decode(arg)` | Decodes bytes produced by encode back into a value. |
+| `encode` | `encode(arg)` | Encodes a value to a list of bytes. |
+| `listen` | `listen(arg, [arg])` | Listens on a port and returns a server handle: net.listen(port) or net.listen(host, port). |
+| `peer` | `peer(arg)` | Address of the other side of a connection. |
+| `port` | `port(arg)` | Local port of a socket (useful after listen(0)). |
+| `receive` | `receive(arg)` | Waits for one frame and returns the decoded value. |
+| `send` | `send(arg, arg)` | Encodes a value and sends it as one frame. |
+| `timeout` | `timeout(arg, arg)` | Sets the receive/send timeout in milliseconds (0 waits forever). |
+
 ## `os`
 
 | Name | Signature | Notes |
@@ -161,6 +177,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 * `std:json`
 * `std:lists`
 * `std:math`
+* `std:net`
 * `std:os`
 * `std:random`
 * `std:text`

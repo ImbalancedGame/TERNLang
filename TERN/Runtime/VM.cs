@@ -118,9 +118,42 @@ namespace TERN.Runtime
 
         // ------------------------------------------------------------- execution
 
+        /// <summary>Modules this VM has run, so struct types can be found by name.</summary>
+        private readonly List<TernModule> _executedModules = new();
+
+        /// <summary>
+        /// Finds a struct type by name among the globals of the modules this VM has
+        /// run. Used when decoding a value whose sender named the struct.
+        /// </summary>
+        public TernType? FindType(string name)
+        {
+            for (var i = _executedModules.Count - 1; i >= 0; i--)
+            {
+                var module = _executedModules[i];
+                if (!module.Scope.TryResolve(name, out var slot) ||
+                    slot >= module.Globals.Length)
+                {
+                    continue;
+                }
+
+                var value = module.Globals[slot];
+                if (value.Kind == ValueKind.Type)
+                {
+                    return value.AsType();
+                }
+            }
+
+            return null;
+        }
+
         /// <summary>Runs a module body once.</summary>
         public Value ExecuteModule(TernModule module)
         {
+            if (!_executedModules.Contains(module))
+            {
+                _executedModules.Add(module);
+            }
+
             if (module.Initialized)
             {
                 return Value.Nil;

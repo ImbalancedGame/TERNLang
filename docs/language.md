@@ -518,8 +518,8 @@ Importing a file executes it once (results are cached per engine) and makes its
 top level bindings available.
 
 Standard modules: `std:math`, `std:json`, `std:fs`, `std:os`, `std:time`,
-`std:random`, `std:text`, `std:lists`. Their members are also exposed as
-namespaces (`math.sqrt`, `json.parse`, ...), so importing is optional.
+`std:random`, `std:text`, `std:lists`, `std:net`. Their members are also exposed
+as namespaces (`math.sqrt`, `json.parse`, ...), so importing is optional.
 
 ```tern
 import "std:json";
@@ -558,6 +558,7 @@ abs min max copy sleep
 | `random` | `seed float int bool choice shuffle` |
 | `text` | `format upper lower trim split join pad` |
 | `lists` | `range repeat zip enumerate chunk sort` |
+| `net` | `encode decode listen accept connect send receive close timeout port peer` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
 
@@ -580,6 +581,63 @@ The embedder can disable file system access. When disabled, every `fs` call and
 ```
 blocked: file system access is disabled for this script
 ```
+
+Network access is disabled the same way (`--no-net`, or `engine.AllowNetwork =
+false`). `net.listen` and `net.connect` then raise `network access is disabled for
+this script`; `net.encode` and `net.decode` keep working, since they never touch
+a socket.
+
+### Sockets and the wire format
+
+`std:net` sends values, not bytes: `net.send(socket, value)` encodes the value
+and writes it as one frame (a 4-byte big-endian length followed by the payload),
+and `net.receive(socket)` reads exactly one frame back. Sockets are addressed by
+integer handles, so a script behaves the same in the interpreter and in a
+compiled binary.
+
+```tern
+import "std:net";
+
+struct Ping { from = "", n = 0 }
+
+let server = net.listen("127.0.0.1", 8080);
+let client = net.connect("127.0.0.1", net.port(server));
+let peer = net.accept(server);
+
+net.timeout(peer, 5000);          // milliseconds; 0 waits forever
+net.send(client, Ping("client", 1));
+println(net.receive(peer));       // Ping(from: "client", n: 1)
+
+net.close(client);
+net.close(peer);
+net.close(server);
+```
+
+`net.listen(0)` binds an ephemeral port; read it back with `net.port(handle)`.
+
+Any value can travel: `nil`, booleans, integers, floats, strings, lists, maps,
+ranges and structs. Integers and floats keep their type and exact bits, map
+insertion order is preserved, and a range keeps its step and whether its end is
+inclusive. A struct is sent with its type name and field names, so the receiver
+rebuilds a real instance of that struct with the same fields — fields it does
+not know about are dropped and fields the sender omitted keep their defaults. If
+the receiver has not declared that struct, the fields arrive as a map instead,
+so old readers keep working.
+
+Encoding is compact and deterministic: the same value always produces the same
+bytes, and `net.encode` / `net.decode` expose it directly for storage or for
+talking to another language:
+
+```tern
+let bytes = net.encode({"a": [1, 2]});
+println(len(bytes));              // 25
+println(net.decode(bytes));       // {"a": [1, 2]}
+```
+
+Limits: values nest at most 128 levels deep and a frame is at most 64 MiB.
+Decoding rejects truncated input, unknown tags and trailing bytes with a
+catchable `SerializationError`, and `net.receive` raises `ConnectionError` when
+the other side closes the connection.
 
 ---
 
@@ -659,6 +717,7 @@ tern run script.tern [args]   # execute, printing lint warnings to stderr
 tern run script.tern --quiet  # execute without lint warnings
 tern run script.tern --time   # also report wall clock time
 tern run script.tern --no-fs  # sandbox the file system
+tern run script.tern --no-net # sandbox the network
 tern check script.tern        # parse, lint and compile, but do not run
 tern disasm script.tern       # dump the bytecode
 tern emit script.tern -o out.json  # export the bytecode as JSON (native backend)

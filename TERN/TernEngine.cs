@@ -22,7 +22,7 @@ namespace TERN
     /// cache and the sandbox policy; a fresh <see cref="VM"/> is used per execution
     /// so scripts cannot leak state into each other.
     /// </summary>
-    public sealed class TernEngine : ICompilationHost
+    public sealed class TernEngine : ICompilationHost, IDisposable
     {
         private readonly List<(string Name, Value Value)> _hostBindings = new();
         private readonly Dictionary<string, StdModule> _stdModules = new(StringComparer.Ordinal);
@@ -46,6 +46,18 @@ namespace TERN
 
         /// <summary>When false, every <c>fs</c> call raises a PermissionError.</summary>
         public bool AllowFileSystem { get; set; } = true;
+
+        /// <summary>When false, <c>net.listen</c> and <c>net.connect</c> raise a PermissionError.</summary>
+        public bool AllowNetwork { get; set; } = true;
+
+        /// <summary>Open sockets for the <c>net</c> namespace, keyed by handle.</summary>
+        internal NetRegistry Net { get; } = new();
+
+        /// <summary>Closes every socket a script left open.</summary>
+        public void CloseNetworkHandles() => Net.CloseAll();
+
+        /// <summary>Releases the sockets still open, so a long-lived host can run many scripts.</summary>
+        public void Dispose() => CloseNetworkHandles();
 
         /// <summary>When false, the AST linter does not run before compilation.</summary>
         public bool LintOnCompile { get; set; } = true;

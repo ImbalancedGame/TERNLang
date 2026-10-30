@@ -28,6 +28,7 @@ namespace TERN.Builtins
             InstallRandom(engine);
             InstallText(engine);
             InstallLists(engine);
+            NetModule.Install(engine);
         }
 
         // ---------------------------------------------------------------- globals

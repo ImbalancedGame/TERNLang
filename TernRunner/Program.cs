@@ -130,6 +130,7 @@ Options for `run`:
             var engine = new TernEngine
             {
                 AllowFileSystem = !options.Contains("--no-fs"),
+                AllowNetwork = !options.Contains("--no-net"),
                 WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory(),
                 LintOnCompile = !quiet,
             };

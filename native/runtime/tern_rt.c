@@ -1,7 +1,12 @@
 // TERN native runtime - implementation.
 #include "tern_rt.h"
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 #include <locale.h>
 #include <math.h>
 #include <sys/stat.h>
@@ -30,6 +35,34 @@ static Value make_native_arity(const char *name, NativeFn fn, int min_args, int 
 // limit is high enough for real programs (about 3 MB of stack) and low enough
 // that hitting it raises a catchable error instead of a SIGSEGV.
 #define TERN_MAX_CALL_DEPTH 10000
+
+// Every module's global array, registered as it starts, so the wire format can
+// find a struct type by name when a value arrives from the network.
+#define TERN_MAX_GLOBAL_TABLES 64
+typedef struct GlobalTable {
+    Value *values;
+    const char **names;
+    int count;
+} GlobalTable;
+
+static GlobalTable tern_global_tables[TERN_MAX_GLOBAL_TABLES];
+static int tern_global_table_count = 0;
+
+static TypeObj *tern_find_type(const char *name) {
+    for (int i = tern_global_table_count - 1; i >= 0; i--) {
+        GlobalTable *table = &tern_global_tables[i];
+        for (int slot = 0; slot < table->count; slot++) {
+            if (strcmp(table->names[slot], name) != 0) {
+                continue;
+            }
+            Value value = table->values[slot];
+            if (value.tag == T_OBJ && value.as.o->type == O_TYPE) {
+                return (TypeObj *)value.as.o;
+            }
+        }
+    }
+    return NULL;
+}
 
 TernTry *tern_try_top = NULL;
 Value tern_thrown;
@@ -4595,7 +4628,7 @@ static Value make_native_arity(const char *name, NativeFn fn, int min_args, int 
     return v_obj((Obj *)native);
 }
 
-// Unchecked by default: only the globals table states its contract so far.
+// Unchecked by default: only the globals table and `net` state their contract.
 static Value make_native(const char *name, NativeFn fn) {
     return make_native_arity(name, fn, -1, -1);
 }
@@ -4634,6 +4667,673 @@ static void check_arity(const Native *native, int argc) {
     }
     tern_panic("ArgumentError", "%s() expects %s argument(s) but got %d",
                native->name, expected, argc);
+}
+
+// ------------------------------------------------------------------- wire
+//
+// The TERN wire format, byte for byte the same as TERN/Builtins/Wire.cs so an
+// interpreted client can talk to a compiled server and the other way round.
+// Structs travel with their type name and field names; the receiver rebuilds
+// them when it declares that struct and gets a plain map when it does not.
+
+#define WIRE_MAX_DEPTH 128
+#define WIRE_MAX_BYTES (64 * 1024 * 1024)
+
+static void wire_i64(Buf *buf, int64_t value) {
+    unsigned char bytes[8];
+    for (int i = 0; i < 8; i++) {
+        bytes[i] = (unsigned char)((uint64_t)value >> (8 * i));
+    }
+    buf_add(buf, (const char *)bytes, 8);
+}
+
+static void wire_f64(Buf *buf, double value) {
+    uint64_t bits;
+    memcpy(&bits, &value, 8);
+    wire_i64(buf, (int64_t)bits);
+}
+
+static void wire_varint(Buf *buf, uint64_t value) {
+    while (value >= 0x80) {
+        buf_add_char(buf, (char)((value & 0x7f) | 0x80));
+        value >>= 7;
+    }
+    buf_add_char(buf, (char)value);
+}
+
+static void wire_text(Buf *buf, const char *text, size_t length) {
+    wire_varint(buf, (uint64_t)length);
+    buf_add(buf, text, length);
+}
+
+static void wire_value(Buf *buf, Value v, int depth);
+
+static void wire_instance(Buf *buf, Instance *instance, int depth) {
+    TypeObj *type = instance->type;
+    buf_add_char(buf, 8); /* struct */
+    wire_text(buf, type->name, strlen(type->name));
+    wire_varint(buf, (uint64_t)type->nfields);
+    for (int32_t i = 0; i < type->nfields; i++) {
+        const char *name = type->field_names[i];
+        wire_text(buf, name, strlen(name));
+        wire_value(buf, instance->fields[i], depth + 1);
+    }
+}
+
+static void wire_value(Buf *buf, Value v, int depth) {
+    if (depth > WIRE_MAX_DEPTH) {
+        tern_panic("SerializationError", "value nests deeper than %d levels", WIRE_MAX_DEPTH);
+    }
+
+    switch (v.tag) {
+        case T_NIL:
+        case T_MISSING:
+            buf_add_char(buf, 0);
+            return;
+        case T_BOOL:
+            buf_add_char(buf, v.as.i ? 2 : 1);
+            return;
+        case T_INT:
+            buf_add_char(buf, 3);
+            wire_i64(buf, v.as.i);
+            return;
+        case T_FLOAT:
+            buf_add_char(buf, 4);
+            wire_f64(buf, v.as.f);
+            return;
+        default:
+            break;
+    }
+
+    if (v.tag != T_OBJ) {
+        tern_panic("SerializationError", "cannot serialize a %s", tern_type_name(v));
+    }
+
+    switch (v.as.o->type) {
+        case O_STR: {
+            Str *s = (Str *)v.as.o;
+            buf_add_char(buf, 5);
+            wire_text(buf, s->chars, s->len);
+            return;
+        }
+
+        case O_LIST: {
+            List *list = (List *)v.as.o;
+            buf_add_char(buf, 6);
+            wire_varint(buf, (uint64_t)list->count);
+            for (int32_t i = 0; i < list->count; i++) {
+                wire_value(buf, list->items[i], depth + 1);
+            }
+            return;
+        }
+
+        case O_MAP: {
+            Map *map = (Map *)v.as.o;
+            buf_add_char(buf, 7);
+            wire_varint(buf, (uint64_t)map->order_count);
+            for (int32_t i = 0; i < map->order_count; i++) {
+                Value key = map->order[i];
+                Value item;
+                if (!map_get(map, key, &item)) {
+                    continue;
+                }
+                wire_value(buf, key, depth + 1);
+                wire_value(buf, item, depth + 1);
+            }
+            return;
+        }
+
+        case O_RANGE: {
+            Range *range = (Range *)v.as.o;
+            buf_add_char(buf, 9);
+            wire_i64(buf, range->start);
+            wire_i64(buf, range->end);
+            wire_i64(buf, range->step);
+            buf_add_char(buf, range->inclusive ? 1 : 0);
+            return;
+        }
+
+        case O_INSTANCE:
+            wire_instance(buf, (Instance *)v.as.o, depth);
+            return;
+
+        default:
+            tern_panic("SerializationError",
+                       "cannot serialize a %s; send data (nil, booleans, numbers, strings, lists, maps, ranges or structs)",
+                       tern_type_name(v));
+    }
+}
+
+typedef struct WireReader {
+    const unsigned char *data;
+    size_t length;
+    size_t offset;
+} WireReader;
+
+static unsigned char wire_byte(WireReader *reader) {
+    if (reader->offset >= reader->length) {
+        tern_panic("SerializationError", "truncated value");
+    }
+    return reader->data[reader->offset++];
+}
+
+static const unsigned char *wire_take(WireReader *reader, size_t count) {
+    if (reader->offset + count > reader->length) {
+        tern_panic("SerializationError", "truncated value");
+    }
+    const unsigned char *slice = reader->data + reader->offset;
+    reader->offset += count;
+    return slice;
+}
+
+static int64_t wire_read_i64(WireReader *reader) {
+    const unsigned char *bytes = wire_take(reader, 8);
+    uint64_t value = 0;
+    for (int i = 7; i >= 0; i--) {
+        value = (value << 8) | bytes[i];
+    }
+    return (int64_t)value;
+}
+
+static double wire_read_f64(WireReader *reader) {
+    int64_t bits = wire_read_i64(reader);
+    double value;
+    memcpy(&value, &bits, 8);
+    return value;
+}
+
+static uint64_t wire_read_varint(WireReader *reader) {
+    uint64_t result = 0;
+    int shift = 0;
+    for (;;) {
+        unsigned char b = wire_byte(reader);
+        result |= (uint64_t)(b & 0x7f) << shift;
+        if ((b & 0x80) == 0) {
+            return result;
+        }
+        shift += 7;
+        if (shift > 63) {
+            tern_panic("SerializationError", "malformed length");
+        }
+    }
+}
+
+/* A count can never exceed the bytes left in the buffer. */
+static int32_t wire_read_count(WireReader *reader) {
+    uint64_t count = wire_read_varint(reader);
+    if (count > (uint64_t)(reader->length - reader->offset)) {
+        tern_panic("SerializationError", "length exceeds the payload");
+    }
+    return (int32_t)count;
+}
+
+static Value wire_read(WireReader *reader, int depth);
+
+/* Allocates a string from a counted byte range. */
+static Value wire_read_text(WireReader *reader) {
+    int32_t length = wire_read_count(reader);
+    const unsigned char *bytes = wire_take(reader, (size_t)length);
+    return str_value((const char *)bytes, (size_t)length);
+}
+
+static Value wire_read_struct(WireReader *reader, int depth) {
+    Value name = wire_read_text(reader);
+    Str *type_name = (Str *)name.as.o;
+    int32_t count = wire_read_count(reader);
+
+    TypeObj *type = tern_find_type(type_name->chars);
+    List *names = list_new(count > 0 ? count : 1);
+    Value *values = (Value *)calloc((size_t)(count > 0 ? count : 1), sizeof(Value));
+
+    for (int32_t i = 0; i < count; i++) {
+        list_push(names, wire_read_text(reader));
+        values[i] = wire_read(reader, depth + 1);
+    }
+
+    Value result;
+    if (type) {
+        Value instance = tern_new_instance(type, 0, NULL);
+        for (int32_t i = 0; i < count; i++) {
+            Str *field = (Str *)names->items[i].as.o;
+            int32_t slot = find_field(type, field->chars);
+            if (slot >= 0) {
+                ((Instance *)instance.as.o)->fields[slot] = values[i];
+            }
+        }
+        result = instance;
+    } else {
+        /* No such struct here: hand back the fields as a map. */
+        Map *map = map_new();
+        for (int32_t i = 0; i < count; i++) {
+            map_set(map, names->items[i], values[i]);
+        }
+        result = v_obj((Obj *)map);
+    }
+
+    free(values);
+    return result;
+}
+
+static Value wire_read(WireReader *reader, int depth) {
+    if (depth > WIRE_MAX_DEPTH) {
+        tern_panic("SerializationError", "value nests deeper than %d levels", WIRE_MAX_DEPTH);
+    }
+
+    unsigned char tag = wire_byte(reader);
+    switch (tag) {
+        case 0: return v_nil();
+        case 1: return v_bool(false);
+        case 2: return v_bool(true);
+        case 3: return v_int(wire_read_i64(reader));
+        case 4: return v_float(wire_read_f64(reader));
+        case 5: return wire_read_text(reader);
+
+        case 6: {
+            int32_t count = wire_read_count(reader);
+            List *list = list_new(count > 0 ? count : 1);
+            for (int32_t i = 0; i < count; i++) {
+                list_push(list, wire_read(reader, depth + 1));
+            }
+            return v_obj((Obj *)list);
+        }
+
+        case 7: {
+            int32_t count = wire_read_count(reader);
+            Map *map = map_new();
+            for (int32_t i = 0; i < count; i++) {
+                Value key = wire_read(reader, depth + 1);
+                Value item = wire_read(reader, depth + 1);
+                map_set(map, key, item);
+            }
+            return v_obj((Obj *)map);
+        }
+
+        case 8:
+            return wire_read_struct(reader, depth);
+
+        case 9: {
+            int64_t start = wire_read_i64(reader);
+            int64_t end = wire_read_i64(reader);
+            int64_t step = wire_read_i64(reader);
+            bool inclusive = wire_byte(reader) != 0;
+            return v_obj((Obj *)range_make(start, end, inclusive, step));
+        }
+
+        default:
+            tern_panic("SerializationError", "unknown value tag %d", (int)tag);
+    }
+
+    return v_nil();
+}
+
+static Value wire_encode(Value v) {
+    Buf buf;
+    buf_init(&buf);
+    wire_value(&buf, v, 0);
+    if (buf.len > WIRE_MAX_BYTES) {
+        free(buf.data);
+        tern_panic("SerializationError", "value is larger than %d bytes", WIRE_MAX_BYTES);
+    }
+
+    List *bytes = list_new((int)buf.len);
+    for (size_t i = 0; i < buf.len; i++) {
+        list_push(bytes, v_int((unsigned char)buf.data[i]));
+    }
+    free(buf.data);
+    return v_obj((Obj *)bytes);
+}
+
+static Value wire_decode(Value bytes) {
+    if (!v_is_list(bytes)) {
+        tern_panic("TypeError", "expected a list of bytes, not %s", tern_type_name(bytes));
+    }
+
+    List *list = (List *)bytes.as.o;
+    if ((size_t)list->count > (size_t)WIRE_MAX_BYTES) {
+        tern_panic("SerializationError", "payload is larger than %d bytes", WIRE_MAX_BYTES);
+    }
+
+    unsigned char *data = (unsigned char *)malloc((size_t)(list->count > 0 ? list->count : 1));
+    for (int32_t i = 0; i < list->count; i++) {
+        Value item = list->items[i];
+        if (item.tag != T_INT || item.as.i < 0 || item.as.i > 255) {
+            free(data);
+            tern_panic("TypeError", "byte %d is not an integer in 0..255", i);
+        }
+        data[i] = (unsigned char)item.as.i;
+    }
+
+    WireReader reader = {data, (size_t)list->count, 0};
+    Value result = wire_read(&reader, 0);
+    if (reader.offset != reader.length) {
+        size_t left = reader.length - reader.offset;
+        free(data);
+        tern_panic("SerializationError", "%d trailing byte(s) after the value", (int)left);
+    }
+    free(data);
+    return result;
+}
+
+// -------------------------------------------------------------------- net
+//
+// Sockets, addressed by small integer handles so a script talks to the same
+// API in both back ends. Frames are a 4 byte big endian length followed by an
+// encoded value.
+
+#define NET_MAX_HANDLES 128
+#define NET_MAX_FRAME (64 * 1024 * 1024)
+
+static int net_fds[NET_MAX_HANDLES];
+static int net_is_listener[NET_MAX_HANDLES];
+
+static int net_slot(int handle) {
+    if (handle < 1 || handle > NET_MAX_HANDLES || net_fds[handle - 1] < 0) {
+        tern_panic("NetError", "no open socket with handle %d", handle);
+    }
+    return handle - 1;
+}
+
+static int net_store(int fd, int listener) {
+    for (int i = 0; i < NET_MAX_HANDLES; i++) {
+        if (net_fds[i] < 0) {
+            net_fds[i] = fd;
+            net_is_listener[i] = listener;
+            return i + 1;
+        }
+    }
+    close(fd);
+    tern_panic("NetError", "too many open sockets (limit %d)", NET_MAX_HANDLES);
+    return 0;
+}
+
+static int net_handle_arg(Value v) {
+    if (v.tag != T_INT) {
+        tern_panic("TypeError", "expected a socket handle, not %s", tern_type_name(v));
+    }
+    return (int)v.as.i;
+}
+
+static const char *net_arg_text(Value v, const char *what) {
+    if (!v_is_str(v)) {
+        tern_panic("TypeError", "%s must be a string, not %s", what, tern_type_name(v));
+    }
+    return ((Str *)v.as.o)->chars;
+}
+
+static int net_arg_int(Value v, const char *what) {
+    if (v.tag != T_INT) {
+        tern_panic("TypeError", "%s must be a number, not %s", what, tern_type_name(v));
+    }
+    return (int)v.as.i;
+}
+
+static Value n_net_encode(int argc, Value *argv) {
+    (void)argc;
+    return wire_encode(argv[0]);
+}
+
+static Value n_net_decode(int argc, Value *argv) {
+    (void)argc;
+    return wire_decode(argv[0]);
+}
+
+static void net_fail(const char *what) {
+    tern_panic("NetError", "%s: %s", what, strerror(errno));
+}
+
+static int net_bound_port(int fd) {
+    struct sockaddr_in address;
+    socklen_t length = sizeof address;
+    if (getsockname(fd, (struct sockaddr *)&address, &length) != 0) {
+        return 0;
+    }
+    return ntohs(address.sin_port);
+}
+
+static Value n_net_listen(int argc, Value *argv) {
+    const char *host = argc > 1 ? net_arg_text(argv[0], "host") : "127.0.0.1";
+    int port = net_arg_int(argv[argc > 1 ? 1 : 0], "port");
+
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &address.sin_addr) != 1) {
+        struct addrinfo hints;
+        struct addrinfo *found = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host, NULL, &hints, &found) != 0 || !found) {
+            tern_panic("NetError", "cannot resolve '%s'", host);
+        }
+        address.sin_addr = ((struct sockaddr_in *)found->ai_addr)->sin_addr;
+        freeaddrinfo(found);
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        net_fail("cannot create a socket");
+    }
+
+    int reuse = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse);
+
+    if (bind(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        close(fd);
+        tern_panic("NetError", "cannot listen on %s:%d: %s", host, port, strerror(errno));
+    }
+
+    if (listen(fd, 128) != 0) {
+        close(fd);
+        net_fail("cannot listen");
+    }
+
+    return v_int(net_store(fd, 1));
+}
+
+static Value n_net_accept(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_slot(net_handle_arg(argv[0]));
+    if (!net_is_listener[slot]) {
+        tern_panic("NetError", "accept() needs a server handle from listen()");
+    }
+
+    struct sockaddr_in peer;
+    socklen_t length = sizeof peer;
+    int fd = accept(net_fds[slot], (struct sockaddr *)&peer, &length);
+    if (fd < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            tern_panic("NetError", "accept() timed out");
+        }
+        net_fail("accept() failed");
+    }
+
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    return v_int(net_store(fd, 0));
+}
+
+static Value n_net_connect(int argc, Value *argv) {
+    (void)argc;
+    const char *host = net_arg_text(argv[0], "host");
+    int port = net_arg_int(argv[1], "port");
+
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &address.sin_addr) != 1) {
+        struct addrinfo hints;
+        struct addrinfo *found = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host, NULL, &hints, &found) != 0 || !found) {
+            tern_panic("NetError", "cannot resolve '%s'", host);
+        }
+        address.sin_addr = ((struct sockaddr_in *)found->ai_addr)->sin_addr;
+        freeaddrinfo(found);
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        net_fail("cannot create a socket");
+    }
+
+    if (connect(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        close(fd);
+        tern_panic("NetError", "cannot connect to %s:%d: %s", host, port, strerror(errno));
+    }
+
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    return v_int(net_store(fd, 0));
+}
+
+static int net_connection_arg(Value v, const char *operation) {
+    int slot = net_slot(net_handle_arg(v));
+    if (net_is_listener[slot]) {
+        tern_panic("NetError", "%s() needs a connection handle, not a server", operation);
+    }
+    return net_fds[slot];
+}
+
+static Value n_net_send(int argc, Value *argv) {
+    (void)argc;
+    int fd = net_connection_arg(argv[0], "send");
+    Value encoded = wire_encode(argv[1]);
+    List *payload = (List *)encoded.as.o;
+    if (payload->count > NET_MAX_FRAME) {
+        tern_panic("NetError", "value is larger than %d bytes", NET_MAX_FRAME);
+    }
+
+    unsigned char header[4];
+    uint32_t length = (uint32_t)payload->count;
+    header[0] = (unsigned char)(length >> 24);
+    header[1] = (unsigned char)(length >> 16);
+    header[2] = (unsigned char)(length >> 8);
+    header[3] = (unsigned char)length;
+
+    unsigned char *frame = (unsigned char *)malloc((size_t)length + 4);
+    memcpy(frame, header, 4);
+    for (int32_t i = 0; i < payload->count; i++) {
+        frame[4 + i] = (unsigned char)payload->items[i].as.i;
+    }
+
+    size_t sent = 0;
+    size_t total = (size_t)length + 4;
+    while (sent < total) {
+        ssize_t n = send(fd, frame + sent, total - sent, 0);
+        if (n <= 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                free(frame);
+                tern_panic("NetError", "send() timed out");
+            }
+            free(frame);
+            net_fail("send() failed");
+        }
+        sent += (size_t)n;
+    }
+
+    free(frame);
+    return v_nil();
+}
+
+static void net_read_exactly(int fd, unsigned char *buffer, size_t length, bool first) {
+    size_t read_total = 0;
+    while (read_total < length) {
+        ssize_t n = recv(fd, buffer + read_total, length - read_total, 0);
+        if (n == 0) {
+            tern_panic("ConnectionError", first
+                               ? "connection closed by the other side"
+                               : "connection closed in the middle of a frame");
+        }
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                tern_panic("NetError", "receive() timed out");
+            }
+            net_fail("receive() failed");
+        }
+        read_total += (size_t)n;
+    }
+}
+
+static Value n_net_receive(int argc, Value *argv) {
+    (void)argc;
+    int fd = net_connection_arg(argv[0], "receive");
+
+    unsigned char header[4];
+    net_read_exactly(fd, header, 4, true);
+
+    uint32_t length = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16) |
+                      ((uint32_t)header[2] << 8) | (uint32_t)header[3];
+    if (length > NET_MAX_FRAME) {
+        tern_panic("NetError", "frame of %u bytes is out of range", (unsigned)length);
+    }
+
+    unsigned char *payload = (unsigned char *)malloc(length > 0 ? length : 1);
+    net_read_exactly(fd, payload, length, false);
+
+    List *bytes = list_new((int)length);
+    for (uint32_t i = 0; i < length; i++) {
+        list_push(bytes, v_int(payload[i]));
+    }
+    free(payload);
+
+    return wire_decode(v_obj((Obj *)bytes));
+}
+
+static Value n_net_close(int argc, Value *argv) {
+    (void)argc;
+    int handle = net_handle_arg(argv[0]);
+    int slot = handle - 1;
+    if (handle < 1 || handle > NET_MAX_HANDLES || net_fds[slot] < 0) {
+        return v_nil();
+    }
+    close(net_fds[slot]);
+    net_fds[slot] = -1;
+    net_is_listener[slot] = 0;
+    return v_nil();
+}
+
+static Value n_net_timeout(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_slot(net_handle_arg(argv[0]));
+    int milliseconds = net_arg_int(argv[1], "milliseconds");
+    if (milliseconds < 0) {
+        milliseconds = 0;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = milliseconds / 1000;
+    tv.tv_usec = (milliseconds % 1000) * 1000;
+    setsockopt(net_fds[slot], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(net_fds[slot], SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    return v_nil();
+}
+
+static Value n_net_port(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_slot(net_handle_arg(argv[0]));
+    return v_int(net_bound_port(net_fds[slot]));
+}
+
+static Value n_net_peer(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_slot(net_handle_arg(argv[0]));
+
+    struct sockaddr_in peer;
+    socklen_t length = sizeof peer;
+    if (getpeername(net_fds[slot], (struct sockaddr *)&peer, &length) != 0) {
+        return v_nil();
+    }
+
+    char text[64];
+    char address[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &peer.sin_addr, address, sizeof address);
+    snprintf(text, sizeof text, "%s:%d", address, ntohs(peer.sin_port));
+    return str_from_cstr(text);
 }
 
 static Value namespace_map(const char *ns) {
@@ -4736,6 +5436,34 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+    if (strcmp(ns, "net") == 0) {
+        // The argument counts mirror TERN/Builtins/Net.cs, so a wrong call fails
+        // the same way in both back ends.
+        map_set(map, str_from_cstr("encode"),
+                make_native_arity("encode", n_net_encode, 1, 1));
+        map_set(map, str_from_cstr("decode"),
+                make_native_arity("decode", n_net_decode, 1, 1));
+        map_set(map, str_from_cstr("listen"),
+                make_native_arity("listen", n_net_listen, 1, 2));
+        map_set(map, str_from_cstr("accept"),
+                make_native_arity("accept", n_net_accept, 1, 1));
+        map_set(map, str_from_cstr("connect"),
+                make_native_arity("connect", n_net_connect, 2, 2));
+        map_set(map, str_from_cstr("send"),
+                make_native_arity("send", n_net_send, 2, 2));
+        map_set(map, str_from_cstr("receive"),
+                make_native_arity("receive", n_net_receive, 1, 1));
+        map_set(map, str_from_cstr("close"),
+                make_native_arity("close", n_net_close, 1, 1));
+        map_set(map, str_from_cstr("timeout"),
+                make_native_arity("timeout", n_net_timeout, 2, 2));
+        map_set(map, str_from_cstr("port"),
+                make_native_arity("port", n_net_port, 1, 1));
+        map_set(map, str_from_cstr("peer"),
+                make_native_arity("peer", n_net_peer, 1, 1));
+        return v_obj((Obj *)map);
+    }
+
     if (strcmp(ns, "random") == 0) {
         map_set(map, str_from_cstr("seed"), make_native("seed", rnd_seed));
         map_set(map, str_from_cstr("float"), make_native("float", rnd_float));
@@ -4760,7 +5488,7 @@ static Value namespace_map(const char *ns) {
 /// Looks a function up in the well known namespaces (math, text, json, ...).
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
-    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists", "fs", NULL};
+    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists", "fs", "net", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -4782,7 +5510,7 @@ Value tern_lookup_global(const char *name) {
     if (strcmp(name, "math") == 0 || strcmp(name, "time") == 0 ||
         strcmp(name, "json") == 0 || strcmp(name, "os") == 0 ||
         strcmp(name, "random") == 0 || strcmp(name, "text") == 0 ||
-        strcmp(name, "lists") == 0) {
+        strcmp(name, "lists") == 0 || strcmp(name, "net") == 0) {
         return namespace_map(name);
     }
 
@@ -4795,6 +5523,14 @@ Value tern_lookup_global(const char *name) {
 
 void tern_bind_globals(Value *globals, const char **names, int count) {
     tern_gc_register_values(globals, count);
+
+    if (tern_global_table_count < TERN_MAX_GLOBAL_TABLES) {
+        GlobalTable *table = &tern_global_tables[tern_global_table_count++];
+        table->values = globals;
+        table->names = names;
+        table->count = count;
+    }
+
     for (int i = 0; i < count; i++) {
         globals[i] = tern_lookup_global(names[i]);
     }
@@ -4803,6 +5539,11 @@ void tern_bind_globals(Value *globals, const char **names, int count) {
 void tern_rt_init(void) {
     /* stdout is unbuffered-per-line by default; keep line buffering for pipes. */
     setvbuf(stdout, NULL, _IOLBF, 0);
+
+    /* Socket handles are 1-based indexes; -1 marks a free slot. */
+    for (int i = 0; i < NET_MAX_HANDLES; i++) {
+        net_fds[i] = -1;
+    }
 
     /* towupper/towlower need a UTF-8 locale to know about non-ASCII letters. */
     setlocale(LC_CTYPE, "C.UTF-8");
