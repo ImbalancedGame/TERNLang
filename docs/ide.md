@@ -33,8 +33,8 @@ the same answers because the protocol is the only interface.
   `Features.cs` (each request).
 * **`ide/Studio/`** — Python, PySide6. `window.py` (the shell), `editor.py`
   (edit control, gutter, completion popup), `panels.py` (tool windows),
-  `lsp.py` and `debugger.py` (the two child processes), `vcs.py` (git),
-  `highlighter.py`, `theme.py`, `main.py`.
+  `terminal.py` (the shell window), `lsp.py` and `debugger.py` (the two child
+  processes), `vcs.py` (git), `highlighter.py`, `theme.py`, `main.py`.
 * **`ide/Debug/`** — C#, `build/TERN.Debug.dll`. The debugger: breakpoints,
   stepping, frames, variables, over its own line protocol.
 
@@ -42,7 +42,7 @@ the same answers because the protocol is the only interface.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install PySide6-Essentials
+.venv/bin/pip install "PySide6-Essentials==6.9.3"
 
 bash tools/ide.sh                 # open the repository
 bash tools/ide.sh examples        # open a directory
@@ -62,6 +62,13 @@ machine `tools/ide/qt_stubs.py` writes stand-ins for them into
 `build/qt-stubs/`, which is why every headless command sets
 `LD_LIBRARY_PATH=build/qt-stubs`. On a desktop none of that is needed.
 
+PySide6 is pinned to the 6.9 LTS line. 6.12.0 has a refcount regression in
+shiboken: re-highlighting a large document with `QSyntaxHighlighter`
+repeatedly — which is exactly what switching themes does — aborts the
+process with `Fatal Python error: none_dealloc`. The same code runs cleanly
+on 6.9.3, so `tools/test.sh` and the launcher prefer an interpreter that has
+it.
+
 ## What the IDE does
 
 | Feature | Where | Notes |
@@ -70,6 +77,7 @@ machine `tools/ide/qt_stubs.py` writes stand-ins for them into
 | Live diagnostics | gutter, Problems window, status bar | every keystroke, debounced; errors underline in red and fill the error strip |
 | Completion | popup | after `.` and after a quote, plus Ctrl+Space; members, built-ins, imports, keywords |
 | Hover documentation | tooltip | name, kind and signature, from the server's symbol index |
+| Signature help | hint under the caret | the enclosing call and its parameters, the one being typed in bold |
 | Go to definition | Ctrl+B | jumps to the declaration, in another file if need be |
 | Find usages | Alt+F7 | every reference, including inside strings |
 | Rename | Shift+F6 | refuses duplicates, keywords and non-identifiers |
@@ -83,12 +91,37 @@ machine `tools/ide/qt_stubs.py` writes stand-ins for them into
 | Reformat | Ctrl+Alt+L | the server's formatter, 4-space indent |
 | Themes | View → Theme | Darcula and light, applied to editor *and* tool windows |
 | Tool windows | View | Project, Structure, Run, Problems, Terminal, Debug, Commit, Find |
+| Terminal | Alt+F12 | a real shell (`bash`) in a dock, with colours, history, Ctrl+C and Ctrl+L |
 | Debugging | Debug window, gutter | breakpoints, stepping, call stack, locals, evaluate |
 | Version control | Commit window | git status, stage, commit and a coloured diff view |
 | Remembers state | settings | last project, theme, size, open files |
 
 Shortcuts are ordinary Qt ones, so `Ctrl+Q`, `Ctrl+S`, `Ctrl+W`, `Ctrl+Tab`
 and `Ctrl++`/`Ctrl+-` behave as expected too.
+
+### The terminal
+
+The Terminal window is a shell, not a log view. It runs `bash --norc
+--noprofile` under `setsid`, in a session of its own, and sends each line from
+the prompt box, so `cd`, environment variables and shell syntax all behave as
+they do in a terminal. A command is written as `cmd`, then `__tern_status=$?`
+and a marker line carrying the exit status and `$PWD`; the panel reads that
+marker back, updates the prompt and shows the status in the dock's title bar.
+
+Output is decoded from SGR sequences: 16- and 256-colour foregrounds become
+colour runs in the view, so `ls --color`, `grep --color` and coloured compiler
+output look right.
+
+There is no pseudo-terminal here — `forkpty` needs a device this sandbox does
+not provide — so the shell reads commands from a pipe and has no job control.
+That has one visible consequence. Ctrl+C stops the running command with
+SIGINT (SIGTERM if it ignores it) and then starts a fresh shell in the same
+directory: the working directory and the history survive, shell variables do
+not. A real terminal would keep the shell and return it to its prompt. The
+session matters: the signal is sent to the shell's own process group, so it
+can never reach the IDE. Ctrl+L clears, Up and Down walk the history, and
+Ctrl+Alt+T runs a typed command in the window. Full-screen programs (`top`,
+`vim`) are out of scope for the same reason.
 
 ### The editor
 
@@ -103,6 +136,7 @@ and `Ctrl++`/`Ctrl+-` behave as expected too.
 | `Alt+3` / `Alt+5` / `Alt+0` | Find / Debug / Commit window |
 | `Ctrl+Shift+F` | find in path (project-wide, regex if it parses) |
 | `Ctrl+Shift+E` | open recent (the files opened this session) |
+| `Ctrl+Alt+T` | run a command in the Terminal window |
 | `Ctrl+F12` | go to symbol in the current file |
 | `Tab` / `Shift+Tab` | indent, unindent (four spaces) |
 
@@ -142,6 +176,16 @@ When a line is broken, the error shows in three places at once — the gutter, t
 Problems window with every message and its line, and the status bar's count:
 
 ![Live diagnostics](ide/img/diagnostics.png)
+
+While a call is being written, the hint under the caret names the enclosing
+function and bolds the argument being typed:
+
+![Signature help](ide/img/signature.png)
+
+The Terminal window is a shell in a dock, so project commands run where the
+code is:
+
+![The Terminal window](ide/img/terminal.png)
 
 `ide/Studio/vcs.py` shells out to `git` rather than binding a library: git is
 already on the machine that has a repository, and `status --porcelain=v1 -z`
@@ -225,9 +269,9 @@ for the hook): the two columns are within noise of each other, 7.20 s against
 Both halves are covered, and both are part of `tools/test.sh`:
 
 ```bash
-bash tools/test-ide.sh                                   # 36 assertions, protocol only
+bash tools/test-ide.sh                                   # 39 assertions, protocol only
 python3 tools/debug_test.py                              # 35 checks, debugger only
-LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 65 checks, real window
+LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 85 checks, real window
 ```
 
 `tools/test-ide.sh` drives `TERN.Ide.dll` over stdio with no UI at all: framing,
@@ -245,7 +289,11 @@ and that committing through the panel actually lands a commit in `git log`. It
 also drives the editing commands — comment, duplicate, move, find and replace,
 recent files — and checks the bytes they produce, searches the project and
 follows a match to its line, opens a Markdown page to prove it is not fed to
-the TERN analyser, and debugs a script from breakpoint to exit.
+the TERN analyser, and debugs a script from breakpoint to exit. The Terminal
+is checked by running real commands in it: `echo`, `cd` with the prompt
+following, a failing status in the title bar, ANSI colour in the document,
+Ctrl+Alt+T from the menu, Ctrl+C against a sleeping command, Up-arrow
+history, Ctrl+L, and a restart after `exit`.
 
 Screenshots in this page are generated by `tools/ide/shots.py`, not taken by
 hand, so they cannot drift from the code:

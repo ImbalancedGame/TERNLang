@@ -307,7 +307,7 @@ process that does all of it.
 ![TERN Studio running the triage example](docs/ide/img/run.png)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install PySide6-Essentials
+python3 -m venv .venv && .venv/bin/pip install "PySide6-Essentials==6.9.3"
 bash tools/ide.sh
 ```
 
