@@ -526,9 +526,9 @@ Importing a file executes it once (results are cached per engine) and makes its
 top level bindings available.
 
 Standard modules: `std:math`, `std:json`, `std:fs`, `std:os`, `std:time`,
-`std:random`, `std:text`, `std:lists`, `std:net`, `std:http`. Their members are
-also exposed as namespaces (`math.sqrt`, `json.parse`, ...), so importing is
-optional.
+`std:random`, `std:text`, `std:lists`, `std:net`, `std:http`, `std:rcon`. Their
+members are also exposed as namespaces (`math.sqrt`, `json.parse`, ...), so
+importing is optional.
 
 ```tern
 import "std:json";
@@ -569,6 +569,7 @@ abs min max copy sleep
 | `lists` | `range repeat zip enumerate chunk sort` |
 | `net` | `encode decode listen accept connect send receive sendBytes receiveBytes maxFrame udpListen udpSend udpReceive close timeout port peer` |
 | `http` | `request get post encodeRequest decodeResponse exchange` |
+| `rcon` | `connect attach execute close` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
 
@@ -613,6 +614,28 @@ The halves are exposed for scripts that bring their own connection:
 `http.exchange(socket, method, url[, options])` writes a request on a socket from
 `net.connect` and reads one response from it (no redirects there — one exchange,
 one response).
+
+### RCON
+
+`std:rcon` speaks the Source RCON protocol that most game servers use: a
+little-endian length, an id, a type, the body, and two NUL bytes.
+
+```tern
+import "std:rcon";
+
+let session = rcon.connect("127.0.0.1", 27015, "secret");
+println(rcon.execute(session, "status"));
+rcon.close(session);
+```
+
+`rcon.connect(host, port, password[, options])` opens the socket, logs in and
+returns a handle; a refused password raises `AuthenticationError` and the server
+is left alone. `rcon.attach(socket, password[, options])` logs in on a connection
+you opened with `net.connect` — the handle becomes the session, so `net.send` on
+it then says `needs a connection handle, not an rcon session`. `rcon.execute`
+runs one command and returns everything the server sent, joining responses that
+arrive in several packets (the 4096-byte split is common). `rcon.close` closes
+the socket. The only option is `timeout` (milliseconds, default 5000).
 
 ---
 

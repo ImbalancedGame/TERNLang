@@ -20,6 +20,9 @@ namespace TERN.Builtins
 
         /// <summary>A bound datagram socket from udpListen().</summary>
         Datagram,
+
+        /// <summary>A socket taken over by an RCON session.</summary>
+        Rcon,
     }
 
     /// <summary>One open socket, addressed from a script by a small integer handle.</summary>
@@ -32,7 +35,12 @@ namespace TERN.Builtins
         }
 
         public Socket Socket { get; }
-        public NetKind Kind { get; }
+
+        /// <summary>
+        /// What this handle is for. Settable so rcon.attach can take a plain
+        /// connection over without opening another socket.
+        /// </summary>
+        public NetKind Kind { get; set; }
 
         public bool Listener => Kind == NetKind.Listener;
 
@@ -975,9 +983,14 @@ namespace TERN.Builtins
                 throw vm.Error("NetError", $"{operation}() needs a connection handle, not a server");
             }
 
-            if (endpoint.Kind != NetKind.Stream)
+            if (endpoint.Kind == NetKind.Datagram)
             {
                 throw vm.Error("NetError", $"{operation}() needs a connection handle, not a datagram socket");
+            }
+
+            if (endpoint.Kind != NetKind.Stream)
+            {
+                throw vm.Error("NetError", $"{operation}() needs a connection handle, not an rcon session");
             }
 
             return endpoint;

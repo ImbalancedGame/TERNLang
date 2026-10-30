@@ -30,6 +30,7 @@ namespace TERN.Builtins
             InstallLists(engine);
             NetModule.Install(engine);
             HttpModule.Install(engine);
+            RconModule.Install(engine);
         }
 
         // ---------------------------------------------------------------- globals

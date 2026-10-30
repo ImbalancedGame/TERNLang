@@ -167,6 +167,15 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `seed` | `seed(arg)` | Seeds the generator for reproducible runs. |
 | `shuffle` | `shuffle(arg)` | Shuffles a list in place. |
 
+## `rcon`
+
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `attach` | `attach(arg, arg, [arg])` | Logs in on an existing net handle: rcon.attach(socket, password[, options]). |
+| `close` | `close(arg)` | Closes an rcon session. |
+| `connect` | `connect(arg, arg, arg, [arg])` | Connects and logs in: rcon.connect(host, port, password[, options]). |
+| `execute` | `execute(arg, arg)` | Runs one command and returns everything the server sent back. |
+
 ## `text`
 
 | Name | Signature | Notes |
@@ -198,6 +207,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 * `std:net`
 * `std:os`
 * `std:random`
+* `std:rcon`
 * `std:text`
 * `std:time`
 

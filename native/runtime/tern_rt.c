@@ -5752,14 +5752,22 @@ static Value n_net_connect(int argc, Value *argv) {
     return v_int(handle);
 }
 
-static int net_connection_arg(Value v, const char *operation) {
-    int slot = net_slot(net_handle_arg(v));
+/// Refuses a handle that is not a stream connection, naming what it is instead.
+static void net_require_stream(int slot, const char *operation) {
     if (net_kinds[slot] == 1) {
         tern_panic("NetError", "%s() needs a connection handle, not a server", operation);
     }
-    if (net_kinds[slot] != 0) {
+    if (net_kinds[slot] == 2) {
         tern_panic("NetError", "%s() needs a connection handle, not a datagram socket", operation);
     }
+    if (net_kinds[slot] != 0) {
+        tern_panic("NetError", "%s() needs a connection handle, not an rcon session", operation);
+    }
+}
+
+static int net_connection_arg(Value v, const char *operation) {
+    int slot = net_slot(net_handle_arg(v));
+    net_require_stream(slot, operation);
     return net_fds[slot];
 }
 
@@ -5774,12 +5782,7 @@ static int net_datagram_slot(Value v, const char *operation) {
 static Value n_net_send(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
-    if (net_kinds[slot] == 1) {
-        tern_panic("NetError", "send() needs a connection handle, not a server");
-    }
-    if (net_kinds[slot] != 0) {
-        tern_panic("NetError", "send() needs a connection handle, not a datagram socket");
-    }
+    net_require_stream(slot, "send");
     int fd = net_fds[slot];
 
     Value encoded = wire_encode(argv[1]);
@@ -5821,12 +5824,7 @@ static void net_read_exactly(int fd, unsigned char *buffer, size_t length, bool 
 static Value n_net_receive(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
-    if (net_kinds[slot] == 1) {
-        tern_panic("NetError", "receive() needs a connection handle, not a server");
-    }
-    if (net_kinds[slot] != 0) {
-        tern_panic("NetError", "receive() needs a connection handle, not a datagram socket");
-    }
+    net_require_stream(slot, "receive");
     int fd = net_fds[slot];
     int limit = net_max_frames[slot];
 
@@ -6133,9 +6131,9 @@ typedef struct {
     unsigned char *data;
     size_t len;
     size_t cap;
-} HttpBuf;
+} ByteBuf;
 
-static void http_buf_reserve(HttpBuf *buffer, size_t extra) {
+static void bb_reserve(ByteBuf *buffer, size_t extra) {
     if (buffer->len + extra <= buffer->cap) {
         return;
     }
@@ -6147,19 +6145,19 @@ static void http_buf_reserve(HttpBuf *buffer, size_t extra) {
     buffer->cap = cap;
 }
 
-static void http_buf_add(HttpBuf *buffer, const void *data, size_t length) {
-    http_buf_reserve(buffer, length);
+static void bb_add(ByteBuf *buffer, const void *data, size_t length) {
+    bb_reserve(buffer, length);
     if (length) {
         memcpy(buffer->data + buffer->len, data, length);
     }
     buffer->len += length;
 }
 
-static void http_buf_add_text(HttpBuf *buffer, const char *text) {
-    http_buf_add(buffer, text, strlen(text));
+static void bb_add_text(ByteBuf *buffer, const char *text) {
+    bb_add(buffer, text, strlen(text));
 }
 
-static void http_buf_free(HttpBuf *buffer) {
+static void bb_free(ByteBuf *buffer) {
     free(buffer->data);
     buffer->data = NULL;
     buffer->len = 0;
@@ -6173,7 +6171,7 @@ typedef struct {
     const unsigned char *fixed;
     size_t fixed_len;
     size_t pos;
-    HttpBuf buffer;
+    ByteBuf buffer;
     int max_bytes;
 } HttpSource;
 
@@ -6215,7 +6213,7 @@ static bool http_fill(HttpSource *source, int need) {
             tern_panic("ConnectionError", "connection closed while reading the response");
         }
 
-        http_buf_add(&source->buffer, chunk, (size_t)read);
+        bb_add(&source->buffer, chunk, (size_t)read);
         if ((int)source->buffer.len > source->max_bytes + HTTP_MAX_HEADER_BYTES) {
             tern_panic("HttpError", "response body is larger than %d bytes", source->max_bytes);
         }
@@ -6305,7 +6303,7 @@ static unsigned char *http_to_end(HttpSource *source, int max_bytes, size_t *out
             }
             tern_panic("ConnectionError", "connection closed while reading the response");
         }
-        http_buf_add(&source->buffer, chunk, (size_t)read);
+        bb_add(&source->buffer, chunk, (size_t)read);
         if ((int)(source->buffer.len - source->pos) > max_bytes) {
             tern_panic("HttpError", "response body is larger than %d bytes", max_bytes);
         }
@@ -6320,7 +6318,7 @@ static unsigned char *http_to_end(HttpSource *source, int max_bytes, size_t *out
 }
 
 static unsigned char *http_chunked(HttpSource *source, int max_bytes, size_t *out_length) {
-    HttpBuf body = { 0 };
+    ByteBuf body = { 0 };
     for (;;) {
         char *line = http_line(source, "chunk size");
         char *text = line;
@@ -6365,13 +6363,13 @@ static unsigned char *http_chunked(HttpSource *source, int max_bytes, size_t *ou
 
         if ((long)body.len + size > max_bytes) {
             free(line);
-            http_buf_free(&body);
+            bb_free(&body);
             tern_panic("HttpError", "response body is larger than %d bytes", max_bytes);
         }
         free(line);
 
         unsigned char *chunk = http_exact(source, (int)size, "chunk");
-        http_buf_add(&body, chunk, (size_t)size);
+        bb_add(&body, chunk, (size_t)size);
         free(chunk);
 
         char *terminator = http_line(source, "chunk terminator");
@@ -6474,10 +6472,10 @@ typedef struct {
     int max_bytes;
 } HttpOptions;
 
-static bool http_bytes_value(Value v, HttpBuf *out) {
+static bool http_bytes_value(Value v, ByteBuf *out) {
     if (v_is_str(v)) {
         Str *text = (Str *)v.as.o;
-        http_buf_add(out, text->chars, (size_t)text->len);
+        bb_add(out, text->chars, (size_t)text->len);
         return true;
     }
 
@@ -6489,7 +6487,7 @@ static bool http_bytes_value(Value v, HttpBuf *out) {
                 tern_panic("TypeError", "byte %d is not an integer in 0..255", i);
             }
             unsigned char one = (unsigned char)byte.as.i;
-            http_buf_add(out, &one, 1);
+            bb_add(out, &one, 1);
         }
         return true;
     }
@@ -6598,7 +6596,7 @@ static bool http_has_header(HttpOptions *options, const char *name) {
 
 /// Builds the request bytes: request line, the headers we own, the script's
 /// headers in their own order, then the body.
-static void http_encode_request(const char *method, const char *url, HttpOptions *options, HttpBuf *out) {
+static void http_encode_request(const char *method, const char *url, HttpOptions *options, ByteBuf *out) {
     if (method[0] == '\0' || strpbrk(method, " \r\n") != NULL) {
         tern_panic("HttpError", "method '%s' is not valid", method);
     }
@@ -6609,56 +6607,56 @@ static void http_encode_request(const char *method, const char *url, HttpOptions
     http_parse_url(url, &host, &port, &path);
 
     char head[64];
-    http_buf_add_text(out, method);
-    http_buf_add_text(out, " ");
-    http_buf_add_text(out, path);
-    http_buf_add_text(out, " HTTP/1.1\r\n");
+    bb_add_text(out, method);
+    bb_add_text(out, " ");
+    bb_add_text(out, path);
+    bb_add_text(out, " HTTP/1.1\r\n");
 
     if (!http_has_header(options, "Host")) {
-        http_buf_add_text(out, "Host: ");
-        http_buf_add_text(out, host);
+        bb_add_text(out, "Host: ");
+        bb_add_text(out, host);
         if (port != 80) {
             snprintf(head, sizeof head, ":%d", port);
-            http_buf_add_text(out, head);
+            bb_add_text(out, head);
         }
-        http_buf_add_text(out, "\r\n");
+        bb_add_text(out, "\r\n");
     }
 
     if (!http_has_header(options, "Connection")) {
-        http_buf_add_text(out, "Connection: close\r\n");
+        bb_add_text(out, "Connection: close\r\n");
     }
 
     if (!http_has_header(options, "User-Agent")) {
-        http_buf_add_text(out, "User-Agent: TERN\r\n");
+        bb_add_text(out, "User-Agent: TERN\r\n");
     }
 
     for (int i = 0; i < options->count; i++) {
         Str *name = (Str *)options->names[i].as.o;
         Str *value = (Str *)options->values[i].as.o;
-        http_buf_add_text(out, name->chars);
-        http_buf_add_text(out, ": ");
-        http_buf_add_text(out, value->chars);
-        http_buf_add_text(out, "\r\n");
+        bb_add_text(out, name->chars);
+        bb_add_text(out, ": ");
+        bb_add_text(out, value->chars);
+        bb_add_text(out, "\r\n");
     }
 
-    HttpBuf body = { 0 };
+    ByteBuf body = { 0 };
     if (options->has_body && options->body.tag != T_NIL) {
         if (!http_bytes_value(options->body, &body)) {
             free(host);
             free(path);
-            http_buf_free(&body);
+            bb_free(&body);
             tern_panic("TypeError", "body must be a string or a list of bytes, not %s",
                        tern_type_name(options->body));
         }
         if (!http_has_header(options, "Content-Length")) {
             snprintf(head, sizeof head, "Content-Length: %d\r\n", (int)body.len);
-            http_buf_add_text(out, head);
+            bb_add_text(out, head);
         }
     }
 
-    http_buf_add_text(out, "\r\n");
-    http_buf_add(out, body.data, body.len);
-    http_buf_free(&body);
+    bb_add_text(out, "\r\n");
+    bb_add(out, body.data, body.len);
+    bb_free(&body);
     free(host);
     free(path);
 }
@@ -6729,12 +6727,12 @@ static Map *http_read(HttpSource *source, int max_bytes, char **out_reason, int 
         Value key = str_from_cstr(name);
         Value existing = v_nil();
         if (map_get(headers, key, &existing)) {
-            HttpBuf joined = { 0 };
-            http_buf_add_text(&joined, ((Str *)existing.as.o)->chars);
-            http_buf_add_text(&joined, ", ");
-            http_buf_add_text(&joined, value);
+            ByteBuf joined = { 0 };
+            bb_add_text(&joined, ((Str *)existing.as.o)->chars);
+            bb_add_text(&joined, ", ");
+            bb_add_text(&joined, value);
             map_set(headers, key, v_obj((Obj *)str_from((const char *)joined.data, joined.len)));
-            http_buf_free(&joined);
+            bb_free(&joined);
         } else {
             map_set(headers, key, str_from_cstr(value));
             list_push(order, key);
@@ -6840,29 +6838,29 @@ static char *http_resolve_url(const char *base_url, const char *location) {
     int port = 0;
     http_parse_url(base_url, &host, &port, &path);
 
-    HttpBuf out = { 0 };
-    http_buf_add_text(&out, "http://");
-    http_buf_add_text(&out, host);
+    ByteBuf out = { 0 };
+    bb_add_text(&out, "http://");
+    bb_add_text(&out, host);
     if (port != 80) {
         char port_text[16];
         snprintf(port_text, sizeof port_text, ":%d", port);
-        http_buf_add_text(&out, port_text);
+        bb_add_text(&out, port_text);
     }
 
     if (location[0] == '/') {
-        http_buf_add_text(&out, location);
+        bb_add_text(&out, location);
     } else {
         char *slash = strrchr(path, '/');
         if (slash) {
             size_t prefix = (size_t)(slash - path) + 1;
-            http_buf_add(&out, path, prefix);
+            bb_add(&out, path, prefix);
         } else {
-            http_buf_add_text(&out, "/");
+            bb_add_text(&out, "/");
         }
-        http_buf_add_text(&out, location);
+        bb_add_text(&out, location);
     }
 
-    http_buf_add(&out, "", 1);
+    bb_add(&out, "", 1);
     free(host);
     free(path);
     return (char *)out.data;
@@ -6883,10 +6881,10 @@ static Map *http_send_impl(const char *method, const char *url, HttpOptions *opt
         int fd = http_connect(host, port, options->timeout);
         free(host);
 
-        HttpBuf request = { 0 };
+        ByteBuf request = { 0 };
         http_encode_request(current_method, current_url, options, &request);
         http_write_all(fd, request.data, request.len);
-        http_buf_free(&request);
+        bb_free(&request);
 
         HttpSource source;
         memset(&source, 0, sizeof source);
@@ -6896,7 +6894,7 @@ static Map *http_send_impl(const char *method, const char *url, HttpOptions *opt
         char *reason = NULL;
         int status = 0;
         Map *response = http_read(&source, options->max_bytes, &reason, &status);
-        http_buf_free(&source.buffer);
+        bb_free(&source.buffer);
         close(fd);
 
         Value location = v_nil();
@@ -6965,14 +6963,14 @@ static Value n_http_encode_request(int argc, Value *argv) {
     HttpOptions options;
     http_parse_options(argc > 2 ? argv[2] : v_nil(), "encodeRequest", &options);
 
-    HttpBuf request = { 0 };
+    ByteBuf request = { 0 };
     http_encode_request(method, url, &options, &request);
 
     List *bytes = list_new((int)request.len);
     for (size_t i = 0; i < request.len; i++) {
         list_push(bytes, v_int(request.data[i]));
     }
-    http_buf_free(&request);
+    bb_free(&request);
     return v_obj((Obj *)bytes);
 }
 
@@ -6983,15 +6981,15 @@ static Value n_http_decode_response(int argc, Value *argv) {
     }
 
     List *bytes = (List *)argv[0].as.o;
-    HttpBuf data = { 0 };
+    ByteBuf data = { 0 };
     for (int i = 0; i < bytes->count; i++) {
         Value byte = bytes->items[i];
         if (byte.tag != T_INT || byte.as.i < 0 || byte.as.i > 255) {
-            http_buf_free(&data);
+            bb_free(&data);
             tern_panic("TypeError", "byte %d is not an integer in 0..255", i);
         }
         unsigned char one = (unsigned char)byte.as.i;
-        http_buf_add(&data, &one, 1);
+        bb_add(&data, &one, 1);
     }
 
     HttpSource source;
@@ -7002,7 +7000,7 @@ static Value n_http_decode_response(int argc, Value *argv) {
     source.max_bytes = HTTP_DEFAULT_MAX_BYTES;
 
     Map *response = http_read(&source, HTTP_DEFAULT_MAX_BYTES, NULL, NULL);
-    http_buf_free(&data);
+    bb_free(&data);
     return v_obj((Obj *)response);
 }
 
@@ -7017,10 +7015,10 @@ static Value n_http_exchange(int argc, Value *argv) {
     HttpOptions options;
     http_parse_options(argc > 3 ? argv[3] : v_nil(), "exchange", &options);
 
-    HttpBuf request = { 0 };
+    ByteBuf request = { 0 };
     http_encode_request(method, url, &options, &request);
     http_write_all(net_fds[slot], request.data, request.len);
-    http_buf_free(&request);
+    bb_free(&request);
 
     HttpSource source;
     memset(&source, 0, sizeof source);
@@ -7028,8 +7026,239 @@ static Value n_http_exchange(int argc, Value *argv) {
     source.max_bytes = options.max_bytes;
 
     Map *response = http_read(&source, options.max_bytes, NULL, NULL);
-    http_buf_free(&source.buffer);
+    bb_free(&source.buffer);
     return v_obj((Obj *)response);
+}
+
+
+// -------------------------------------------------------------------- rcon
+//
+// The Source RCON protocol: a little-endian length, an id, a type, the body and
+// two NUL bytes. Sessions live on net handles (kind 3), so rcon.attach can take
+// over a connection opened elsewhere and both back ends agree on what every
+// handle refers to.
+
+#define RCON_DEFAULT_TIMEOUT 5000
+#define RCON_MAX_PACKET (1024 * 1024)
+#define RCON_TYPE_RESPONSE 0
+#define RCON_TYPE_COMMAND 2
+#define RCON_TYPE_AUTH 3
+
+static void rcon_write_all(int fd, const unsigned char *data, size_t length) {
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t n = send(fd, data + sent, length - sent, MSG_NOSIGNAL);
+        if (n <= 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                tern_panic("RconError", "rcon timed out");
+            }
+            tern_panic("RconError", "rcon failed: %s", strerror(errno));
+        }
+        sent += (size_t)n;
+    }
+}
+
+static void rcon_read_exactly(int fd, unsigned char *buffer, size_t length, bool first) {
+    ssize_t got = net_read_raw(fd, buffer, length);
+    if (got < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            tern_panic("RconError", "rcon timed out");
+        }
+        tern_panic("RconError", "rcon failed: %s", strerror(errno));
+    }
+    if ((size_t)got < length) {
+        tern_panic("ConnectionError", first
+                           ? "connection closed by the other side"
+                           : "connection closed in the middle of a frame");
+    }
+}
+
+static void rcon_put_int32(unsigned char *buffer, int32_t value) {
+    buffer[0] = (unsigned char)value;
+    buffer[1] = (unsigned char)(value >> 8);
+    buffer[2] = (unsigned char)(value >> 16);
+    buffer[3] = (unsigned char)(value >> 24);
+}
+
+static int32_t rcon_get_int32(const unsigned char *buffer) {
+    return (int32_t)((uint32_t)buffer[0] | ((uint32_t)buffer[1] << 8) |
+                     ((uint32_t)buffer[2] << 16) | ((uint32_t)buffer[3] << 24));
+}
+
+static void rcon_send_packet(int fd, int32_t id, int32_t type, const char *body, size_t length) {
+    size_t size = 4 + 4 + length + 2;
+    unsigned char *packet = (unsigned char *)malloc(size + 4);
+    rcon_put_int32(packet, (int32_t)size);
+    rcon_put_int32(packet + 4, id);
+    rcon_put_int32(packet + 8, type);
+    memcpy(packet + 12, body, length);
+    packet[12 + length] = 0;
+    packet[13 + length] = 0;
+    rcon_write_all(fd, packet, size + 4);
+    free(packet);
+}
+
+/// Reads one packet, leaving the body in `body` (NUL terminated).
+static void rcon_read_packet(int fd, int32_t *id, int32_t *type, ByteBuf *body) {
+    unsigned char header[4];
+    rcon_read_exactly(fd, header, 4, true);
+    int32_t size = rcon_get_int32(header);
+    if (size < 10 || size > RCON_MAX_PACKET) {
+        tern_panic("RconError", "packet of %d bytes is out of range", size);
+    }
+
+    unsigned char *payload = (unsigned char *)malloc((size_t)size);
+    rcon_read_exactly(fd, payload, (size_t)size, false);
+    *id = rcon_get_int32(payload);
+    *type = rcon_get_int32(payload + 4);
+    bb_add(body, payload + 8, (size_t)size - 10);
+    free(payload);
+}
+
+/// Logs in. Returns false when the server refuses the password; connection
+/// problems raise, because they are not about the password.
+static bool rcon_authenticate(int fd, const char *password) {
+    rcon_send_packet(fd, 1, RCON_TYPE_AUTH, password, strlen(password));
+
+    for (int attempt = 0; attempt < 8; attempt++) {
+        ByteBuf body = { 0 };
+        int32_t id = 0;
+        int32_t type = 0;
+        rcon_read_packet(fd, &id, &type, &body);
+        bb_free(&body);
+
+        if (type != RCON_TYPE_RESPONSE) {
+            if (id == -1) {
+                return false;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int rcon_fd(Value v, const char *operation) {
+    int slot = net_slot(net_handle_arg(v));
+    if (net_kinds[slot] != 3) {
+        tern_panic("NetError", "%s() needs a handle from rcon.connect() or rcon.attach()", operation);
+    }
+    return net_fds[slot];
+}
+
+static int rcon_timeout(Value v, const char *operation) {
+    if (v.tag == T_NIL || v.tag == T_MISSING) {
+        return RCON_DEFAULT_TIMEOUT;
+    }
+    if (!v_is_map(v)) {
+        tern_panic("TypeError", "%s() options must be a map, not %s", operation, tern_type_name(v));
+    }
+
+    Value found;
+    if (!map_get((Map *)v.as.o, str_from_cstr("timeout"), &found)) {
+        return RCON_DEFAULT_TIMEOUT;
+    }
+
+    double milliseconds = net_arg_number(found, "timeout");
+    if (milliseconds < 0) {
+        tern_panic("ArgumentError", "option 'timeout' must not be negative");
+    }
+    return (int)milliseconds;
+}
+
+static void rcon_set_timeout(int fd, int milliseconds) {
+    struct timeval tv;
+    tv.tv_sec = milliseconds / 1000;
+    tv.tv_usec = (milliseconds % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+}
+
+static Value n_rcon_connect(int argc, Value *argv) {
+    const char *host = net_arg_text(argv[0], "host");
+    int port = net_arg_int(argv[1], "port");
+    const char *password = net_arg_text(argv[2], "password");
+    int timeout = rcon_timeout(argc > 3 ? argv[3] : v_nil(), "connect");
+
+    struct sockaddr_in address;
+    net_resolve(host, &address, port);
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        tern_panic("RconError", "cannot connect to %s:%d: %s", host, port, strerror(errno));
+    }
+
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    rcon_set_timeout(fd, timeout);
+
+    if (connect(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        int error = errno;
+        close(fd);
+        tern_panic("RconError", "cannot connect to %s:%d: %s", host, port, strerror(error));
+    }
+
+    if (!rcon_authenticate(fd, password)) {
+        close(fd);
+        tern_panic("AuthenticationError", "rcon authentication failed");
+    }
+
+    int handle = net_store(fd, 3);
+    net_timeouts[handle - 1] = timeout;
+    return v_int(handle);
+}
+
+static Value n_rcon_attach(int argc, Value *argv) {
+    int slot = net_slot(net_handle_arg(argv[0]));
+    if (net_kinds[slot] != 0) {
+        tern_panic("NetError", "attach() needs a connection handle from net.connect()");
+    }
+
+    const char *password = net_arg_text(argv[1], "password");
+    int timeout = rcon_timeout(argc > 2 ? argv[2] : v_nil(), "attach");
+
+    net_kinds[slot] = 3;
+    net_timeouts[slot] = timeout;
+    rcon_set_timeout(net_fds[slot], timeout);
+
+    if (!rcon_authenticate(net_fds[slot], password)) {
+        tern_panic("AuthenticationError", "rcon authentication failed");
+    }
+
+    return v_int(slot + 1);
+}
+
+static Value n_rcon_execute(int argc, Value *argv) {
+    (void)argc;
+    int fd = rcon_fd(argv[0], "execute");
+    const char *command = net_arg_text(argv[1], "command");
+
+    rcon_send_packet(fd, 1, RCON_TYPE_COMMAND, command, strlen(command));
+    rcon_send_packet(fd, 2, RCON_TYPE_RESPONSE, "", 0);
+
+    ByteBuf text = { 0 };
+    for (int packets = 0; packets < 4096; packets++) {
+        ByteBuf body = { 0 };
+        int32_t id = 0;
+        int32_t type = 0;
+        rcon_read_packet(fd, &id, &type, &body);
+
+        if (id == 2) {
+            bb_free(&body);
+            Value result = v_obj((Obj *)str_from(text.data ? (const char *)text.data : "", text.len));
+            bb_free(&text);
+            return result;
+        }
+
+        if (id == 1 && type == RCON_TYPE_RESPONSE) {
+            bb_add(&text, body.data, body.len);
+        }
+        bb_free(&body);
+    }
+
+    bb_free(&text);
+    tern_panic("RconError", "the server sent more than 4096 packets for one command");
+    return v_nil();
 }
 
 static Value namespace_map(const char *ns) {
@@ -7189,6 +7418,19 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+    if (strcmp(ns, "rcon") == 0) {
+        // The argument counts mirror TERN/Builtins/Rcon.cs.
+        map_set(map, str_from_cstr("connect"),
+                make_native_arity("connect", n_rcon_connect, 3, 4));
+        map_set(map, str_from_cstr("attach"),
+                make_native_arity("attach", n_rcon_attach, 2, 3));
+        map_set(map, str_from_cstr("execute"),
+                make_native_arity("execute", n_rcon_execute, 2, 2));
+        map_set(map, str_from_cstr("close"),
+                make_native_arity("close", n_net_close, 1, 1));
+        return v_obj((Obj *)map);
+    }
+
     if (strcmp(ns, "random") == 0) {
         map_set(map, str_from_cstr("seed"), make_native_arity("seed", rnd_seed, 1, 1));
         map_set(map, str_from_cstr("float"), make_native_arity("float", rnd_float, 0, 2));
@@ -7213,7 +7455,8 @@ static Value namespace_map(const char *ns) {
 /// Looks a function up in the well known namespaces (math, text, json, ...).
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
-    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists", "fs", "net", "http", NULL};
+    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists",
+                                  "fs", "net", "http", "rcon", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -7236,7 +7479,7 @@ Value tern_lookup_global(const char *name) {
         strcmp(name, "json") == 0 || strcmp(name, "os") == 0 ||
         strcmp(name, "random") == 0 || strcmp(name, "text") == 0 ||
         strcmp(name, "lists") == 0 || strcmp(name, "net") == 0 ||
-        strcmp(name, "http") == 0) {
+        strcmp(name, "http") == 0 || strcmp(name, "rcon") == 0) {
         return namespace_map(name);
     }
 

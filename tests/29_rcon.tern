@@ -1,0 +1,94 @@
+// The RCON protocol: little-endian packets, an auth handshake that can be
+// refused, and a command whose answer may arrive in several packets. The test
+// plays the server by hand so every byte on the wire is checked.
+import "std:rcon";
+import "std:net";
+
+fn kind(block) {
+    try {
+        block();
+        return "ok";
+    } catch (e) {
+        return str(e);
+    }
+}
+
+fn bytes(text) {
+    let out = [];
+    for i in 0..<len(text) {
+        out.push(ord(text[i]));
+    }
+    return out;
+}
+
+// A packet: little-endian size, id, type, body, two NULs.
+fn packet(id, type, body) {
+    let out = [];
+    let size = 4 + 4 + len(body) + 2;
+    for shift in [0, 8, 16, 24] {
+        out.push((size >> shift) & 255);
+    }
+    for value in [id, type] {
+        for shift in [0, 8, 16, 24] {
+            out.push((value >> shift) & 255);
+        }
+    }
+    for b in bytes(body) {
+        out.push(b);
+    }
+    out.push(0);
+    out.push(0);
+    return out;
+}
+
+// --- logging in -------------------------------------------------------------
+let server = net.listen(0);
+let port = net.port(server);
+let client = net.connect("127.0.0.1", port);
+let conn = net.accept(server);
+
+net.sendBytes(conn, packet(1, 2, ""));
+let session = rcon.attach(client, "secret", {"timeout": 2000});
+println("attached:", type(session), session > 0);
+
+// The client's auth packet is what the protocol says it should be.
+let auth = net.receiveBytes(conn, 4 + 4 + 4 + 6 + 2);
+println("auth:", auth[0], auth[4], auth[8], auth[12], len(auth));
+
+// --- one command ------------------------------------------------------------
+net.sendBytes(conn, packet(1, 0, "first "));
+net.sendBytes(conn, packet(1, 0, "second"));
+net.sendBytes(conn, packet(2, 0, ""));
+let answer = rcon.execute(session, "status");
+println("answer:", answer);
+
+// The command and the sentinel arrive as two packets.
+let command = net.receiveBytes(conn, 4 + 4 + 4 + 6 + 2);
+println("command:", command[4], command[8], command[12], command[13]);
+let sentinel = net.receiveBytes(conn, 10);
+println("sentinel:", sentinel[4], sentinel[8]);
+
+net.close(client);
+net.close(conn);
+net.close(server);
+
+// --- a refused password -----------------------------------------------------
+let guard = net.listen(0);
+let guardPort = net.port(guard);
+let peer = net.connect("127.0.0.1", guardPort);
+let guardConn = net.accept(guard);
+net.sendBytes(guardConn, packet(-1, 2, ""));
+println("refused:", kind(fn() { rcon.attach(peer, "wrong"); }));
+println("taken over:", kind(fn() { net.send(peer, 1); }));
+
+net.close(peer);
+net.close(guardConn);
+net.close(guard);
+
+// --- handles and arguments --------------------------------------------------
+println(kind(fn() { rcon.attach(1, "pw"); }));
+println(kind(fn() { rcon.execute(1, "x"); }));
+println(kind(fn() { rcon.attach(1, 2); }));
+println(kind(fn() { rcon.connect(1, 2, "pw"); }));
+println(kind(fn() { rcon.connect("127.0.0.1", 1, "pw", "nope"); }));
+println(kind(fn() { rcon.execute(1); }));
