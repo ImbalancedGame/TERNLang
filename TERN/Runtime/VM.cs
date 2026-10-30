@@ -322,15 +322,29 @@ namespace TERN.Runtime
                             {
                                 var a = left.AsInt();
                                 var b = right.AsInt();
-                                _locals[slot] = op switch
+                                if (op == Op.Add && TryAdd(a, b, out var sum))
                                 {
-                                    Op.Add => new Value(unchecked(a + b)),
-                                    Op.Sub => new Value(unchecked(a - b)),
-                                    Op.Mul => new Value(unchecked(a * b)),
-                                    _ => new Value(a % b),
-                                };
+                                    _locals[slot] = new Value(sum);
+                                    break;
+                                }
 
-                                break;
+                                if (op == Op.Sub && TrySubtract(a, b, out var difference))
+                                {
+                                    _locals[slot] = new Value(difference);
+                                    break;
+                                }
+
+                                if (op == Op.Mul && TryMultiply(a, b, out var product))
+                                {
+                                    _locals[slot] = new Value(product);
+                                    break;
+                                }
+
+                                if (op == Op.Mod)
+                                {
+                                    _locals[slot] = new Value(a % b);
+                                    break;
+                                }
                             }
 
                             _locals[slot] = BinaryOp(op, left, right);
@@ -355,13 +369,22 @@ namespace TERN.Runtime
 
                             if (current.Kind == ValueKind.Int)
                             {
-                                cell = new Value(instruction.Op == Op.AddLocalConstStore
-                                    ? unchecked(current.AsInt() + delta)
-                                    : unchecked(current.AsInt() - delta));
-                                break;
+                                var a = current.AsInt();
+                                if (instruction.Op == Op.AddLocalConstStore && TryAdd(a, delta, out var sum))
+                                {
+                                    cell = new Value(sum);
+                                    break;
+                                }
+
+                                if (instruction.Op == Op.SubLocalConstStore && TrySubtract(a, delta, out var difference))
+                                {
+                                    cell = new Value(difference);
+                                    break;
+                                }
                             }
 
-                            cell = ArithmeticOp(
+                            // Add, not ArithmeticOp: `s = s + "x"` concatenates.
+                            cell = Combine(
                                 instruction.Op == Op.AddLocalConstStore ? Op.Add : Op.Sub,
                                 current,
                                 new Value((long)delta));
@@ -377,13 +400,22 @@ namespace TERN.Runtime
 
                             if (current.Kind == ValueKind.Int && other.Kind == ValueKind.Int)
                             {
-                                cell = new Value(instruction.Op == Op.AddLocalLocalStore
-                                    ? unchecked(current.AsInt() + other.AsInt())
-                                    : unchecked(current.AsInt() - other.AsInt()));
-                                break;
+                                var a = current.AsInt();
+                                var b = other.AsInt();
+                                if (instruction.Op == Op.AddLocalLocalStore && TryAdd(a, b, out var sum))
+                                {
+                                    cell = new Value(sum);
+                                    break;
+                                }
+
+                                if (instruction.Op == Op.SubLocalLocalStore && TrySubtract(a, b, out var difference))
+                                {
+                                    cell = new Value(difference);
+                                    break;
+                                }
                             }
 
-                            cell = ArithmeticOp(
+                            cell = Combine(
                                 instruction.Op == Op.AddLocalLocalStore ? Op.Add : Op.Sub,
                                 current,
                                 other);
@@ -399,13 +431,22 @@ namespace TERN.Runtime
 
                             if (current.Kind == ValueKind.Int && right.Kind == ValueKind.Int)
                             {
-                                cell = new Value(instruction.Op == Op.AddLocalStack
-                                    ? unchecked(current.AsInt() + right.AsInt())
-                                    : unchecked(current.AsInt() - right.AsInt()));
-                                break;
+                                var a = current.AsInt();
+                                var b = right.AsInt();
+                                if (instruction.Op == Op.AddLocalStack && TryAdd(a, b, out var sum))
+                                {
+                                    cell = new Value(sum);
+                                    break;
+                                }
+
+                                if (instruction.Op == Op.SubLocalStack && TrySubtract(a, b, out var difference))
+                                {
+                                    cell = new Value(difference);
+                                    break;
+                                }
                             }
 
-                            cell = ArithmeticOp(
+                            cell = Combine(
                                 instruction.Op == Op.AddLocalStack ? Op.Add : Op.Sub,
                                 current,
                                 right);
@@ -856,14 +897,17 @@ namespace TERN.Runtime
 
                                 switch (instruction.Op)
                                 {
-                                    case Op.Add:
-                                        Push(new Value(unchecked(a + b)));
+                                    // Overflow promotes to a float, exactly like
+                                    // Add and ArithmeticOp: wrapping here would make
+                                    // a compiled binary disagree with the interpreter.
+                                    case Op.Add when TryAdd(a, b, out var sum):
+                                        Push(new Value(sum));
                                         goto binaryDone;
-                                    case Op.Sub:
-                                        Push(new Value(unchecked(a - b)));
+                                    case Op.Sub when TrySubtract(a, b, out var difference):
+                                        Push(new Value(difference));
                                         goto binaryDone;
-                                    case Op.Mul:
-                                        Push(new Value(unchecked(a * b)));
+                                    case Op.Mul when TryMultiply(a, b, out var product):
+                                        Push(new Value(product));
                                         goto binaryDone;
                                     case Op.Mod when b != 0:
                                         Push(new Value(a % b));
@@ -925,17 +969,17 @@ namespace TERN.Runtime
                                 var b = right.AsInt();
                                 Push(instruction.Op switch
                                 {
-                                    Op.AddLocalLocal => new Value(unchecked(a + b)),
-                                    Op.SubLocalLocal => new Value(unchecked(a - b)),
-                                    Op.MulLocalLocal => new Value(unchecked(a * b)),
+                                    Op.AddLocalLocal when TryAdd(a, b, out var sum) => new Value(sum),
+                                    Op.SubLocalLocal when TrySubtract(a, b, out var difference) => new Value(difference),
+                                    Op.MulLocalLocal when TryMultiply(a, b, out var product) => new Value(product),
                                     Op.ModLocalLocal when b != 0 => new Value(a % b),
-                                    _ => ArithmeticOp(instruction.Op, left, right),
+                                    _ => Combine(instruction.Op, left, right),
                                 });
 
                                 break;
                             }
 
-                            Push(ArithmeticOp(instruction.Op, left, right));
+                            Push(Combine(instruction.Op, left, right));
                             break;
                         }
 
@@ -954,17 +998,17 @@ namespace TERN.Runtime
                                 var b = right.AsInt();
                                 Push(instruction.Op switch
                                 {
-                                    Op.AddLocalConst => new Value(unchecked(a + b)),
-                                    Op.SubLocalConst => new Value(unchecked(a - b)),
-                                    Op.MulLocalConst => new Value(unchecked(a * b)),
+                                    Op.AddLocalConst when TryAdd(a, b, out var sum) => new Value(sum),
+                                    Op.SubLocalConst when TrySubtract(a, b, out var difference) => new Value(difference),
+                                    Op.MulLocalConst when TryMultiply(a, b, out var product) => new Value(product),
                                     Op.ModLocalConst when b != 0 => new Value(a % b),
-                                    _ => ArithmeticOp(instruction.Op, left, right),
+                                    _ => Combine(instruction.Op, left, right),
                                 });
 
                                 break;
                             }
 
-                            Push(ArithmeticOp(instruction.Op, left, right));
+                            Push(Combine(instruction.Op, left, right));
                             break;
                         }
 
@@ -2381,6 +2425,14 @@ namespace TERN.Runtime
             }
         }
 
+        /// <summary>
+        /// `+` and `-` for the fused store opcodes. Addition goes through
+        /// <see cref="Add"/> so strings and lists concatenate; everything else
+        /// is plain arithmetic.
+        /// </summary>
+        private Value Combine(Op op, in Value left, in Value right) =>
+            BaseArithmeticOp(op) == Op.Add ? Add(left, right) : ArithmeticOp(op, left, right);
+
         private Value ArithmeticOp(Op op, in Value left, in Value right)
         {
             op = BaseArithmeticOp(op);
@@ -2393,11 +2445,17 @@ namespace TERN.Runtime
                 switch (op)
                 {
                     case Op.Add:
-                        return new Value(unchecked(a + b));
+                        return TryAdd(a, b, out var sum)
+                            ? new Value(sum)
+                            : new Value((double)a + b);
                     case Op.Sub:
-                        return new Value(unchecked(a - b));
+                        return TrySubtract(a, b, out var difference)
+                            ? new Value(difference)
+                            : new Value((double)a - b);
                     case Op.Mul:
-                        return new Value(unchecked(a * b));
+                        return TryMultiply(a, b, out var product)
+                            ? new Value(product)
+                            : new Value((double)a * b);
                     case Op.Div:
                         if (b == 0)
                         {
@@ -2549,6 +2607,38 @@ namespace TERN.Runtime
             }
 
             return Value.Str(left.ToDisplayString() + right.ToDisplayString());
+        }
+
+        /// <summary>
+        /// Integer addition that reports whether the result fits in a long. The
+        /// sign test is the classic overflow check: two operands with the same
+        /// sign cannot overflow, and if they do, the sum's sign disagrees with
+        /// both.
+        /// </summary>
+        private static bool TryAdd(long a, long b, out long result)
+        {
+            result = unchecked(a + b);
+            return ((a ^ result) & (b ^ result)) >= 0;
+        }
+
+        /// <summary>Integer subtraction; see <see cref="TryAdd"/>.</summary>
+        private static bool TrySubtract(long a, long b, out long result)
+        {
+            result = unchecked(a - b);
+            return ((a ^ b) & (a ^ result)) >= 0;
+        }
+
+        /// <summary>Integer multiplication; see <see cref="TryAdd"/>.</summary>
+        private static bool TryMultiply(long a, long b, out long result)
+        {
+            result = unchecked(a * b);
+            if (a == 0 || b == 0)
+            {
+                return true;
+            }
+
+            // long.MinValue / -1 traps in hardware, so that pair is checked first.
+            return !(a == -1 && b == long.MinValue) && result / a == b;
         }
 
         private Value Add(in Value left, in Value right)

@@ -34,3 +34,43 @@ println(granted);
 // compound: in inside a condition and a ternary
 let status = "warn";
 println(status in ["warn", "error"] ? "alert" : "quiet");
+
+// Integer arithmetic promotes to a float instead of wrapping, whether the
+// operands sit on the stack or in a local (the fused store opcodes must agree).
+let top = 9223372036854775807;
+println(top + 1);
+println(top - top - 1);
+let big = 4611686018427387904;
+println(big * 2);
+
+fn bump(x) {
+    x = x + 1;
+    return x;
+}
+println(bump(9223372036854775807));
+
+fn scale(x) {
+    x = x * 2;
+    return x;
+}
+println(scale(4611686018427387904));
+
+fn concatParts(a, b) {
+    let text = "";
+    text = text + a;
+    text = text + b;
+    return text;
+}
+println(concatParts("a", "b"));
+
+// `+` with a string on either side concatenates, including when the right
+// operand is a constant the compiler folds into the opcode.
+fn label(name) {
+    let out = "n=";
+    out = out + name;
+    return out;
+}
+println(label("x"));
+println(label("y") + "!");
+let prefix = "pre";
+println(prefix + "-fix");
