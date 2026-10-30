@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QPlainTextEdit, QPushButton,
                                QTextEdit, QToolTip, QVBoxLayout, QWidget)
 
-from .highlighter import TernHighlighter
+from .highlighter import MarkdownHighlighter, TernHighlighter
 from .theme import colour, monospace
 
 
@@ -184,8 +184,15 @@ class Editor(QPlainTextEdit):
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.setCursorWidth(2)
 
-        self.highlighter = (TernHighlighter(self.document(), theme)
-                            if str(path).endswith(".tern") else None)
+        # A TERN file gets the language's colours; a Markdown page gets a
+        # light treatment of its own, so documentation does not read as grey
+        # text; anything else is left alone.
+        if str(path).endswith(".tern"):
+            self.highlighter = TernHighlighter(self.document(), theme)
+        elif str(path).endswith(".md"):
+            self.highlighter = MarkdownHighlighter(self.document(), theme)
+        else:
+            self.highlighter = None
         self.setPlainText(text)
 
         self.gutter = LineNumberArea(self)

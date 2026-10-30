@@ -151,8 +151,10 @@ expression is used when the query parses as one.
 ![Find in Path](ide/img/find-in-path.png)
 
 Only `.tern` files are sent to the language server. Opening a Markdown page is
-ordinary text editing: no diagnostics, no TERN keyword colouring, which is both
-correct and the reason a 2,000-line page does not cost anything to open.
+ordinary text editing with a lighter highlighter of its own — headings, code
+spans, links and emphasis — and no TERN diagnostics, which is both correct and
+the reason a 2,000-line page costs nothing to open. The screenshots in this
+file are Markdown, so they show exactly that.
 
 ## Debugging
 

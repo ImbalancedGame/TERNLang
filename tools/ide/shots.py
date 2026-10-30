@@ -122,7 +122,27 @@ def main():
     pump(app, 4500)
     save("run.png")
 
-    # 6. The light theme.
+    # 6. Find in Path, with a Markdown hit opened at its line.
+    window.show_find_in_path("Diagnostics print")
+    pump(app, 700)
+    hits = window.find_panel.results
+    chosen = None
+    from PySide6.QtCore import Qt as _Qt
+    for index in range(hits.topLevelItemCount()):
+        candidate = hits.topLevelItem(index).data(0, _Qt.UserRole)
+        if candidate[0].endswith(".md"):
+            chosen = candidate
+            break
+    if chosen is None and hits.topLevelItemCount():
+        chosen = hits.topLevelItem(0).data(0, _Qt.UserRole)
+    if chosen is not None:
+        window._goto_line_column(*chosen)
+        pump(app, 500)
+        save("find-in-path.png")
+    window.open_file(editor.path)
+    pump(app, 300)
+
+    # 7. The light theme.
     window.set_theme("light")
     pump(app, 400)
     save("light.png")
@@ -135,4 +155,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    status = main()
+    # As in ui_test.py: quit while Qt still exists rather than letting Python
+    # finalise the window and its documents in an arbitrary order.
+    import gc
+    gc.collect()
+    sys.stdout.flush()
+    os._exit(status)

@@ -151,3 +151,43 @@ class TernHighlighter(QSyntaxHighlighter):
 
             self.setFormat(start, end - start + 2, self._comment)
             start = text.find("/*", end + 2)
+
+
+class MarkdownHighlighter(QSyntaxHighlighter):
+    """Headings, code, links and emphasis, so a README reads as a document.
+
+    Not a Markdown parser: ten rules that catch what the eye needs in the
+    project's own pages, applied line by line.
+    """
+
+    def __init__(self, document, theme):
+        super().__init__(document)
+        self._theme = theme
+        self.build()
+
+    def set_theme(self, theme):
+        self._theme = theme
+        self.build()
+        self.rehighlight()
+
+    def build(self):
+        theme = self._theme
+        self._rules = [
+            # A heading is the whole line, from the hashes to the end.
+            (QRegularExpression(r"^#{1,6} .*$"), format_for(theme, "keyword", bold=True)),
+            (QRegularExpression(r"^(===+|---+)$"), format_for(theme, "comment")),
+            (QRegularExpression(r"`[^`]*`"), format_for(theme, "string")),
+            (QRegularExpression(r"\*\*[^*]+\*\*"), format_for(theme, "type", bold=True)),
+            (QRegularExpression(r"(?<!\*)\*[^*\s][^*]*\*"), format_for(theme, "member", italic=True)),
+            (QRegularExpression(r"\[[^\]]*\]\([^)]*\)"), format_for(theme, "number")),
+            (QRegularExpression(r"^\s*[-*+] "), format_for(theme, "keyword")),
+            (QRegularExpression(r"^> .*$"), format_for(theme, "comment", italic=True)),
+            (QRegularExpression(r"^```.*$"), format_for(theme, "comment")),
+        ]
+
+    def highlightBlock(self, text):
+        for pattern, style in self._rules:
+            iterator = pattern.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), style)

@@ -546,4 +546,13 @@ def _uri(path):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    status = main()
+    # Tear the interpreter down deliberately: several windows, editors and
+    # highlighter documents are still alive, and letting Python finalise them in
+    # arbitrary order makes PySide6 abort during garbage collection. Quitting
+    # every object while the Qt application still exists avoids that.
+    import gc
+    gc.collect()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(status)
