@@ -1,0 +1,25 @@
+// Characters above U+FFFF are two UTF-16 code units, which is what len() and
+// an index mean, but they are one character. The interpreter used to slice
+// between the halves and emit lone surrogates, which print as U+FFFD and do not
+// survive a UTF-8 round trip; the native runtime already resolved such an index
+// to the start of the character. These are the shared expectations.
+
+let emoji = "🙂";
+let mixed = "a🙂b";
+
+println("len:", len(emoji), len(mixed));
+println("chars:", emoji.chars(), mixed.chars());
+println("index:", emoji[0] == emoji, emoji[1] == emoji);
+println("slice cuts clean:", emoji.slice(0, 1) == "", emoji.slice(1, 2) == emoji);
+println("substring:", emoji.substring(0, 1) == "", "hello".substring(1, 3));
+println("range:", mixed[0..2], mixed[1..3]);
+println("reversed:", mixed.reversed() == "b🙂a");
+let built = "";
+for c in mixed { built = built + "[" + c + "]"; }
+println("iterated:", built);
+println("indexOf:", mixed.indexOf("b"), mixed.lastIndexOf("b"));
+println("split:", mixed.split("🙂"));
+println("pad:", "🙂".padStart(3, "."), "🙂".padEnd(3, "."));
+println("count:", "🙂🙂".count("🙂"));
+println("upper keeps it:", "🙂a".upper() == "🙂A");
+println("format:", "{}".format("🙂"));

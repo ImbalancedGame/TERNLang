@@ -220,7 +220,42 @@ Options for `run`:
         {
             var engine = new TernEngine();
             var plain = args.Contains("--plain", StringComparer.Ordinal);
+            var json = args.Contains("--json", StringComparer.Ordinal);
             var catalogue = engine.DescribeStandardLibrary().ToList();
+
+            if (json)
+            {
+                // A structured dump for the reference generator: every global,
+                // namespace member and method, with its arity and documentation.
+                var entries = new List<string>();
+                foreach (var entry in catalogue)
+                {
+                    entries.Add($"    {{\"group\": {Quote(entry.Group)}, \"name\": {Quote(entry.Name)}, " +
+                                $"\"min\": {entry.MinArguments}, \"max\": {entry.MaxArguments}, " +
+                                $"\"constant\": {(entry.IsConstant ? "true" : "false")}, " +
+                                $"\"documentation\": {Quote(entry.Documentation)}}}");
+                }
+
+                var methods = new List<string>();
+                foreach (var entry in TERN.Builtins.BuiltinMethods.Describe())
+                {
+                    methods.Add($"    {{\"kind\": {Quote(entry.Kind)}, \"name\": {Quote(entry.Name)}, " +
+                                $"\"min\": {entry.Min}, \"max\": {entry.Max}, " +
+                                $"\"documentation\": {Quote(entry.Documentation)}}}");
+                }
+
+                var modules = string.Join(", ", engine.StandardModuleNames.Select(Quote));
+                Console.WriteLine("{");
+                Console.WriteLine($"  \"modules\": [{modules}],");
+                Console.WriteLine("  \"methods\": [");
+                Console.WriteLine(string.Join(",\n", methods));
+                Console.WriteLine("  ],");
+                Console.WriteLine("  \"members\": [");
+                Console.WriteLine(string.Join(",\n", entries));
+                Console.WriteLine("  ]");
+                Console.WriteLine("}");
+                return 0;
+            }
 
             if (plain)
             {
@@ -294,6 +329,40 @@ Options for `run`:
 
             Console.Write(builder.ToString());
             return 0;
+        }
+
+        private static string Quote(string? text)
+        {
+            if (text is null)
+            {
+                return "null";
+            }
+
+            var builder = new System.Text.StringBuilder("\"");
+            foreach (var c in text)
+            {
+                switch (c)
+                {
+                    case '"': builder.Append("\\\""); break;
+                    case '\\': builder.Append("\\\\"); break;
+                    case '\n': builder.Append("\\n"); break;
+                    case '\r': builder.Append("\\r"); break;
+                    case '\t': builder.Append("\\t"); break;
+                    default:
+                        if (c < 0x20)
+                        {
+                            builder.Append("\\u").Append(((int)c).ToString("x4"));
+                        }
+                        else
+                        {
+                            builder.Append(c);
+                        }
+
+                        break;
+                }
+            }
+
+            return builder.Append('"').ToString();
         }
 
         /// <summary>

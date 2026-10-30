@@ -234,3 +234,18 @@ println("handshake:", kind(fn() {
     net.connect("127.0.0.1", net.port(plain), {"tls": true, "timeout": 1000});
 }));
 net.close(plain);
+
+// ------------------------------------------------------- refused connections
+// A refused connection with a timeout is an ordinary NetError. It used to abort
+// the interpreter instead: the timeout path waited on a Task, whose
+// AggregateException is not a TernError and so escaped try/catch entirely.
+let refused = false;
+let refusedText = "";
+try {
+    net.connect("127.0.0.1", 1, {"timeout": 5000});
+} catch (e) {
+    refused = true;
+    refusedText = e;
+}
+println("refused is catchable:", refused);
+println("refused names the address:", refusedText.startsWith("cannot connect to 127.0.0.1:1:"));

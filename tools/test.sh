@@ -49,6 +49,16 @@ if [[ -f "$HERE/docs/stdlib.md" ]]; then
   fi
 fi
 
+# So must every page of the MSDN-style reference.
+if [[ -d "$HERE/docs/msdn" ]]; then
+  if python3 "$HERE/tools/gen-reference.py" --check >/dev/null 2>&1; then
+    pass=$((pass+1))
+  else
+    echo "FAIL docs/msdn is stale (run tools/gen-docs.sh)"
+    fail=$((fail+1)); failed_names+=("reference")
+  fi
+fi
+
 echo
 if [[ $UPDATE -eq 1 ]]; then
   echo "expected outputs updated"

@@ -69,16 +69,16 @@ namespace TERN.Builtins
                 var end = a.Length > 2 ? (int)RequireInt(a[2], "substring", 2) : text.Length;
                 end = end < 0 ? end + text.Length : end;
                 end = Math.Max(start, Math.Min(end, text.Length));
-                return Value.Str(text.Substring(start, end - start));
-            }, "Substring from a start index with an optional length.");
+                return Value.Str(Text.Substring(text, start, end));
+            }, "Substring from a start index to an optional end index.");
             Add(stringMethods, "slice", 1, 3, (vm, a) => Slice(a), "Substring from start to end, negative indices allowed.");
             Add(stringMethods, "chars", 1, 1, (vm, a) =>
             {
-                var text = a[0].AsString();
-                var list = new TernList(text.Length);
-                for (var i = 0; i < text.Length; i++)
+                var characters = Text.Characters(a[0].AsString());
+                var list = new TernList(characters.Length);
+                for (var i = 0; i < characters.Length; i++)
                 {
-                    list.Add(Value.Str(text[i].ToString()));
+                    list.Add(Value.Str(characters[i]));
                 }
 
                 return Value.Of(list);
@@ -99,9 +99,9 @@ namespace TERN.Builtins
                 a.Length > 2 ? RequireString(vm, a[2], "padEnd") : " ", false)), "Right pads to a width with an optional fill.");
             Add(stringMethods, "reversed", 1, 1, (vm, a) =>
             {
-                var characters = a[0].AsString().ToCharArray();
+                var characters = Text.Characters(a[0].AsString());
                 Array.Reverse(characters);
-                return Value.Str(new string(characters));
+                return Value.Str(string.Concat(characters));
             }, "Reversed copy.");
             Add(stringMethods, "toInt", 1, 2, (vm, a) => ParseInteger(vm, a, "toInt"), "Parses the string as an integer, or the fallback.");
             Add(stringMethods, "toFloat", 1, 2, (vm, a) => ParseFloat(vm, a, "toFloat"), "Parses the string as a float, or the fallback.");
@@ -735,7 +735,7 @@ namespace TERN.Builtins
             var end = a.Length > 2 ? (int)RequireInt(a[2], "slice", 2) : text.Length;
             end = end < 0 ? end + text.Length : end;
             end = Math.Max(start, Math.Min(end, text.Length));
-            return Value.Str(text.Substring(start, end - start));
+            return Value.Str(Text.Substring(text, start, end));
         }
 
         /// <summary>

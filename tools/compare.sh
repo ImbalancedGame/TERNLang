@@ -34,6 +34,18 @@ add_lang() {
 }
 
 add_lang tern   "$HERE/tools/tern run $SRC/bench.tern"
+
+# The compiled backend, from the same source: same workloads, same in-process
+# clock, so the table shows what compiling buys. Rebuilt when the source or the
+# compiler is newer than the binary.
+TERN_NATIVE="$HERE/build/langs/bench_ternc"
+if [[ ! -x "$TERN_NATIVE" ]] || [[ "$SRC/bench.tern" -nt "$TERN_NATIVE" ]] || [[ "$HERE/native/ternc.py" -nt "$TERN_NATIVE" ]]; then
+  if ! python3 "$HERE/native/ternc.py" "$SRC/bench.tern" -o "$TERN_NATIVE" >/dev/null 2>&1; then
+    echo "warning: the compiled backend did not build, ternc column skipped" >&2
+    rm -f "$TERN_NATIVE"
+  fi
+fi
+[[ -x "$TERN_NATIVE" ]] && add_lang ternc "$TERN_NATIVE"
 add_lang lua    "$CACHE/lua/bin/lua $SRC/bench.lua"
 add_lang luajit "$CACHE/luajit/bin/luajit $SRC/bench.lua"
 add_lang node   "node $SRC/bench.js"

@@ -210,16 +210,25 @@ out the COM vtables and structures (the offsets were printed from the shipped
 Windows and `dlopen` elsewhere. That is what lets the tests drive the real call
 sequence on Linux against `tools/d3d12/mock_d3d12.c`.
 
+The mirror is checked rather than trusted: `tools/d3d12/gen_layout_check.py`
+reads the `_Static_assert`s out of `runtime/tern_d3d12.h` and emits the same
+assertions against the real `d3d12.h`, and `tools/test-d3d12.sh` compiles that
+translation unit with the Windows target. A structure that drifts is a compile
+error on this machine, without a Windows machine.
+
 The platform differences live in one file, [`runtime/tern_platform.h`](runtime/tern_platform.h):
 the CRT's names for the POSIX calls (`_mkdir`, `_unlink`, `_stricmp`), a
 `memmem`, directory iteration over `FindFirstFile`, and a monotonic clock over
 `GetTickCount64`. Everything else is the same C and the same bytecode.
 
-Windows builds currently carry the language and the `math`, `time`, `json`, `os`,
-`fs`, `text` and `lists` namespaces. `net`, `http`, `rcon`, `sftp` and `gl` need
-their Winsock and `LoadLibrary` translations and answer
+Windows builds carry the language, the `math`, `time`, `json`, `os`, `fs`, `text`
+and `lists` namespaces, and `std:d3d12` with the whole pipeline: HLSL compiled
+by `d3dcompiler_47`, root signature, pipeline state, vertex upload and draw.
+`net`, `http`, `rcon`, `sftp` and `gl` need their Winsock and `LoadLibrary`
+translations and answer
 `UnsupportedError: this module is not part of the Windows build yet` until then.
-The next step is a Direct3D 12 backend, which is what the cross compiler is for.
+`std:d3d12` is the exception to that rule because its whole interface is
+`LoadLibrary` plus function pointers, which is the same shape on both systems.
 
 ## Limitations
 
@@ -229,11 +238,11 @@ The next step is a Direct3D 12 backend, which is what the cross compiler is for.
 * Allocation is a free-list pop (small) or a `malloc` per large object, which
   costs a few percent on allocator-heavy workloads compared with the old bump
   allocator.
-* Characters above U+FFFF (emoji, rare CJK) count as two code units for `len`,
-  like the interpreter, but indexing, slicing, `chars()` and iteration treat
-  one as a single character: the runtime moves whole code points, whereas the
-  interpreter splits UTF-16 surrogate pairs. Text at or below U+FFFF — Latin,
-  Greek, Cyrillic, CJK — behaves identically.
+* Characters above U+FFFF (emoji, rare CJK) are two UTF-16 code units, which is
+  what `len()` and an index count, but one character for `chars()`, iteration,
+  `reversed()` and slicing: a bound that lands inside a pair resolves to the
+  start of the character. The interpreter now does the same, so text at any
+  plane behaves identically in both back ends (`tests/34_unicode.tern`).
 * Compiler diagnostics (the `12_lint` warnings) are not emitted by binaries;
   use `./tools/tern check` for that.
 * There is no sandbox: `--no-fs`, `--no-net`, `engine.AllowFileSystem` and

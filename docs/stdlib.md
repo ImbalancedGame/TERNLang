@@ -44,7 +44,9 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `clear` | `clear(arg, arg, arg, arg, arg)` | Clears the render target: d3d12.clear(handle, r, g, b, a), each 0..1. |
 | `close` | `close(arg)` | Releases the device and everything it owns. |
 | `create` | `create(arg, arg)` | Creates an offscreen device and render target, returning a handle. |
+| `draw` | `draw(arg, arg, arg)` | Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. |
 | `info` | `info()` | Describes the adapter: {name, nodes}. |
+| `pipeline` | `pipeline(arg, arg, arg)` | Compiles HLSL and builds a pipeline: d3d12.pipeline(handle, vertex, pixel). |
 | `pixels` | `pixels(arg)` | Reads the target back as RGBA bytes, bottom row first, like gl.pixels. |
 | `save` | `save(arg, arg)` | Saves the target as a PNG: d3d12.save(handle, path). |
 | `size` | `size(arg)` | The [width, height] of a device. |
@@ -374,7 +376,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `slice` | `slice([arg], [arg])` | Substring from start to end, negative indices allowed. |
 | `split` | `split([arg])` | Splits on a separator (default a space); an empty separator splits into characters. |
 | `startsWith` | `startsWith(arg)` | True when the string begins with the prefix. |
-| `substring` | `substring(arg, [arg])` | Substring from a start index with an optional length. |
+| `substring` | `substring(arg, [arg])` | Substring from a start index to an optional end index. |
 | `toFloat` | `toFloat([arg])` | Parses the string as a float, or the fallback. |
 | `toInt` | `toInt([arg])` | Parses the string as an integer, or the fallback. |
 | `toString` | `toString()` | The string itself. |

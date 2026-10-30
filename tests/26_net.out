@@ -79,3 +79,5 @@ option 'verify' must be a boolean, not int
 option 'ca' must be a string, not int
 cannot read the CA file '/nope/none.pem'
 handshake: TLS handshake failed
+refused is catchable: true
+refused names the address: true

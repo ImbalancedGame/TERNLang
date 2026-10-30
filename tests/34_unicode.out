@@ -1,0 +1,14 @@
+len: 2 4
+chars: ["🙂"] ["a", "🙂", "b"]
+index: true true
+slice cuts clean: true true
+substring: true el
+range: a🙂 🙂b
+reversed: true
+iterated: [a][🙂][b]
+indexOf: 3 3
+split: ["a", "b"]
+pad: .🙂 🙂.
+count: 2
+upper keeps it: true
+format: 🙂

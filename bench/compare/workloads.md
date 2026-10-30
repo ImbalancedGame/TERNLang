@@ -16,23 +16,34 @@ and JIT warm-up of the host are excluded.
 Run all of them with `tools/compare.sh`.
 ## Results
 
-Best of nine runs per language on a 2 vCPU Xeon sandbox (2.6 GHz, .NET 10.0.11,
-Lua 5.4.9, LuaJIT 2.1, Node 22). Times are in-process milliseconds; every
-language prints the same result for every workload. TERN's own numbers are
-stable across runs (within a few percent); the other runtimes swing by up to
-30% on this shared machine, and Lua's `maps` figure in particular moves with
-its garbage collector, so read the ratios as indicative rather than exact.
+Best of five runs per language on a 2 vCPU Xeon sandbox (2.6 GHz, .NET 10.0.11,
+Lua 5.4.9, LuaJIT 2.1, Node 22), measured 30 October 2026. Times are in-process
+milliseconds; every column prints the same result for every workload, which
+`tools/compare.sh` checks. `ternc` is `bench.tern` compiled to C by
+`native/ternc.py` and built with `cc -O2`, so its numbers are comparable with the
+others rather than including a process start.
 
-| Workload   | TERN | Lua 5.4 | LuaJIT | Node 22 | C# (.NET 10) | TERN / Lua |
-| ---------- | ---: | ------: | -----: | ------: | -----------: | ---------: |
-| `fib`      |  157 |      57 |      8 |      10 |            5 |      2.75x |
-| `loop`     |  104 |      37 |     14 |      10 |            6 |      2.81x |
-| `maps`     |  148 |     200 |     60 |     100 |           68 |      0.74x |
-| `bintree`  |   45 |      45 |      8 |       5 |           30 |      1.00x |
-| `strings`  |   18 |      14 |      6 |       3 |            4 |      1.29x |
+| Workload   | TERN | ternc | Lua 5.4 | LuaJIT | Node 22 | C# (.NET 10) | TERN / Lua |
+| ---------- | ---: | ----: | ------: | -----: | ------: | -----------: | ---------: |
+| `fib`      |  127 |    18 |      55 |      6 |      10 |            5 |      2.30x |
+| `loop`     |  116 |     5 |      31 |     12 |       9 |            5 |      3.69x |
+| `maps`     |  187 |   150 |     177 |     59 |     109 |           71 |      1.06x |
+| `bintree`  |   49 |     5 |      34 |      7 |       5 |           26 |      1.42x |
+| `strings`  |   22 |     5 |      11 |      5 |       3 |            4 |      1.91x |
 
-TERN is faster than the reference interpreter on `maps` and level on `bintree`;
-it is 2.8x behind on the two tight numeric loops.
+The interpreter is now slightly behind Lua on every workload — 1.06x on `maps`,
+where an earlier session measured 0.74x — which is what a shared machine does to
+a 30% swing. What has changed since is the `ternc` column: compiling takes 7x
+off `fib`, 23x off `loop` and 10x off `bintree`, and nothing off `maps`.
+
+The `maps` result is the interesting one. Writing 200 000 integer keys costs
+about 250 ns each either way, and a scaling run (100 k / 200 k / 400 k / 800 k)
+gives 25 / 51 / 101 / 199 ms compiled against 40 / 45 / 157 / 197 ms interpreted:
+the two cross over as the table outgrows cache. Hashing is not the cost —
+splitmix64 is a handful of multiplies — and neither is the collector
+(`TERN_GC_STATS=1` reports zero collections for the whole run, because map
+storage is `malloc`ed outside the GC heap). It is the random probe into a
+multi-megabyte table, which is why a JIT pays the same bill.
 
 ### Per-workload notes
 

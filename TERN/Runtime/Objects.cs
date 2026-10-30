@@ -837,7 +837,10 @@ namespace TERN.Runtime
                         return false;
                     }
 
-                    first = Value.Str(text[Index++].ToString());
+                    // One character per step, never half of a surrogate pair.
+                    var width = Text.Width(text, Index);
+                    first = Value.Str(text.Substring(Index, width));
+                    Index += width;
                     return true;
                 }
 

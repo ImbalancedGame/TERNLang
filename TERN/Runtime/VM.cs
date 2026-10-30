@@ -3195,7 +3195,7 @@ namespace TERN.Runtime
                         to = to < 0 ? to + text.Length : to;
                         from = Math.Max(0, Math.Min(from, text.Length));
                         to = Math.Max(from, Math.Min(to, text.Length));
-                        return Value.Str(text.Substring(from, to - from));
+                        return Value.Str(Text.Substring(text, from, to));
                     }
 
                     if (index.Kind != ValueKind.Int)
@@ -3209,7 +3209,10 @@ namespace TERN.Runtime
                         throw Error("IndexError", $"index {index.AsInt()} out of range for string of length {text.Length}");
                     }
 
-                    return Value.Str(text[(int)position].ToString());
+                    // A code point above U+FFFF is two code units; an index that
+                    // lands on the second half still means the whole character.
+                    var at = Text.Snap(text, (int)position);
+                    return Value.Str(text.Substring(at, Text.Width(text, at)));
                 }
 
                 case ValueKind.Instance:

@@ -192,22 +192,30 @@ TypeError: nil has no method 'missing'
 
 ## Performance
 
-`tools/compare.sh` runs five workloads written identically in TERN, Lua 5.4,
-LuaJIT, Node 22 and C# (Roslyn) and compares in-process timings, so startup and
-host warm-up are excluded. Best of nine runs on a 2 vCPU / 2.6 GHz machine:
+`tools/compare.sh` runs five workloads written identically in TERN (interpreted
+and compiled), Lua 5.4, LuaJIT, Node 22 and C# (Roslyn) and compares in-process
+timings, so startup and host warm-up are excluded. Best of five runs on a 2 vCPU
+/ 2.6 GHz machine:
 
-| Workload   | TERN | Lua 5.4 | LuaJIT | Node 22 | C#    | TERN / Lua |
-| ---------- | ---: | ------: | -----: | ------: | ----: | ---------: |
-| `fib`      |  157 |      57 |      8 |      10 |     5 |      2.75x |
-| `loop`     |  104 |      37 |     14 |      10 |     6 |      2.81x |
-| `maps`     |  148 |     200 |     60 |     100 |    68 |      0.74x |
-| `bintree`  |   45 |      45 |      8 |       5 |    30 |      1.00x |
-| `strings`  |   18 |      14 |      6 |       3 |     4 |      1.29x |
+| Workload   | TERN | TERN native | Lua 5.4 | LuaJIT | Node 22 | C#   | TERN / Lua |
+| ---------- | ---: | ----------: | ------: | -----: | ------: | ---: | ---------: |
+| `fib`      |  127 |          18 |      55 |      6 |      10 |    5 |      2.30x |
+| `loop`     |  116 |           5 |      31 |     12 |       9 |    5 |      3.69x |
+| `maps`     |  187 |         150 |     177 |     59 |     109 |   71 |      1.06x |
+| `bintree`  |   49 |           5 |      34 |      7 |       5 |   26 |      1.42x |
+| `strings`  |   22 |           5 |      11 |      5 |       3 |    4 |      1.91x |
 
-TERN beats the reference interpreter on `maps` and is level on `bintree`; the
-two tight numeric loops are 2.8x behind. LuaJIT, Node and C# are tracing/AOT
-compilers and are 10-30x ahead on numeric code. See `bench/compare/workloads.md`
-for per-workload notes and the remaining per-opcode costs.
+TERN is within 1.1x of Lua on `maps` and 3.7x behind on the tight numeric
+loop; LuaJIT, Node and C# are tracing/AOT compilers
+and are 10-25x ahead on numeric code. How much of that the compiled backend
+takes back depends on the workload: 7x on `fib`, 23x on `loop`, 10x on
+`bintree`, and nothing at all on `maps`, where a table write costs what it costs
+whichever language performs it. Compiled, TERN is ahead of LuaJIT on `loop`
+and `bintree`, level on `strings`, and 2.5-3x behind on `fib` and `maps`.
+
+These numbers move by up to 30% with host load: the same suite measured `maps`
+at 0.74x of Lua in an earlier session. See `bench/compare/workloads.md` for
+per-workload notes and the remaining per-opcode costs.
 
 `for` loops over lists, maps, strings and ranges used to leave one stack slot
 behind per iteration (`IterNext` kept the iterator it had already advanced).
@@ -260,25 +268,30 @@ The optimisations that get there:
 
 ### Compiled with the native backend
 
-The same five workloads through `native/` (C, `cc -O2`, no runtime), best of
-nine runs, whole process including start-up:
+`native/ternc.py` translates the same `bench.tern` to C and compiles it with
+`cc -O2`; `tools/compare.sh` runs the result as an extra column, on the same
+workloads and the same in-process clock, so the two TERN columns are directly
+comparable.
 
-| Workload   | TERN native | TERN VM | Lua 5.4 | LuaJIT | Node 22 | C#    |
-| ---------- | ----------: | ------: | ------: | -----: | ------: | ----: |
-| `fib`      |          20 |     134 |      57 |      8 |      10 |     5 |
-| `loop`     |          56 |     113 |      37 |     14 |      10 |     6 |
-| `maps`     |         122 |     192 |     200 |    60 |     100 |    68 |
-| `bintree`  |           8 |      51 |      45 |      8 |       5 |    30 |
-| `strings`  |           7 |      20 |      14 |      6 |       3 |     4 |
+| | `fib` | `loop` | `maps` | `bintree` | `strings` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| interpreted | 127 | 116 | 187 | 49 | 22 |
+| compiled | 18 | 5 | 150 | 5 | 5 |
+| speed-up | 7.1x | 23x | 1.2x | 9.8x | 4.4x |
 
-The VM column is in-process (start-up excluded); the native column includes
-about a millisecond of process start, so it is about 6.7x ahead of the
-interpreter on `fib`, 2.9x on `strings` and 6.4x on `bintree`, ahead on `maps`,
-and within 2.5x of LuaJIT on `fib` and `bintree`. Compiled binaries keep the
-interpreter's stack traces, which costs about two cycles per call (`fib` would
-be 10% faster without them). The Lua/LuaJIT/Node/C# columns are from an
-earlier session on the same machine; timings move by up to 20% with host load.
-Building one binary takes ~1.9 s, almost all of it `cc -O2` over the runtime.
+What compiling cannot fix is memory latency. A map write is a hash, a probe into
+a table large enough to leave cache, and — while the table grows — a rehash. The
+same loop writing 800 000 integer keys takes 199 ms compiled and 197 ms
+interpreted, and `TERN_GC_STATS=1` reports zero collections: the table is
+`malloc`ed outside the GC heap, so the collector is not the cost either. `maps`
+is the one workload where the interpreter's BCL dictionary is as good as the
+generated C.
+
+Compiled binaries keep the interpreter's stack traces, which costs about two
+cycles per call (`fib` would be 10% faster without them). Building a binary
+takes about 4 s, almost all of it `cc -O2` over the runtime, and the result is
+~220 KB; a hello-world binary starts in 2 ms against 112 ms of .NET start-up for
+the interpreter.
 
 Objects are allocated from per-size-class free lists and reclaimed by a
 mark-sweep collector whose roots are the registered global/constant arrays plus

@@ -5,6 +5,7 @@ using System.Net;
 using System.IO;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Threading;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -904,15 +905,19 @@ namespace TERN.Builtins
                 return;
             }
 
-            var attempt = socket.ConnectAsync(endPoint);
-            if (!attempt.Wait(timeoutMs))
+            // Not Task.Wait: it throws AggregateException, which is not a TernError and so
+            // would escape the script's catch and abort the interpreter. The awaiter unwraps
+            // to the SocketException the caller expects, and the token gives the deadline.
+            using var deadline = new CancellationTokenSource(timeoutMs);
+            try
+            {
+                socket.ConnectAsync(endPoint, deadline.Token).AsTask().GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
             {
                 socket.Dispose();
                 throw vm.Error("NetError", $"cannot connect to {host}:{port}: timed out after {timeoutMs} ms");
             }
-
-            // Surfaces the socket error the wait swallowed.
-            attempt.GetAwaiter().GetResult();
         }
 
         // ------------------------------------------------------------------ bytes
