@@ -27,3 +27,10 @@ ab
 n=x
 n=y!
 pre-fix
+-1.0 0.5 -1.5 1.5
+-0.0 0.0
+0 4 -4 4
+operator '&' requires integers but got float
+operator '&' requires integers but got string
+operator '&' requires integers but got float
+true false true true

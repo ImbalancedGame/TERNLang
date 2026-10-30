@@ -1326,8 +1326,15 @@ static void debug_into(Buf *buf, Value v) {
 // ------------------------------------------------------------------ arithmetic
 
 // Bitwise operators report the operator, not the operand: "operator '&'
-// requires integers but got string".
+// requires integers but got string". Like the interpreter's ToInteger they
+// accept a float with no fractional part, as long as it fits a long.
 static int64_t require_int_op(Value v, const char *op) {
+    if (v.tag == T_FLOAT) {
+        double number = v.as.f;
+        if (floor(number) == number && fabs(number) < 9.22e18) {
+            return (int64_t)number;
+        }
+    }
     if (v.tag != T_INT) {
         tern_panic("TypeError", "operator '%s' requires integers but got %s", op, tern_type_name(v));
     }
@@ -1489,6 +1496,7 @@ Value tern_mod(Value a, Value b) {
     if (divisor == 0) {
         tern_panic("DivisionByZero", "modulo by zero");
     }
+    // Truncated toward zero, like the integer case and like C#.
     return v_float(fmod(v_as_double(a), divisor));
 }
 
@@ -1514,14 +1522,18 @@ Value tern_band(Value a, Value b) { return v_int(require_int_op(a, "&") & requir
 Value tern_bor(Value a, Value b) { return v_int(require_int_op(a, "|") | require_int_op(b, "|")); }
 Value tern_bxor(Value a, Value b) { return v_int(require_int_op(a, "^") ^ require_int_op(b, "^")); }
 
+// The left operand is converted first, so a bad pair is blamed on the same
+// operand the interpreter blames it on.
 Value tern_shl(Value a, Value b) {
+    int64_t value = require_int_op(a, "<<");
     int64_t shift = require_int_op(b, "<<");
-    return v_int((int64_t)((uint64_t)require_int_op(a, "<<") << (shift & 63)));
+    return v_int((int64_t)((uint64_t)value << (shift & 63)));
 }
 
 Value tern_shr(Value a, Value b) {
+    int64_t value = require_int_op(a, ">>");
     int64_t shift = require_int_op(b, ">>");
-    return v_int(require_int_op(a, ">>") >> (shift & 63));
+    return v_int(value >> (shift & 63));
 }
 
 Value tern_neg(Value a) {
@@ -1558,6 +1570,18 @@ Value tern_compare(Value a, Value b) {
             cmp = x->len < y->len ? -1 : (x->len > y->len ? 1 : 0);
         }
         return v_int(cmp < 0 ? -1 : (cmp > 0 ? 1 : 0));
+    }
+    // Lists compare element by element, then by length, like the interpreter.
+    if (v_is_list(a) && v_is_list(b)) {
+        List *x = (List *)a.as.o, *y = (List *)b.as.o;
+        int32_t shared = x->count < y->count ? x->count : y->count;
+        for (int32_t i = 0; i < shared; i++) {
+            Value cmp_value = tern_compare(x->items[i], y->items[i]);
+            if (cmp_value.as.i != 0) {
+                return cmp_value;
+            }
+        }
+        return v_int(x->count < y->count ? -1 : (x->count > y->count ? 1 : 0));
     }
     tern_panic("TypeError", "cannot compare %s with %s", tern_type_name(a), tern_type_name(b));
     return v_nil();

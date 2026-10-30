@@ -116,7 +116,12 @@ else is truthy. `bool(v)` converts explicitly.
   not fit in 64 bits: `9223372036854775807 + 1` is `9.223372036854776E+18`.
   `**`, `<<` and `>>` wrap, so bit tricks keep working on the full word.
 * Division by zero raises a runtime `DivisionByZero` error.
-* `%` follows C# semantics (truncated toward zero).
+* `%` follows C# semantics (truncated toward zero) for floats as well as ints,
+  so `-7 % 2` and `-7.5 % 2` are both negative.
+* Bitwise `& | ^ << >>` take a `float` when it has no fractional part
+  (`1 << 2.0` is `4`) and raise otherwise.
+* Lists compare element by element, then by length: `[1, 2] < [1, 3]` is
+  `true`. Other non-numeric values only compare with their own kind.
 
 ---
 

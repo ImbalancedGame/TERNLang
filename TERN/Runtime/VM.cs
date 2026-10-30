@@ -2544,7 +2544,9 @@ namespace TERN.Runtime
                             throw Error("DivisionByZero", "modulo by zero");
                         }
 
-                        return new Value(a - b * Math.Floor(a / b));
+                        // Truncated like the int case (C# semantics), so `-1 % 2`
+                        // and `-1 % 2.5` both keep the sign of the left operand.
+                        return new Value(a % b);
                     case Op.Pow:
                         return new Value(Math.Pow(a, b));
                 }

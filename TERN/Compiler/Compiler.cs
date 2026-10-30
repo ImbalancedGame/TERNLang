@@ -3205,36 +3205,73 @@ namespace TERN.Compiler
                     case TokenKind.Plus when left.Kind == ValueKind.Str && right.Kind == ValueKind.Str:
                         value = Value.Str(left.AsString() + right.AsString());
                         return true;
+                    // Folding must agree with the runtime, which promotes an
+                    // out-of-range result to a float rather than wrapping.
                     case TokenKind.Plus when left.Kind == ValueKind.Int && right.Kind == ValueKind.Int:
-                        value = new Value(unchecked(left.AsInt() + right.AsInt()));
+                    {
+                        var a = left.AsInt();
+                        var b = right.AsInt();
+                        var sum = unchecked(a + b);
+                        value = ((a ^ sum) & (b ^ sum)) >= 0 ? new Value(sum) : new Value((double)a + b);
                         return true;
+                    }
                     case TokenKind.Plus when left.IsNumber && right.IsNumber:
                         value = new Value(left.AsDouble() + right.AsDouble());
                         return true;
                     case TokenKind.Minus when left.Kind == ValueKind.Int && right.Kind == ValueKind.Int:
-                        value = new Value(unchecked(left.AsInt() - right.AsInt()));
+                    {
+                        var a = left.AsInt();
+                        var b = right.AsInt();
+                        var difference = unchecked(a - b);
+                        value = ((a ^ b) & (a ^ difference)) >= 0
+                            ? new Value(difference)
+                            : new Value((double)a - b);
                         return true;
+                    }
                     case TokenKind.Minus when left.IsNumber && right.IsNumber:
                         value = new Value(left.AsDouble() - right.AsDouble());
                         return true;
                     case TokenKind.Star when left.Kind == ValueKind.Int && right.Kind == ValueKind.Int:
-                        value = new Value(unchecked(left.AsInt() * right.AsInt()));
+                    {
+                        var a = left.AsInt();
+                        var b = right.AsInt();
+                        var product = unchecked(a * b);
+                        var fits = a == 0 || b == 0 || (!(a == -1 && b == long.MinValue) && product / a == b);
+                        value = fits ? new Value(product) : new Value((double)a * b);
                         return true;
+                    }
                     case TokenKind.Star when left.IsNumber && right.IsNumber:
                         value = new Value(left.AsDouble() * right.AsDouble());
                         return true;
                     case TokenKind.Slash when left.Kind == ValueKind.Int && right.Kind == ValueKind.Int && right.AsInt() != 0:
+                    {
+                        var a = left.AsInt();
+                        var b = right.AsInt();
+
+                        // long.MinValue / -1 overflows the integer range, and the
+                        // hardware divide traps: the runtime answers with a float,
+                        // so folding must do the same.
+                        if (b == -1)
+                        {
+                            value = a == long.MinValue ? new Value(-(double)a) : new Value(-a);
+                            return true;
+                        }
+
                         // Exact integer division stays an integer; otherwise promote to float.
-                        value = left.AsInt() % right.AsInt() == 0
-                            ? new Value(left.AsInt() / right.AsInt())
-                            : new Value((double)left.AsInt() / right.AsInt());
+                        value = a % b == 0 ? new Value(a / b) : new Value((double)a / b);
                         return true;
+                    }
                     case TokenKind.Slash when left.IsNumber && right.IsNumber && right.AsDouble() != 0:
                         value = new Value(left.AsDouble() / right.AsDouble());
                         return true;
                     case TokenKind.Percent when left.Kind == ValueKind.Int && right.Kind == ValueKind.Int && right.AsInt() != 0:
-                        value = new Value(left.AsInt() % right.AsInt());
+                    {
+                        var a = left.AsInt();
+                        var b = right.AsInt();
+                        // long.MinValue % -1 traps too; the result is 0.
+                        value = new Value(b == -1 ? 0 : a % b);
                         return true;
+                    }
                     case TokenKind.StarStar when left.Kind == ValueKind.Int && right.Kind == ValueKind.Int &&
                                                  right.AsInt() >= 0 && right.AsInt() <= 62:
                     {
