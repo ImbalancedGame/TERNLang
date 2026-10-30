@@ -52,6 +52,17 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `size` | `size(arg)` | Size of a file in bytes. |
 | `write` | `write(arg, arg)` | Writes text, replacing the file. |
 
+## `http`
+
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `decodeResponse` | `decodeResponse(arg)` | Parses a complete response from bytes. |
+| `encodeRequest` | `encodeRequest(arg, arg, [arg])` | Builds the bytes of a request, so a script can send them itself. |
+| `exchange` | `exchange(arg, arg, arg, [arg])` | Writes a request on a net handle and reads one response from it. |
+| `get` | `get(arg, [arg])` | GET a URL: http.get(url[, options]). |
+| `post` | `post(arg, arg, [arg])` | POST a string to a URL: http.post(url, body[, options]). |
+| `request` | `request(arg, arg, [arg])` | Sends one HTTP request and returns the response as a map. |
+
 ## `json`
 
 | Name | Signature | Notes |
@@ -180,6 +191,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 ## `std:` modules
 
 * `std:fs`
+* `std:http`
 * `std:json`
 * `std:lists`
 * `std:math`

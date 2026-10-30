@@ -1,0 +1,46 @@
+GET /a?b=c HTTP/1.1
+Host: example.com
+Connection: close
+User-Agent: TERN
+
+
+POST /x HTTP/1.1
+Connection: close
+User-Agent: TERN
+X-One: 1
+Host: other
+Content-Length: 2
+
+hi
+96
+method 'BAD METHOD' is not valid
+only http:// URLs are supported, not 'https://example.com/'
+URL has no host: 'http:///path'
+URL has a bad port: 'http://example.com:0/'
+URL has a bad port: 'http://example.com:abc/'
+header 'X' contains a line break
+header name 'X Y' is not valid
+option 'headers' must be a map, not list
+header names and values must be strings
+option 'timeout' must not be negative
+option 'redirects' must be between 0 and 20
+option 'maxBytes' must be between 0 and 67108864
+body must be a string or a list of bytes, not bool
+encodeRequest() options must be a map, not string
+200 OK HTTP/1.1 hello
+text/plain 5
+201 Created twomore
+HTTP/1.0 body to the end
+one, two
+404 Not Found TERN
+the response does not start with an HTTP status line
+malformed status line: 'HTTP/1.1 abc OK'
+malformed header line: 'broken'
+bad Content-Length: 'nope'
+response is incomplete (wanted 10 bytes of body)
+bad chunk size: 'zz'
+expected a list of bytes, not string
+byte 1 is not an integer in 0..255
+exchange: 200 hello yes
+same request: true
+true

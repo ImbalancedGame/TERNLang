@@ -1,0 +1,91 @@
+// The HTTP client: requests are bytes you can compare, responses are parsed by
+// framing header, and a connection you opened yourself can carry one exchange.
+import "std:http";
+import "std:net";
+
+fn kind(block) {
+    try {
+        block();
+        return "ok";
+    } catch (e) {
+        return str(e);
+    }
+}
+
+fn bytes(text) {
+    let out = [];
+    for i in 0..<len(text) {
+        out.push(ord(text[i]));
+    }
+    return out;
+}
+
+fn asText(list) {
+    return list.map(fn(b) { return chr(b); }).join("");
+}
+
+// --- requests are bytes you can compare ------------------------------------
+println(asText(http.encodeRequest("GET", "http://example.com/a?b=c")));
+println(asText(http.encodeRequest("POST", "http://example.com:8080/x", {"body": "hi", "headers": {"X-One": "1", "Host": "other"}})));
+println(len(http.encodeRequest("PUT", "http://example.com/", {"body": [1, 2, 3]})));
+
+println(kind(fn() { http.encodeRequest("BAD METHOD", "http://example.com/"); }));
+println(kind(fn() { http.encodeRequest("GET", "https://example.com/"); }));
+println(kind(fn() { http.encodeRequest("GET", "http:///path"); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com:0/"); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com:abc/"); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"headers": {"X": "a\nb"}}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"headers": {"X Y": "a"}}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"headers": [1]}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"headers": {"A": 1}}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"timeout": -1}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"redirects": 21}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"maxBytes": -1}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", {"body": true}); }));
+println(kind(fn() { http.encodeRequest("GET", "http://example.com/", "nope"); }));
+
+// --- responses are parsed the same way --------------------------------------
+let simple = http.decodeResponse(bytes("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"));
+println(simple["status"], simple["reason"], simple["version"], simple["body"]);
+println(simple["headers"]["content-type"], len(simple["bytes"]));
+
+let chunked = http.decodeResponse(bytes("HTTP/1.1 201 Created\r\nTransfer-Encoding: chunked\r\n\r\n3\r\ntwo\r\n4\r\nmore\r\n0\r\n\r\n"));
+println(chunked["status"], chunked["reason"], chunked["body"]);
+
+let untilClose = http.decodeResponse(bytes("HTTP/1.0 200 OK\r\n\r\nbody to the end"));
+println(untilClose["version"], untilClose["body"]);
+
+let repeated = http.decodeResponse(bytes("HTTP/1.1 200 OK\r\nX-A: one\r\nX-A: two\r\nContent-Length: 0\r\n\r\n"));
+println(repeated["headers"]["x-a"]);
+
+let mixedCase = http.decodeResponse(bytes("HTTP/1.1 404 Not Found\r\nServer: TERN\r\nContent-Length: 0\r\n\r\n"));
+println(mixedCase["status"], mixedCase["reason"], mixedCase["headers"]["server"]);
+
+println(kind(fn() { http.decodeResponse(bytes("SIP/2.0 200 OK\r\n\r\n")); }));
+println(kind(fn() { http.decodeResponse(bytes("HTTP/1.1 abc OK\r\n\r\n")); }));
+println(kind(fn() { http.decodeResponse(bytes("HTTP/1.1 200 OK\r\nbroken\r\n\r\n")); }));
+println(kind(fn() { http.decodeResponse(bytes("HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n")); }));
+println(kind(fn() { http.decodeResponse(bytes("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort")); }));
+println(kind(fn() { http.decodeResponse(bytes("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n")); }));
+println(kind(fn() { http.decodeResponse("nope"); }));
+println(kind(fn() { http.decodeResponse([1, 300]); }));
+
+// --- one request over a socket we drive ourselves ---------------------------
+let server = net.listen(0);
+let port = net.port(server);
+let client = net.connect("127.0.0.1", port);
+let conn = net.accept(server);
+
+let url = "http://127.0.0.1:" + str(port) + "/hello";
+net.sendBytes(conn, bytes("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Echo: yes\r\n\r\nhello"));
+let response = http.exchange(client, "GET", url, {"timeout": 2000});
+println("exchange:", response["status"], response["body"], response["headers"]["x-echo"]);
+
+let sent = http.encodeRequest("GET", url);
+let seen = net.receiveBytes(conn, len(sent));
+println("same request:", str(seen) == str(sent));
+println(asText(seen).startsWith("GET /hello HTTP/1.1\r\nHost: 127.0.0.1:"));
+
+net.close(client);
+net.close(conn);
+net.close(server);

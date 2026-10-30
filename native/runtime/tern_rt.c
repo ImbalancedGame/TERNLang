@@ -7,6 +7,8 @@
 #include <netdb.h>
 #include <poll.h>
 #include <stdarg.h>
+#include <string.h>
+#include <strings.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -6109,6 +6111,923 @@ static Value n_net_peer(int argc, Value *argv) {
     return str_from_cstr(text);
 }
 
+
+// -------------------------------------------------------------------- http
+//
+// An HTTP/1.1 client written on the same sockets std:net uses. The pieces the
+// C# side exposes separately (encodeRequest, decodeResponse, exchange) are here
+// too, so a test can drive one half at a time and both back ends answer with the
+// same bytes and the same messages.
+
+#define HTTP_DEFAULT_TIMEOUT 10000
+#define HTTP_DEFAULT_REDIRECTS 5
+#define HTTP_DEFAULT_MAX_BYTES (8 * 1024 * 1024)
+#define HTTP_MAX_HEADER_BYTES (64 * 1024)
+#define HTTP_MAX_HEADERS 32
+
+typedef struct {
+    unsigned char *data;
+    size_t len;
+    size_t cap;
+} HttpBuf;
+
+static void http_buf_reserve(HttpBuf *buffer, size_t extra) {
+    if (buffer->len + extra <= buffer->cap) {
+        return;
+    }
+    size_t cap = buffer->cap ? buffer->cap : 256;
+    while (cap < buffer->len + extra) {
+        cap *= 2;
+    }
+    buffer->data = (unsigned char *)realloc(buffer->data, cap);
+    buffer->cap = cap;
+}
+
+static void http_buf_add(HttpBuf *buffer, const void *data, size_t length) {
+    http_buf_reserve(buffer, length);
+    if (length) {
+        memcpy(buffer->data + buffer->len, data, length);
+    }
+    buffer->len += length;
+}
+
+static void http_buf_add_text(HttpBuf *buffer, const char *text) {
+    http_buf_add(buffer, text, strlen(text));
+}
+
+static void http_buf_free(HttpBuf *buffer) {
+    free(buffer->data);
+    buffer->data = NULL;
+    buffer->len = 0;
+    buffer->cap = 0;
+}
+
+/// A byte source over a socket or a complete buffer, so the parser is written
+/// once. `fd` is -1 for the fixed-buffer form.
+typedef struct {
+    int fd;
+    const unsigned char *fixed;
+    size_t fixed_len;
+    size_t pos;
+    HttpBuf buffer;
+    int max_bytes;
+} HttpSource;
+
+static int http_source_available(HttpSource *source) {
+    if (source->fd < 0) {
+        return (int)(source->fixed_len - source->pos);
+    }
+    return (int)(source->buffer.len - source->pos);
+}
+
+static unsigned char http_byte(HttpSource *source, size_t index) {
+    return source->fd < 0 ? source->fixed[index] : source->buffer.data[index];
+}
+
+/// Makes `need` bytes readable from the cursor. Returns false when a fixed
+/// buffer runs out, which is how truncated input is detected.
+static bool http_fill(HttpSource *source, int need) {
+    if (http_source_available(source) >= need) {
+        return true;
+    }
+
+    if (source->fd < 0) {
+        return false;
+    }
+
+    unsigned char chunk[4096];
+    while (http_source_available(source) < need) {
+        ssize_t read = recv(source->fd, chunk, sizeof chunk, 0);
+        if (read == 0) {
+            tern_panic("ConnectionError", "connection closed while reading the response");
+        }
+        if (read < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                tern_panic("HttpError", "the response timed out");
+            }
+            if (errno == EINTR) {
+                continue;
+            }
+            tern_panic("ConnectionError", "connection closed while reading the response");
+        }
+
+        http_buf_add(&source->buffer, chunk, (size_t)read);
+        if ((int)source->buffer.len > source->max_bytes + HTTP_MAX_HEADER_BYTES) {
+            tern_panic("HttpError", "response body is larger than %d bytes", source->max_bytes);
+        }
+    }
+
+    return true;
+}
+
+/// Reads one CRLF terminated line into a freshly allocated C string.
+static char *http_line(HttpSource *source, const char *what) {
+    int scanned = (int)source->pos;
+    for (;;) {
+        if (!http_fill(source, scanned - (int)source->pos + 1)) {
+            tern_panic("HttpError", "response is incomplete (no end of %s)", what);
+        }
+        if (scanned - (int)source->pos > HTTP_MAX_HEADER_BYTES) {
+            tern_panic("HttpError", "response header line is larger than %d bytes",
+                       HTTP_MAX_HEADER_BYTES);
+        }
+
+        if (http_byte(source, (size_t)scanned) == '\n') {
+            int end = scanned;
+            if (scanned > (int)source->pos && http_byte(source, (size_t)(scanned - 1)) == '\r') {
+                end = scanned - 1;
+            }
+            size_t length = (size_t)(end - (int)source->pos);
+            char *text = (char *)malloc(length + 1);
+            for (size_t i = 0; i < length; i++) {
+                text[i] = (char)http_byte(source, (size_t)((int)source->pos + (int)i));
+            }
+            text[length] = '\0';
+            source->pos = (size_t)(scanned + 1);
+            return text;
+        }
+
+        scanned++;
+    }
+}
+
+/// Copies `length` bytes out of the source.
+static unsigned char *http_exact(HttpSource *source, int length, const char *what) {
+    if (length < 0) {
+        tern_panic("HttpError", "bad %s length: %d", what, length);
+    }
+    if (length > source->max_bytes) {
+        tern_panic("HttpError", "response body is larger than %d bytes", source->max_bytes);
+    }
+
+    if (!http_fill(source, length)) {
+        tern_panic("HttpError", "response is incomplete (wanted %d bytes of %s)", length, what);
+    }
+
+    unsigned char *result = (unsigned char *)malloc(length > 0 ? (size_t)length : 1);
+    for (int i = 0; i < length; i++) {
+        result[i] = http_byte(source, source->pos + (size_t)i);
+    }
+    source->pos += (size_t)length;
+    return result;
+}
+
+/// Reads the rest of the stream, which is how a response without a length ends.
+static unsigned char *http_to_end(HttpSource *source, int max_bytes, size_t *out_length) {
+    if (source->fd < 0) {
+        size_t remaining = source->fixed_len - source->pos;
+        if (remaining > (size_t)max_bytes) {
+            tern_panic("HttpError", "response body is larger than %d bytes", max_bytes);
+        }
+        unsigned char *result = (unsigned char *)malloc(remaining > 0 ? remaining : 1);
+        memcpy(result, source->fixed + source->pos, remaining);
+        source->pos = source->fixed_len;
+        *out_length = remaining;
+        return result;
+    }
+
+    unsigned char chunk[4096];
+    for (;;) {
+        ssize_t read = recv(source->fd, chunk, sizeof chunk, 0);
+        if (read == 0) {
+            break;
+        }
+        if (read < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                tern_panic("HttpError", "the response timed out");
+            }
+            if (errno == EINTR) {
+                continue;
+            }
+            tern_panic("ConnectionError", "connection closed while reading the response");
+        }
+        http_buf_add(&source->buffer, chunk, (size_t)read);
+        if ((int)(source->buffer.len - source->pos) > max_bytes) {
+            tern_panic("HttpError", "response body is larger than %d bytes", max_bytes);
+        }
+    }
+
+    size_t length = source->buffer.len - source->pos;
+    unsigned char *result = (unsigned char *)malloc(length > 0 ? length : 1);
+    memcpy(result, source->buffer.data + source->pos, length);
+    source->pos = source->buffer.len;
+    *out_length = length;
+    return result;
+}
+
+static unsigned char *http_chunked(HttpSource *source, int max_bytes, size_t *out_length) {
+    HttpBuf body = { 0 };
+    for (;;) {
+        char *line = http_line(source, "chunk size");
+        char *text = line;
+        while (*text == ' ' || *text == '\t') text++;
+        char *semicolon = strchr(text, ';');
+        if (semicolon) *semicolon = '\0';
+        size_t length = strlen(text);
+        while (length > 0 && (text[length - 1] == ' ' || text[length - 1] == '\t')) {
+            text[--length] = '\0';
+        }
+
+        long size = 0;
+        bool ok = length > 0;
+        for (size_t i = 0; ok && i < length; i++) {
+            char c = text[i];
+            int digit;
+            if (c >= '0' && c <= '9') digit = c - '0';
+            else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+            else { ok = false; break; }
+            size = size * 16 + digit;
+            if (size > 0x7FFFFFFF) { ok = false; }
+        }
+
+        if (!ok) {
+            tern_panic("HttpError", "bad chunk size: '%s'", text);
+        }
+
+        if (size == 0) {
+            free(line);
+            for (;;) {
+                char *trailer = http_line(source, "trailer");
+                if (trailer[0] == '\0') {
+                    free(trailer);
+                    break;
+                }
+                free(trailer);
+            }
+            *out_length = body.len;
+            return body.data;
+        }
+
+        if ((long)body.len + size > max_bytes) {
+            free(line);
+            http_buf_free(&body);
+            tern_panic("HttpError", "response body is larger than %d bytes", max_bytes);
+        }
+        free(line);
+
+        unsigned char *chunk = http_exact(source, (int)size, "chunk");
+        http_buf_add(&body, chunk, (size_t)size);
+        free(chunk);
+
+        char *terminator = http_line(source, "chunk terminator");
+        free(terminator);
+    }
+}
+
+static bool http_all_digits(const char *text, size_t length) {
+    if (length == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool http_parse_number(const char *text, long minimum, long maximum, long *out) {
+    size_t length = strlen(text);
+    if (!http_all_digits(text, length)) {
+        return false;
+    }
+    long value = 0;
+    for (size_t i = 0; i < length; i++) {
+        value = value * 10 + (text[i] - '0');
+        if (value > maximum) {
+            return false;
+        }
+    }
+    if (value < minimum) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+/// Parses "http://host[:port][/path?query]" into its parts.
+static void http_parse_url(const char *url, char **host, int *port, char **path) {
+    const char *scheme = "http://";
+    size_t scheme_length = strlen(scheme);
+    if (strncmp(url, scheme, scheme_length) != 0) {
+        tern_panic("HttpError", "only http:// URLs are supported, not '%s'", url);
+    }
+
+    const char *rest = url + scheme_length;
+    const char *slash = strpbrk(rest, "/?");
+    size_t authority_length = slash ? (size_t)(slash - rest) : strlen(rest);
+    if (authority_length == 0) {
+        tern_panic("HttpError", "URL has no host: '%s'", url);
+    }
+
+    if (slash) {
+        if (*slash == '?') {
+            *path = (char *)malloc(strlen(slash) + 2);
+            (*path)[0] = '/';
+            strcpy(*path + 1, slash);
+        } else {
+            *path = strdup(slash);
+        }
+    } else {
+        *path = strdup("/");
+    }
+
+    char *authority = (char *)malloc(authority_length + 1);
+    memcpy(authority, rest, authority_length);
+    authority[authority_length] = '\0';
+
+    char *colon = strrchr(authority, ':');
+    *port = 80;
+    if (colon) {
+        *colon = '\0';
+        long parsed = 0;
+        if (authority[0] == '\0' || !http_parse_number(colon + 1, 1, 65535, &parsed)) {
+            free(authority);
+            free(*path);
+            tern_panic("HttpError", "URL has a bad port: '%s'", url);
+        }
+        *port = (int)parsed;
+    }
+
+    if (authority[0] == '\0') {
+        free(authority);
+        free(*path);
+        tern_panic("HttpError", "URL has no host: '%s'", url);
+    }
+
+    *host = authority;
+}
+
+typedef struct {
+    int count;
+    Value names[HTTP_MAX_HEADERS];
+    Value values[HTTP_MAX_HEADERS];
+    Value body;
+    bool has_body;
+    int timeout;
+    int redirects;
+    int max_bytes;
+} HttpOptions;
+
+static bool http_bytes_value(Value v, HttpBuf *out) {
+    if (v_is_str(v)) {
+        Str *text = (Str *)v.as.o;
+        http_buf_add(out, text->chars, (size_t)text->len);
+        return true;
+    }
+
+    if (v_is_list(v)) {
+        List *bytes = (List *)v.as.o;
+        for (int i = 0; i < bytes->count; i++) {
+            Value byte = bytes->items[i];
+            if (byte.tag != T_INT || byte.as.i < 0 || byte.as.i > 255) {
+                tern_panic("TypeError", "byte %d is not an integer in 0..255", i);
+            }
+            unsigned char one = (unsigned char)byte.as.i;
+            http_buf_add(out, &one, 1);
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static void http_parse_options(Value v, const char *operation, HttpOptions *options) {
+    options->count = 0;
+    options->body = v_nil();
+    options->has_body = false;
+    options->timeout = HTTP_DEFAULT_TIMEOUT;
+    options->redirects = HTTP_DEFAULT_REDIRECTS;
+    options->max_bytes = HTTP_DEFAULT_MAX_BYTES;
+
+    if (v.tag == T_NIL || v.tag == T_MISSING) {
+        return;
+    }
+
+    if (!v_is_map(v)) {
+        tern_panic("TypeError", "%s() options must be a map, not %s", operation, tern_type_name(v));
+    }
+
+    Map *map = (Map *)v.as.o;
+    Value found;
+
+    if (map_get(map, str_from_cstr("headers"), &found)) {
+        if (!v_is_map(found)) {
+            tern_panic("TypeError", "option 'headers' must be a map, not %s", tern_type_name(found));
+        }
+
+        Map *headers = (Map *)found.as.o;
+
+        // Walk the map in insertion order, like the interpreter does.
+        for (int i = 0; i < headers->order_count; i++) {
+            Value key = headers->order[i];
+            Value value = v_nil();
+            map_get(headers, key, &value);
+            if (!v_is_str(key) || !v_is_str(value)) {
+                tern_panic("TypeError", "header names and values must be strings");
+            }
+            if (options->count >= HTTP_MAX_HEADERS) {
+                tern_panic("HttpError", "too many request headers (limit %d)", HTTP_MAX_HEADERS);
+            }
+
+            Str *name = (Str *)key.as.o;
+            Str *text = (Str *)value.as.o;
+            bool token = name->len > 0;
+            for (int c = 0; token && c < name->len; c++) {
+                if (name->chars[c] <= ' ' || name->chars[c] >= 127 || name->chars[c] == ':') {
+                    token = false;
+                }
+            }
+            if (!token) {
+                tern_panic("HttpError", "header name '%s' is not valid", name->chars);
+            }
+            if (strpbrk(text->chars, "\r\n") != NULL) {
+                tern_panic("HttpError", "header '%s' contains a line break", name->chars);
+            }
+
+            options->names[options->count] = key;
+            options->values[options->count] = value;
+            options->count++;
+        }
+    }
+
+    if (map_get(map, str_from_cstr("body"), &found)) {
+        options->body = found;
+        options->has_body = true;
+    }
+
+    if (map_get(map, str_from_cstr("timeout"), &found)) {
+        double milliseconds = net_arg_number(found, "timeout");
+        if (milliseconds < 0) {
+            tern_panic("ArgumentError", "option 'timeout' must not be negative");
+        }
+        options->timeout = (int)milliseconds;
+    }
+
+    if (map_get(map, str_from_cstr("redirects"), &found)) {
+        double count = net_arg_number(found, "redirects");
+        if (count < 0 || count > 20) {
+            tern_panic("ArgumentError", "option 'redirects' must be between 0 and 20");
+        }
+        options->redirects = (int)count;
+    }
+
+    if (map_get(map, str_from_cstr("maxBytes"), &found)) {
+        double limit = net_arg_number(found, "maxBytes");
+        if (limit < 0 || limit > 67108864) {
+            tern_panic("ArgumentError", "option 'maxBytes' must be between 0 and 67108864");
+        }
+        options->max_bytes = (int)limit;
+    }
+}
+
+static bool http_has_header(HttpOptions *options, const char *name) {
+    for (int i = 0; i < options->count; i++) {
+        Str *candidate = (Str *)options->names[i].as.o;
+        if (strcasecmp(candidate->chars, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Builds the request bytes: request line, the headers we own, the script's
+/// headers in their own order, then the body.
+static void http_encode_request(const char *method, const char *url, HttpOptions *options, HttpBuf *out) {
+    if (method[0] == '\0' || strpbrk(method, " \r\n") != NULL) {
+        tern_panic("HttpError", "method '%s' is not valid", method);
+    }
+
+    char *host = NULL;
+    char *path = NULL;
+    int port = 0;
+    http_parse_url(url, &host, &port, &path);
+
+    char head[64];
+    http_buf_add_text(out, method);
+    http_buf_add_text(out, " ");
+    http_buf_add_text(out, path);
+    http_buf_add_text(out, " HTTP/1.1\r\n");
+
+    if (!http_has_header(options, "Host")) {
+        http_buf_add_text(out, "Host: ");
+        http_buf_add_text(out, host);
+        if (port != 80) {
+            snprintf(head, sizeof head, ":%d", port);
+            http_buf_add_text(out, head);
+        }
+        http_buf_add_text(out, "\r\n");
+    }
+
+    if (!http_has_header(options, "Connection")) {
+        http_buf_add_text(out, "Connection: close\r\n");
+    }
+
+    if (!http_has_header(options, "User-Agent")) {
+        http_buf_add_text(out, "User-Agent: TERN\r\n");
+    }
+
+    for (int i = 0; i < options->count; i++) {
+        Str *name = (Str *)options->names[i].as.o;
+        Str *value = (Str *)options->values[i].as.o;
+        http_buf_add_text(out, name->chars);
+        http_buf_add_text(out, ": ");
+        http_buf_add_text(out, value->chars);
+        http_buf_add_text(out, "\r\n");
+    }
+
+    HttpBuf body = { 0 };
+    if (options->has_body && options->body.tag != T_NIL) {
+        if (!http_bytes_value(options->body, &body)) {
+            free(host);
+            free(path);
+            http_buf_free(&body);
+            tern_panic("TypeError", "body must be a string or a list of bytes, not %s",
+                       tern_type_name(options->body));
+        }
+        if (!http_has_header(options, "Content-Length")) {
+            snprintf(head, sizeof head, "Content-Length: %d\r\n", (int)body.len);
+            http_buf_add_text(out, head);
+        }
+    }
+
+    http_buf_add_text(out, "\r\n");
+    http_buf_add(out, body.data, body.len);
+    http_buf_free(&body);
+    free(host);
+    free(path);
+}
+
+/// Parses one response from a source. `status_line`, `reason` and `version` are
+/// needed by the redirect logic, so they come back through `out_*` when asked.
+static Map *http_read(HttpSource *source, int max_bytes, char **out_reason, int *out_status) {
+    char *status_line = http_line(source, "status line");
+    if (strncmp(status_line, "HTTP/", 5) != 0) {
+        free(status_line);
+        tern_panic("HttpError", "the response does not start with an HTTP status line");
+    }
+
+    char *first_space = strchr(status_line, ' ');
+    if (!first_space) {
+        tern_panic("HttpError", "malformed status line: '%s'", status_line);
+    }
+
+    char *second_space = strchr(first_space + 1, ' ');
+    size_t code_length = (second_space ? (size_t)(second_space - first_space - 1)
+                                       : strlen(first_space + 1));
+    char code_text[8];
+    if (code_length == 0 || code_length > 3) {
+        tern_panic("HttpError", "malformed status line: '%s'", status_line);
+    }
+    memcpy(code_text, first_space + 1, code_length);
+    code_text[code_length] = '\0';
+
+    long status = 0;
+    if (!http_parse_number(code_text, 0, 999, &status) || code_length != 3) {
+        tern_panic("HttpError", "malformed status line: '%s'", status_line);
+    }
+
+    char *reason = second_space ? strdup(second_space + 1) : strdup("");
+    *first_space = '\0';
+    char *version = strdup(status_line);
+    free(status_line);
+
+    Map *headers = map_new();
+    List *order = list_new(4);
+    for (;;) {
+        char *line = http_line(source, "headers");
+        if (line[0] == '\0') {
+            free(line);
+            break;
+        }
+
+        char *colon = strchr(line, ':');
+        if (!colon || colon == line) {
+            tern_panic("HttpError", "malformed header line: '%s'", line);
+        }
+
+        *colon = '\0';
+        char *name = line;
+        char *value = colon + 1;
+        while (*value == ' ' || *value == '\t') value++;
+
+        // Names are compared case-insensitively, so they are stored folded.
+        for (char *p = name; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+        }
+
+        size_t value_length = strlen(value);
+        while (value_length > 0 && (value[value_length - 1] == ' ' || value[value_length - 1] == '\t')) {
+            value[--value_length] = '\0';
+        }
+
+        Value key = str_from_cstr(name);
+        Value existing = v_nil();
+        if (map_get(headers, key, &existing)) {
+            HttpBuf joined = { 0 };
+            http_buf_add_text(&joined, ((Str *)existing.as.o)->chars);
+            http_buf_add_text(&joined, ", ");
+            http_buf_add_text(&joined, value);
+            map_set(headers, key, v_obj((Obj *)str_from((const char *)joined.data, joined.len)));
+            http_buf_free(&joined);
+        } else {
+            map_set(headers, key, str_from_cstr(value));
+            list_push(order, key);
+        }
+
+        free(line);
+    }
+
+    unsigned char *body = NULL;
+    size_t body_length = 0;
+    Value framing = v_nil();
+    if (map_get(headers, str_from_cstr("transfer-encoding"), &framing) &&
+        strstr(((Str *)framing.as.o)->chars, "chunked") != NULL) {
+        body = http_chunked(source, max_bytes, &body_length);
+    } else if (map_get(headers, str_from_cstr("content-length"), &framing)) {
+        long length = 0;
+        if (!http_parse_number(((Str *)framing.as.o)->chars, 0, 0x7FFFFFFF, &length)) {
+            tern_panic("HttpError", "bad Content-Length: '%s'", ((Str *)framing.as.o)->chars);
+        }
+        if (length > max_bytes) {
+            tern_panic("HttpError", "response body is larger than %d bytes", max_bytes);
+        }
+        body = http_exact(source, (int)length, "body");
+        body_length = (size_t)length;
+    } else {
+        body = http_to_end(source, max_bytes, &body_length);
+    }
+
+    Map *response = map_new();
+    map_set(response, str_from_cstr("status"), v_int(status));
+    map_set(response, str_from_cstr("reason"), str_from_cstr(reason));
+    map_set(response, str_from_cstr("version"), str_from_cstr(version));
+    map_set(response, str_from_cstr("headers"), v_obj((Obj *)headers));
+
+    Value body_value = v_obj((Obj *)str_from((const char *)body, body_length));
+    map_set(response, str_from_cstr("body"), body_value);
+
+    List *bytes = list_new((int)body_length);
+    for (size_t i = 0; i < body_length; i++) {
+        list_push(bytes, v_int(body[i]));
+    }
+    map_set(response, str_from_cstr("bytes"), v_obj((Obj *)bytes));
+    free(body);
+
+    if (out_reason) *out_reason = reason; else free(reason);
+    if (out_status) *out_status = (int)status;
+    free(version);
+    return response;
+}
+
+static int http_connect(const char *host, int port, int timeout) {
+    struct sockaddr_in address;
+    net_resolve(host, &address, port);
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        tern_panic("HttpError", "cannot connect to %s:%d: %s", host, port, strerror(errno));
+    }
+
+    if (timeout > 0) {
+        struct timeval tv;
+        tv.tv_sec = timeout / 1000;
+        tv.tv_usec = (timeout % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    }
+
+    if (connect(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        int error = errno;
+        close(fd);
+        tern_panic("HttpError", "cannot connect to %s:%d: %s", host, port, strerror(error));
+    }
+
+    return fd;
+}
+
+static void http_write_all(int fd, const unsigned char *data, size_t length) {
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t n = send(fd, data + sent, length - sent, MSG_NOSIGNAL);
+        if (n <= 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                tern_panic("HttpError", "the request timed out");
+            }
+            tern_panic("ConnectionError", "connection closed while sending the request");
+        }
+        sent += (size_t)n;
+    }
+}
+
+static bool http_is_redirect(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+/// Resolves a Location header against the URL it came from.
+static char *http_resolve_url(const char *base_url, const char *location) {
+    if (strstr(location, "://") != NULL) {
+        return strdup(location);
+    }
+
+    char *host = NULL;
+    char *path = NULL;
+    int port = 0;
+    http_parse_url(base_url, &host, &port, &path);
+
+    HttpBuf out = { 0 };
+    http_buf_add_text(&out, "http://");
+    http_buf_add_text(&out, host);
+    if (port != 80) {
+        char port_text[16];
+        snprintf(port_text, sizeof port_text, ":%d", port);
+        http_buf_add_text(&out, port_text);
+    }
+
+    if (location[0] == '/') {
+        http_buf_add_text(&out, location);
+    } else {
+        char *slash = strrchr(path, '/');
+        if (slash) {
+            size_t prefix = (size_t)(slash - path) + 1;
+            http_buf_add(&out, path, prefix);
+        } else {
+            http_buf_add_text(&out, "/");
+        }
+        http_buf_add_text(&out, location);
+    }
+
+    http_buf_add(&out, "", 1);
+    free(host);
+    free(path);
+    return (char *)out.data;
+}
+
+static Map *http_send_impl(const char *method, const char *url, HttpOptions *options) {
+    char *current_method = strdup(method);
+    char *current_url = strdup(url);
+    int hops = 0;
+
+    for (;;) {
+        char *host = NULL;
+        char *path = NULL;
+        int port = 0;
+        http_parse_url(current_url, &host, &port, &path);
+        free(path);
+
+        int fd = http_connect(host, port, options->timeout);
+        free(host);
+
+        HttpBuf request = { 0 };
+        http_encode_request(current_method, current_url, options, &request);
+        http_write_all(fd, request.data, request.len);
+        http_buf_free(&request);
+
+        HttpSource source;
+        memset(&source, 0, sizeof source);
+        source.fd = fd;
+        source.max_bytes = options->max_bytes;
+
+        char *reason = NULL;
+        int status = 0;
+        Map *response = http_read(&source, options->max_bytes, &reason, &status);
+        http_buf_free(&source.buffer);
+        close(fd);
+
+        Value location = v_nil();
+        Value headers = v_nil();
+        bool redirected = http_is_redirect(status) &&
+                          map_get(response, str_from_cstr("headers"), &headers) &&
+                          map_get((Map *)headers.as.o, str_from_cstr("location"), &location);
+
+        if (!redirected) {
+            free(reason);
+            free(current_method);
+            free(current_url);
+            return response;
+        }
+
+        if (hops >= options->redirects) {
+            free(reason);
+            tern_panic("HttpError", "too many redirects (limit %d)", options->redirects);
+        }
+
+        hops++;
+        char *next = http_resolve_url(current_url, ((Str *)location.as.o)->chars);
+        free(current_url);
+        current_url = next;
+        if (status == 303) {
+            free(current_method);
+            current_method = strdup("GET");
+            options->has_body = false;
+        }
+        free(reason);
+    }
+}
+
+// --- the namespace members -------------------------------------------------
+
+static Value n_http_request(int argc, Value *argv) {
+    const char *method = net_arg_text(argv[0], "method");
+    const char *url = net_arg_text(argv[1], "url");
+    HttpOptions options;
+    http_parse_options(argc > 2 ? argv[2] : v_nil(), "request", &options);
+    return v_obj((Obj *)http_send_impl(method, url, &options));
+}
+
+static Value n_http_get(int argc, Value *argv) {
+    const char *url = net_arg_text(argv[0], "url");
+    HttpOptions options;
+    http_parse_options(argc > 1 ? argv[1] : v_nil(), "request", &options);
+    return v_obj((Obj *)http_send_impl("GET", url, &options));
+}
+
+static Value n_http_post(int argc, Value *argv) {
+    const char *url = net_arg_text(argv[0], "url");
+    const char *body = net_arg_text(argv[1], "body");
+    HttpOptions options;
+    http_parse_options(argc > 2 ? argv[2] : v_nil(), "post", &options);
+    if (!options.has_body) {
+        options.body = str_from_cstr(body);
+        options.has_body = true;
+    }
+    return v_obj((Obj *)http_send_impl("POST", url, &options));
+}
+
+static Value n_http_encode_request(int argc, Value *argv) {
+    const char *method = net_arg_text(argv[0], "method");
+    const char *url = net_arg_text(argv[1], "url");
+    HttpOptions options;
+    http_parse_options(argc > 2 ? argv[2] : v_nil(), "encodeRequest", &options);
+
+    HttpBuf request = { 0 };
+    http_encode_request(method, url, &options, &request);
+
+    List *bytes = list_new((int)request.len);
+    for (size_t i = 0; i < request.len; i++) {
+        list_push(bytes, v_int(request.data[i]));
+    }
+    http_buf_free(&request);
+    return v_obj((Obj *)bytes);
+}
+
+static Value n_http_decode_response(int argc, Value *argv) {
+    (void)argc;
+    if (!v_is_list(argv[0])) {
+        tern_panic("TypeError", "expected a list of bytes, not %s", tern_type_name(argv[0]));
+    }
+
+    List *bytes = (List *)argv[0].as.o;
+    HttpBuf data = { 0 };
+    for (int i = 0; i < bytes->count; i++) {
+        Value byte = bytes->items[i];
+        if (byte.tag != T_INT || byte.as.i < 0 || byte.as.i > 255) {
+            http_buf_free(&data);
+            tern_panic("TypeError", "byte %d is not an integer in 0..255", i);
+        }
+        unsigned char one = (unsigned char)byte.as.i;
+        http_buf_add(&data, &one, 1);
+    }
+
+    HttpSource source;
+    memset(&source, 0, sizeof source);
+    source.fd = -1;
+    source.fixed = data.data;
+    source.fixed_len = data.len;
+    source.max_bytes = HTTP_DEFAULT_MAX_BYTES;
+
+    Map *response = http_read(&source, HTTP_DEFAULT_MAX_BYTES, NULL, NULL);
+    http_buf_free(&data);
+    return v_obj((Obj *)response);
+}
+
+static Value n_http_exchange(int argc, Value *argv) {
+    int slot = net_slot(net_handle_arg(argv[0]));
+    if (net_kinds[slot] != 0) {
+        tern_panic("HttpError", "exchange() needs a connection handle from net.connect()");
+    }
+
+    const char *method = net_arg_text(argv[1], "method");
+    const char *url = net_arg_text(argv[2], "url");
+    HttpOptions options;
+    http_parse_options(argc > 3 ? argv[3] : v_nil(), "exchange", &options);
+
+    HttpBuf request = { 0 };
+    http_encode_request(method, url, &options, &request);
+    http_write_all(net_fds[slot], request.data, request.len);
+    http_buf_free(&request);
+
+    HttpSource source;
+    memset(&source, 0, sizeof source);
+    source.fd = net_fds[slot];
+    source.max_bytes = options.max_bytes;
+
+    Map *response = http_read(&source, options.max_bytes, NULL, NULL);
+    http_buf_free(&source.buffer);
+    return v_obj((Obj *)response);
+}
+
 static Value namespace_map(const char *ns) {
     Map *map = map_new();
 
@@ -6249,6 +7168,23 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+    if (strcmp(ns, "http") == 0) {
+        // The argument counts mirror TERN/Builtins/Http.cs.
+        map_set(map, str_from_cstr("request"),
+                make_native_arity("request", n_http_request, 2, 3));
+        map_set(map, str_from_cstr("get"),
+                make_native_arity("get", n_http_get, 1, 2));
+        map_set(map, str_from_cstr("post"),
+                make_native_arity("post", n_http_post, 2, 3));
+        map_set(map, str_from_cstr("encodeRequest"),
+                make_native_arity("encodeRequest", n_http_encode_request, 2, 3));
+        map_set(map, str_from_cstr("decodeResponse"),
+                make_native_arity("decodeResponse", n_http_decode_response, 1, 1));
+        map_set(map, str_from_cstr("exchange"),
+                make_native_arity("exchange", n_http_exchange, 3, 4));
+        return v_obj((Obj *)map);
+    }
+
     if (strcmp(ns, "random") == 0) {
         map_set(map, str_from_cstr("seed"), make_native_arity("seed", rnd_seed, 1, 1));
         map_set(map, str_from_cstr("float"), make_native_arity("float", rnd_float, 0, 2));
@@ -6273,7 +7209,7 @@ static Value namespace_map(const char *ns) {
 /// Looks a function up in the well known namespaces (math, text, json, ...).
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
-    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists", "fs", "net", NULL};
+    static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists", "fs", "net", "http", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -6295,7 +7231,8 @@ Value tern_lookup_global(const char *name) {
     if (strcmp(name, "math") == 0 || strcmp(name, "time") == 0 ||
         strcmp(name, "json") == 0 || strcmp(name, "os") == 0 ||
         strcmp(name, "random") == 0 || strcmp(name, "text") == 0 ||
-        strcmp(name, "lists") == 0 || strcmp(name, "net") == 0) {
+        strcmp(name, "lists") == 0 || strcmp(name, "net") == 0 ||
+        strcmp(name, "http") == 0) {
         return namespace_map(name);
     }
 

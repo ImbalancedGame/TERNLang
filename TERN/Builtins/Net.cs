@@ -880,7 +880,7 @@ namespace TERN.Builtins
             }
         }
 
-        private static long Handle(VM vm, in Value value)
+        internal static long Handle(VM vm, in Value value)
         {
             if (value.Kind != ValueKind.Int)
             {

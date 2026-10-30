@@ -29,6 +29,7 @@ namespace TERN.Builtins
             InstallText(engine);
             InstallLists(engine);
             NetModule.Install(engine);
+            HttpModule.Install(engine);
         }
 
         // ---------------------------------------------------------------- globals

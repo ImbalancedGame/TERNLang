@@ -526,8 +526,9 @@ Importing a file executes it once (results are cached per engine) and makes its
 top level bindings available.
 
 Standard modules: `std:math`, `std:json`, `std:fs`, `std:os`, `std:time`,
-`std:random`, `std:text`, `std:lists`, `std:net`. Their members are also exposed
-as namespaces (`math.sqrt`, `json.parse`, ...), so importing is optional.
+`std:random`, `std:text`, `std:lists`, `std:net`, `std:http`. Their members are
+also exposed as namespaces (`math.sqrt`, `json.parse`, ...), so importing is
+optional.
 
 ```tern
 import "std:json";
@@ -566,7 +567,8 @@ abs min max copy sleep
 | `random` | `seed float int bool choice shuffle` |
 | `text` | `format upper lower trim split join pad` |
 | `lists` | `range repeat zip enumerate chunk sort` |
-| `net` | `encode decode listen accept connect send receive close timeout port peer` |
+| `net` | `encode decode listen accept connect send receive sendBytes receiveBytes maxFrame udpListen udpSend udpReceive close timeout port peer` |
+| `http` | `request get post encodeRequest decodeResponse exchange` |
 
 `text.format` accepts `{}` placeholders or indexed `{0}` placeholders.
 
@@ -574,6 +576,43 @@ abs min max copy sleep
 (`expected ':' at offset 4`); `json.tryParse` returns its fallback instead of
 raising. Documents nested deeper than 512 levels are refused rather than
 overflowing the stack, and `json.stringify` writes map keys in insertion order.
+
+### HTTP
+
+`std:http` is a client: it speaks HTTP/1.1 on a socket, with no dependency on a
+library that may not be installed. `http.get(url[, options])` and
+`http.post(url, body[, options])` cover the common cases, and
+`http.request(method, url[, options])` takes any method.
+
+```tern
+let response = http.get("http://example.com/index.html", {"timeout": 5000});
+println(response["status"], response["reason"], response["headers"]["content-type"]);
+println(response["body"]);
+```
+
+A response is a map with `status` (integer), `reason`, `version`, `headers`
+(a map with lowercased names, repeated headers joined by `, `), `body` (text) and
+`bytes` (the same body as a list of bytes). Options:
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `headers` | Map of extra header names to values; `Host`, `Connection` and `User-Agent` are sent unless you set them | none |
+| `body` | Request body as text or bytes; `Content-Length` is added unless you set it | none |
+| `timeout` | Milliseconds allowed for connecting and for the whole exchange | 10000 |
+| `redirects` | Redirects to follow (301, 302, 303, 307, 308); a 303 switches to GET | 5 |
+| `maxBytes` | Largest response body accepted | 8 MiB |
+
+Responses are framed by `Transfer-Encoding: chunked`, then `Content-Length`, then
+end of stream, so a server that closes the connection at the end of the body
+works too. Requests ask for `Connection: close`, which means one connection per
+request and no keep-alive bookkeeping.
+
+The halves are exposed for scripts that bring their own connection:
+`http.encodeRequest(method, url[, options])` returns the request bytes,
+`http.decodeResponse(bytes)` parses a complete response, and
+`http.exchange(socket, method, url[, options])` writes a request on a socket from
+`net.connect` and reads one response from it (no redirects there — one exchange,
+one response).
 
 ---
 
