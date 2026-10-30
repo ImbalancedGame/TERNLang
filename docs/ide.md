@@ -118,6 +118,11 @@ place.
 
 ![The Commit window and a diff](ide/img/commit.png)
 
+The find bar, like the rest of the editor keys, stays out of the way until it is
+asked for:
+
+![Find and replace](ide/img/find.png)
+
 `ide/Studio/vcs.py` shells out to `git` rather than binding a library: git is
 already on the machine that has a repository, and `status --porcelain=v1 -z`
 and `diff --unified=3` are stable interfaces. Every call is read-only except

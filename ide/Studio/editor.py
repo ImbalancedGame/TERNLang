@@ -727,16 +727,16 @@ class FindBar(QWidget):
         self.count = QLabel("")
         layout.addWidget(self.count)
 
-        self.previous_button = QPushButton("‹")
-        self.previous_button.setFixedWidth(26)
-        self.next_button = QPushButton("›")
-        self.next_button.setFixedWidth(26)
+        self.previous_button = QPushButton("Prev")
+        self.previous_button.setToolTip("Find previous (Shift+F3)")
+        self.next_button = QPushButton("Next")
+        self.next_button.setToolTip("Find next (F3)")
         self.replace_button = QPushButton("Replace")
         self.replace_button.hide()
         self.replace_all_button = QPushButton("Replace all")
         self.replace_all_button.hide()
-        self.close_button = QPushButton("✕")
-        self.close_button.setFixedWidth(26)
+        self.close_button = QPushButton("Close")
+        self.close_button.setToolTip("Close the find bar (Esc)")
 
         for button in (self.previous_button, self.next_button, self.replace_button,
                        self.replace_all_button):
@@ -752,6 +752,8 @@ class FindBar(QWidget):
         self.replace_button.clicked.connect(self.replace_one)
         self.replace_all_button.clicked.connect(self.replace_all)
         self.close_button.clicked.connect(self.hide)
+        for widget in (self.find_field, self.replace_field):
+            widget.installEventFilter(self)
         self.apply_theme(theme)
 
     def apply_theme(self, theme):
@@ -759,8 +761,19 @@ class FindBar(QWidget):
         self.setStyleSheet(
             f"QWidget {{ background: {theme['panel']}; }}"
             f"QLineEdit {{ background: {theme['bg']}; color: {theme['fg']};"
-            f" border: 1px solid {theme['border']}; padding: 2px 4px; }}"
+            f" border: 1px solid {theme['fg_dim']}; border-radius: 3px;"
+            f" padding: 3px 6px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {theme['accent']}; }}"
             f"QLabel {{ color: {theme['fg_dim']}; }}")
+
+    def eventFilter(self, watched, event):
+        # Esc closes the bar from either field.
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            self.hide()
+            self.editor.setFocus()
+            return True
+        return super().eventFilter(watched, event)
 
     def open(self, with_replace=False, term=None):
         """Shows the bar, seeded with the selection or the given term."""

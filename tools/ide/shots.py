@@ -102,7 +102,17 @@ def main():
     print("  completion.png")
     editor.popup.hide()
 
-    # 4. The Run window with a program's output.
+    # 4. The find bar over the editor, with a count.
+    editor.setPlainText(original)
+    window.server.did_change(uri, editor.toPlainText())
+    pump(app, 300)
+    area = window._area()
+    area.find_bar.open(with_replace=True, term="rule")
+    pump(app, 250)
+    save("find.png")
+    area.find_bar.hide()
+
+    # 5. The Run window with a program's output.
     editor.setPlainText(original)
     window.server.did_change(uri, editor.toPlainText())
     pump(app, 400)
@@ -112,7 +122,7 @@ def main():
     pump(app, 4500)
     save("run.png")
 
-    # 5. The light theme.
+    # 6. The light theme.
     window.set_theme("light")
     pump(app, 400)
     save("light.png")
