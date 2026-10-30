@@ -5111,12 +5111,17 @@ static Value wire_read_struct(WireReader *reader, int depth) {
     int32_t count = wire_read_count(reader);
 
     TypeObj *type = tern_find_type(type_name->chars);
+
+    // Both the names and the values live in lists, not in malloc'd arrays: the
+    // collector scans objects it owns, but a bare Value array on the heap is
+    // invisible to it, so a value only referenced from there can be swept
+    // between two reads.
     List *names = list_new(count > 0 ? count : 1);
-    Value *values = (Value *)calloc((size_t)(count > 0 ? count : 1), sizeof(Value));
+    List *values = list_new(count > 0 ? count : 1);
 
     for (int32_t i = 0; i < count; i++) {
         list_push(names, wire_read_text(reader));
-        values[i] = wire_read(reader, depth + 1);
+        list_push(values, wire_read(reader, depth + 1));
     }
 
     Value result;
@@ -5126,7 +5131,7 @@ static Value wire_read_struct(WireReader *reader, int depth) {
             Str *field = (Str *)names->items[i].as.o;
             int32_t slot = find_field(type, field->chars);
             if (slot >= 0) {
-                ((Instance *)instance.as.o)->fields[slot] = values[i];
+                ((Instance *)instance.as.o)->fields[slot] = values->items[i];
             }
         }
         result = instance;
@@ -5134,12 +5139,11 @@ static Value wire_read_struct(WireReader *reader, int depth) {
         /* No such struct here: hand back the fields as a map. */
         Map *map = map_new();
         for (int32_t i = 0; i < count; i++) {
-            map_set(map, names->items[i], values[i]);
+            map_set(map, names->items[i], values->items[i]);
         }
         result = v_obj((Obj *)map);
     }
 
-    free(values);
     return result;
 }
 
