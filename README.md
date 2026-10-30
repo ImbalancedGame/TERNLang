@@ -313,9 +313,10 @@ bash tools/ide.sh
 
 It has live diagnostics, completion, hover documentation, go-to-definition,
 find usages, rename, a structure view, a run/compile window with streaming
-output, project and problems tool windows, two themes and a full keymap. See
+output, a git commit window with coloured diffs, project and problems tool
+windows, two themes and a full keymap. See
 [`docs/ide.md`](docs/ide.md) for what is there, and for the short list of what
-is not — no debugger yet, and no VCS panel.
+is not — a debugger, most visibly.
 
 The server half is a plain LSP 3.17 server over stdio (`build/TERN.Ide.dll`), so
 any editor with LSP support can use it, not just Studio:

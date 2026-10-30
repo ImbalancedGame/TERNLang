@@ -15,23 +15,21 @@ highlighter needs to colour text.
 
 import json
 import os
-import subprocess
 import sys
 
-from PySide6.QtCore import QProcess, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPixmap
+from PySide6.QtCore import QEvent, QProcess, QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDockWidget, QFileDialog,
-                               QHBoxLayout, QInputDialog, QLabel, QListWidget,
-                               QListWidgetItem, QMainWindow, QMessageBox,
-                               QPlainTextEdit, QSizePolicy, QTabWidget, QToolBar,
-                               QToolButton, QVBoxLayout, QWidget)
+                               QInputDialog, QLabel, QListWidget, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QSizePolicy, QTabWidget,
+                               QToolBar, QToolButton, QWidget)
 
 from .editor import EditorArea
-from .highlighter import TernHighlighter
 from .lsp import LanguageServer, path_for, uri_for
-from .panels import (ConsolePanel, ProblemsPanel, ProjectPanel, StructurePanel,
-                     TerminalPanel, SearchEverywhereDialog)
-from .theme import THEMES, monospace, stylesheet, ui_font
+from .panels import (ChangesPanel, ConsolePanel, DiffPanel, ProblemsPanel, ProjectPanel,
+                     StructurePanel, TerminalPanel, SearchEverywhereDialog)
+from .vcs import parse_diff
+from .theme import THEMES, monospace, stylesheet
 
 
 class StudioWindow(QMainWindow):
@@ -53,6 +51,7 @@ class StudioWindow(QMainWindow):
         self.theme_name = theme
         self.theme = THEMES[theme]
         self.tabs = {}                       # path -> EditorArea
+        self.diff_tabs = {}                  # "work:/abs/path" -> DiffPanel
         self.pending_hover = (None, None)
         self.run_process = None
         self.log_lines = []
@@ -76,6 +75,7 @@ class StudioWindow(QMainWindow):
 
         self._start_server()
         self._start_timer()
+        self.refresh_vcs()
 
         app = QApplication.instance()
         if app is not None:
@@ -153,17 +153,30 @@ class StudioWindow(QMainWindow):
         self.terminal_dock.setWidget(self.terminal)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.terminal_dock)
 
+        self.changes_panel = ChangesPanel(self.root, self.theme)
+        self.changes_panel.openRequested.connect(self.open_file)
+        self.changes_panel.diffRequested.connect(self.show_diff)
+        self.changes_panel.committed.connect(self._on_committed)
+        self.changes_dock = QDockWidget("Commit", self)
+        self.changes_dock.setObjectName("changesDock")
+        self.changes_dock.setWidget(self.changes_panel)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.changes_dock)
+
         self.setTabPosition(Qt.BottomDockWidgetArea, QTabWidget.North)
         for dock in (self.console_dock, self.problems_dock, self.terminal_dock,
-                     self.structure_dock):
+                     self.structure_dock, self.changes_dock):
             dock.setTitleBarWidget(QWidget())
         self.tabifyDockWidget(self.console_dock, self.problems_dock)
         self.tabifyDockWidget(self.problems_dock, self.terminal_dock)
+        self.tabifyDockWidget(self.terminal_dock, self.changes_dock)
         self.console_dock.raise_()
 
         self.resizeDocks([self.project_dock, self.structure_dock], [260, 260], Qt.Horizontal)
+        # The Commit window carries a message box, so it needs more height than
+        # the three list windows it is tabified with.
         self.resizeDocks([self.console_dock, self.problems_dock, self.terminal_dock],
                          [170, 170, 170], Qt.Vertical)
+        self.resizeDocks([self.changes_dock], [250], Qt.Vertical)
 
     def _action(self, text, shortcut=None, slot=None, checkable=False):
         action = QAction(text, self)
@@ -205,6 +218,9 @@ class StudioWindow(QMainWindow):
             "stop": self._action("Stop", "Ctrl+F2", self.stop_run),
             "check": self._action("Check File", "Ctrl+Alt+F5", self.check_file),
             "terminal": self._action("Terminal", "Alt+F12", lambda: self._show_dock(self.terminal_dock)),
+            "commit": self._action("Commit", "Alt+0", lambda: self._show_dock(self.changes_dock)),
+            "refresh_vcs": self._action("Refresh VCS", "Ctrl+Alt+F5", self.refresh_vcs),
+            "diff_selected": self._action("Show Diff", "Ctrl+D", self._diff_selected),
             "project": self._action("Project", "Alt+1", lambda: self._show_dock(self.project_dock)),
             "structure": self._action("Structure", "Alt+7", lambda: self._show_dock(self.structure_dock)),
             "run_window": self._action("Run Window", "Alt+4", lambda: self._show_dock(self.console_dock)),
@@ -247,6 +263,7 @@ class StudioWindow(QMainWindow):
         view_menu.addAction(a["run_window"])
         view_menu.addAction(a["problems"])
         view_menu.addAction(a["terminal"])
+        view_menu.addAction(a["commit"])
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("Theme")
         theme_menu.addAction(a["theme_darcula"])
@@ -275,6 +292,8 @@ class StudioWindow(QMainWindow):
 
         tools_menu = bar.addMenu("&Tools")
         tools_menu.addAction(a["search_everywhere"])
+        tools_menu.addAction(a["refresh_vcs"])
+        tools_menu.addAction(a["diff_selected"])
         tools_menu.addAction(a["docs"])
 
         help_menu = bar.addMenu("&Help")
@@ -343,9 +362,11 @@ class StudioWindow(QMainWindow):
         self.status_position = QLabel("Ln 1, Col 1")
         self.status_language = QLabel("TERN")
         self.status_encoding = QLabel("UTF-8")
+        self.status_branch = QLabel("")
         self.status_server = QLabel("syntax server: starting")
 
         status.addWidget(self.status_problems)
+        status.addPermanentWidget(self.status_branch)
         status.addPermanentWidget(self.status_position)
         status.addPermanentWidget(self.status_language)
         status.addPermanentWidget(self.status_encoding)
@@ -505,6 +526,63 @@ class StudioWindow(QMainWindow):
             self.server.did_open(uri_for(path), editor.toPlainText())
             self._request_outline(path)
 
+    def show_diff(self, path, staged=False):
+        """Opens (or refreshes) a diff tab for one file."""
+        repository = self.changes_panel.repository
+        if repository is None:
+            return
+
+        key = ("staged:" if staged else "work:") + os.path.abspath(path)
+        text = repository.diff(path, staged=staged)
+        lines = parse_diff(text)
+        label = os.path.basename(path) + (" (staged)" if staged else "") + " — diff"
+
+        if not lines:
+            lines = [("meta", "No changes in this file.")]
+
+        if key in self.diff_tabs:
+            panel = self.diff_tabs[key]
+            panel.set_diff(label, lines)
+            self.tabs_widget.setCurrentWidget(panel)
+            return
+
+        panel = DiffPanel(self.theme)
+        panel.set_diff(label, lines)
+        self.diff_tabs[key] = panel
+        index = self.tabs_widget.addTab(panel, label)
+        self.tabs_widget.setTabToolTip(index, path)
+        self.tabs_widget.setCurrentWidget(panel)
+
+    def _diff_selected(self):
+        """Shows the diff for the file in the editor, or the selected change."""
+        if self.changes_dock.isVisible() and self.changes_panel.selected_paths():
+            paths = self.changes_panel.selected_paths()
+            for path in paths[:1]:
+                self.show_diff(path)
+            return
+
+        editor = self._editor()
+        if editor is not None:
+            self.show_diff(editor.path)
+
+    def refresh_vcs(self):
+        self.changes_panel.refresh()
+        for key, panel in list(self.diff_tabs.items()):
+            path = key.split(":", 1)[1]
+            staged = key.startswith("staged:")
+            if self.changes_panel.repository is None:
+                continue
+            lines = parse_diff(self.changes_panel.repository.diff(path, staged=staged))
+            panel.set_diff(os.path.basename(path) + (" (staged)" if staged else "") + " — diff",
+                           lines or [("meta", "No changes in this file.")])
+        self.status_branch.setText(self.changes_panel.repository.branch()
+                                   if self.changes_panel.repository else "")
+
+    def _on_committed(self, message):
+        first = message.splitlines()[0] if message.strip() else ""
+        self.console.write(f"Committed: {first}\n", info=True)
+        self.refresh_vcs()
+
     def open_file_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open TERN file", self.root, "TERN files (*.tern);;All files (*)")
         if path:
@@ -528,6 +606,8 @@ class StudioWindow(QMainWindow):
                 handle.write(editor.toPlainText())
             editor.document().setModified(False)
             self._tab_changed()
+            if hasattr(self, "changes_panel"):
+                self.changes_panel.refresh()
             self.console.set_status(f"saved {os.path.basename(editor.path)}")
         except OSError as error:
             QMessageBox.warning(self, "TERN Studio", f"Could not save:\n{error}")
@@ -560,6 +640,10 @@ class StudioWindow(QMainWindow):
             if hasattr(self, "server"):
                 self.server.did_close(uri_for(path))
             self.tabs.pop(path, None)
+        else:
+            for key, panel in list(self.diff_tabs.items()):
+                if panel is widget:
+                    del self.diff_tabs[key]
 
         self.tabs_widget.removeTab(index)
         if self.tabs_widget.count() == 0:
@@ -567,6 +651,14 @@ class StudioWindow(QMainWindow):
 
     def _tab_changed(self, *_):
         area = self._area()
+        if area is None:
+            # A diff view, or the window still being built: no symbols, no caret.
+            if hasattr(self, "structure_panel"):
+                self.structure_panel.set_symbols([], lambda line: 0)
+            index = self.tabs_widget.currentIndex()
+            if index >= 0:
+                self.tabs_widget.setTabText(index, self.tabs_widget.tabText(index).lstrip("*"))
+            return
         if area is not None:
             index = self.tabs_widget.indexOf(area)
             name = os.path.basename(area.editor.path)
@@ -977,6 +1069,13 @@ class StudioWindow(QMainWindow):
         self.actions_map["theme_light"].setChecked(name == "light")
         self._apply_theme()
 
+    def changeEvent(self, event):
+        # Coming back from another window is a good moment to re-read git.
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and self.isActiveWindow():
+            if hasattr(self, "changes_panel"):
+                self.refresh_vcs()
+
     def showEvent(self, event):
         super().showEvent(event)
         if not getattr(self, "_docks_sized", False):
@@ -994,7 +1093,7 @@ class StudioWindow(QMainWindow):
             app.setStyleSheet(stylesheet(self.theme))
 
         for panel in (self.project_panel, self.structure_panel, self.problems_panel,
-                      self.console, self.terminal):
+                      self.console, self.terminal, self.changes_panel):
             panel.apply_theme(self.theme)
 
         for area in self.tabs.values():

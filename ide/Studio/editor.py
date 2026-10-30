@@ -8,12 +8,12 @@ scripting IDE needs.
 
 import re
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (QColor, QFontMetrics, QKeyEvent, QPainter, QPen,
                            QTextCharFormat, QTextCursor, QTextFormat)
-from PySide6.QtWidgets import (QCompleter, QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QPlainTextEdit, QTextEdit,
-                               QToolTip, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QLabel, QListWidget, QListWidgetItem,
+                               QPlainTextEdit, QTextEdit, QToolTip,
+                               QVBoxLayout, QWidget)
 
 from .highlighter import TernHighlighter
 from .theme import colour, monospace

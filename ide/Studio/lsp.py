@@ -15,7 +15,7 @@ feel less immediate.
 import json
 import os
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 
 class LanguageServer(QObject):

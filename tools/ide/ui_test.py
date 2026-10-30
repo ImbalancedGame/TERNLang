@@ -210,6 +210,104 @@ def main():
         window.tabs_widget.setCurrentIndex(window.tabs_widget.indexOf(window.tabs[editor.path]))
         pump(app, 200)
 
+    # -------------------------------------------------------------- VCS
+    # A throwaway repository: the panel is exercised against real git output,
+    # including a commit, without touching the project under test.
+    import shutil
+    import subprocess
+
+    scratch = tempfile.mkdtemp(prefix="tern-vcs-")
+
+    def git(*arguments):
+        return subprocess.run(["git", *arguments], cwd=scratch, capture_output=True,
+                              text=True, timeout=30)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "TERN Test")
+    git("config", "user.email", "test@example.com")
+    git("config", "commit.gpgsign", "false")
+
+    with open(os.path.join(scratch, "hello.tern"), "w", encoding="utf-8") as handle:
+        handle.write('println("hello");\n')
+    git("add", "hello.tern")
+    git("commit", "-q", "-m", "first commit")
+
+    with open(os.path.join(scratch, "hello.tern"), "w", encoding="utf-8") as handle:
+        handle.write('println("hello, world");\n')
+    with open(os.path.join(scratch, "extra.tern"), "w", encoding="utf-8") as handle:
+        handle.write('println("new file");\n')
+
+    vcs_window = StudioWindow(scratch, theme="darcula")
+    vcs_window.resize(1280, 800)
+    vcs_window.show()
+    pump(app, 2200)
+
+    panel = vcs_window.changes_panel
+    checks.check("the Commit window finds the repository", panel.repository is not None)
+    checks.check("the branch name is shown", panel.header.text().startswith("main"),
+                 panel.header.text())
+
+    listed = {panel.tree.topLevelItem(i).data(0, Qt.UserRole)
+              for i in range(panel.tree.topLevelItemCount())}
+    checks.check("a modified file is listed", "hello.tern" in listed, str(sorted(listed)))
+    checks.check("an untracked file is listed", "extra.tern" in listed, str(sorted(listed)))
+
+    letters = {panel.tree.topLevelItem(i).data(0, Qt.UserRole):
+               panel.tree.topLevelItem(i).data(0, Qt.UserRole + 1)
+               for i in range(panel.tree.topLevelItemCount())}
+    checks.check("the status letter is right", letters.get("hello.tern") == "M"
+                 and letters.get("extra.tern") == "?", str(letters))
+
+    vcs_window.show_diff(os.path.join(scratch, "hello.tern"))
+    pump(app, 300)
+    diff_text = vcs_window.tabs_widget.currentWidget().view.toPlainText()
+    checks.check("the diff shows the removed line", '-println("hello");' in diff_text, diff_text[:200])
+    checks.check("the diff shows the added line",
+                 '+println("hello, world");' in diff_text, diff_text[:200])
+    checks.check("a diff tab clears the structure view",
+                 vcs_window.structure_panel.tree.topLevelItemCount() == 0,
+                 str(vcs_window.structure_panel.tree.topLevelItemCount()))
+
+    if shots:
+        os.makedirs(os.path.join(ROOT, "docs", "ide", "img"), exist_ok=True)
+        vcs_window.resize(1440, 900)
+        panel.refresh()
+        vcs_window._show_dock(vcs_window.changes_dock)
+        vcs_window.tabs_widget.setCurrentWidget(vcs_window.diff_tabs["work:" + os.path.join(scratch, "hello.tern")])
+        pump(app, 400)
+        vcs_window.grab().save(os.path.join(ROOT, "docs", "ide", "img", "commit.png"))
+        print("       wrote docs/ide/img/commit.png")
+
+    panel.message.setPlainText("change the greeting")
+    ok, output = panel.commit()
+    pump(app, 600)
+    checks.check("Commit stages and commits", ok, output[-200:])
+    checks.check("the file list is empty afterwards", panel.tree.topLevelItemCount() == 0,
+                 str(panel.tree.topLevelItemCount()))
+    checks.check("the commit message was cleared", panel.message.toPlainText() == "")
+
+    log = subprocess.run(["git", "log", "-1", "--pretty=%s"], cwd=scratch,
+                         capture_output=True, text=True).stdout.strip()
+    checks.check("git recorded the commit", log == "change the greeting", log)
+
+    vcs_window._shutdown()
+    pump(app, 300)
+    vcs_window.deleteLater()
+    shutil.rmtree(scratch, ignore_errors=True)
+
+    # A directory that is not a repository says so instead of failing.
+    plain = tempfile.mkdtemp(prefix="tern-plain-")
+    plain_window = StudioWindow(plain, theme="darcula")
+    pump(app, 1200)
+    checks.check("a non-repository is reported, not crashed",
+                 plain_window.changes_panel.repository is None
+                 and "Not a git repository" in plain_window.changes_panel.header.text(),
+                 plain_window.changes_panel.header.text())
+    plain_window._shutdown()
+    pump(app, 200)
+    plain_window.deleteLater()
+    shutil.rmtree(plain, ignore_errors=True)
+
     # --------------------------------------------------------- settings
     # What a second launch sees: the theme, the geometry and the open files
     # from the session that just ended. An ini file stands in for the real

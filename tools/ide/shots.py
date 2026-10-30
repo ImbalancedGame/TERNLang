@@ -89,7 +89,7 @@ def main():
 
     # A Qt popup is a top-level window, so it is not in the main window's grab.
     # Compose the two: the window, then the popup where it actually sits.
-    from PySide6.QtGui import QPixmap, QPainter
+    from PySide6.QtGui import QPainter
     from PySide6.QtCore import QPoint
 
     frame = window.grab()

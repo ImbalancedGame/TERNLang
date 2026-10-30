@@ -26,6 +26,7 @@ DARKS = {
     "member": "#9876aa",      # fields and members
     "global": "#a9b7c6",      # built-in names
     "error": "#ff6b68",       # red squiggle, problems
+    "added": "#8ec07c",       # diff additions, VCS "added"
     "warning": "#ffc66d",     # yellow squiggle
     "current_line": "#323232",
     "gutter_fg": "#606366",
@@ -51,6 +52,7 @@ LIGHT = {
     "member": "#7a3e9d",
     "global": "#1f1f1f",
     "error": "#c7221f",
+    "added": "#2f7d32",
     "warning": "#a67000",
     "current_line": "#eef3fa",
     "gutter_fg": "#a0a4a8",

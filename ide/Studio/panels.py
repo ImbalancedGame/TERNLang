@@ -7,14 +7,20 @@ signals and never reaches into a list of items.
 import os
 
 from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileSystemModel, QHBoxLayout, QLabel,
-                               QLineEdit, QPlainTextEdit, QPushButton, QStackedWidget,
-                               QTabWidget, QTreeView, QTreeWidget, QTreeWidgetItem,
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import (QAbstractItemView, QFileSystemModel, QHBoxLayout,
+                               QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+                               QTreeView, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
 from .theme import colour, monospace
+from .vcs import Repository
 
+
+VCS_LETTERS = {
+    "M": "modified", "A": "added", "D": "deleted", "R": "renamed",
+    "?": "untracked", "U": "conflicted", "C": "copied",
+}
 
 KIND_ICONS = {
     "function": "ƒ",
@@ -335,3 +341,290 @@ class SearchEverywhereDialog(QWidget):
         path, line, character = item.data(0, Qt.UserRole)
         self.chosen.emit(path, line, character)
         self.hide()
+
+
+class ChangesPanel(QWidget):
+    """The Commit tool window: what has changed, and the box to commit it.
+
+    Rows follow Rider: a letter and a colour per status, the path, and the
+    directory in grey. Staging is a checkbox rather than a two-list view, which
+    is fewer clicks and one less thing to get out of step with git.
+    """
+
+    openRequested = Signal(str)
+    diffRequested = Signal(str, bool)          # path, staged
+    committed = Signal(str)                    # the message that landed
+    refreshed = Signal()
+
+    def __init__(self, root, theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.repository = Repository.open(root)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.header = QLabel("")
+        self.header.setObjectName("changesHeader")
+        layout.addWidget(self.header)
+
+        self.tree = QTreeWidget()
+        # Staged is a checkbox of its own, next to the status letter, so a
+        # narrow column cannot hide one behind the other.
+        self.tree.setHeaderLabels(["", "", "Name", "Directory"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(False)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setColumnWidth(0, 22)
+        self.tree.setColumnWidth(1, 22)
+        self.tree.setColumnWidth(2, 180)
+        self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.itemChanged.connect(self._on_check)
+        layout.addWidget(self.tree, 1)
+
+        message_row = QWidget()
+        message_layout = QVBoxLayout(message_row)
+        message_layout.setContentsMargins(6, 4, 6, 6)
+        message_layout.setSpacing(4)
+
+        self.message = QPlainTextEdit()
+        self.message.setPlaceholderText("Commit message")
+        self.message.setFixedHeight(46)
+        self.message.setFont(monospace(11))
+        message_layout.addWidget(self.message)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.clicked.connect(self.refresh)
+        self.stage_all_button = QPushButton("Stage all")
+        self.stage_all_button.clicked.connect(self._stage_all)
+        self.commit_button = QPushButton("Commit")
+        self.commit_button.setDefault(True)
+        self.commit_button.clicked.connect(self.commit)
+        buttons.addWidget(self.refresh_button)
+        buttons.addWidget(self.stage_all_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.commit_button)
+        message_layout.addLayout(buttons)
+
+        layout.addWidget(message_row)
+        self.apply_theme(theme)
+        self.refresh()
+
+    # ------------------------------------------------------------- appearance
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        self.tree.setStyleSheet(
+            f"QTreeWidget {{ background: {theme['panel']}; color: {theme['fg']}; border: none; }}"
+            f"QTreeWidget::item:selected {{ background: {theme['accent']}; color: #ffffff; }}"
+            "QHeaderView::section { background: " + theme["panel"] + "; color: "
+            + theme["fg_dim"] + "; border: none; padding: 3px; }")
+        self.header.setStyleSheet(
+            f"color: {theme['fg_dim']}; padding: 4px 8px;"
+            f" border-bottom: 1px solid {theme['border']};")
+        self.message.setStyleSheet(
+            f"background: {theme['bg']}; color: {theme['fg']};"
+            f" border: 1px solid {theme['border']};")
+        self._refresh_colours()
+
+    def _status_colour(self, letter):
+        if letter == "?":
+            return self.theme.get("fg_dim", "#888888")
+        if letter in ("D", "U"):
+            return self.theme.get("error", "#cc4444")
+        return self.theme.get("accent", "#4a88c7")
+
+    def _refresh_colours(self):
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            letter = item.data(0, Qt.UserRole + 1) or ""
+            item.setForeground(1, QColor(self._status_colour(letter)))
+
+    # ---------------------------------------------------------------- content
+
+    def refresh(self):
+        """Re-reads git. Cheap enough to call on every save and window focus."""
+        self.tree.blockSignals(True)
+        self.tree.clear()
+
+        if self.repository is None:
+            self.header.setText("Not a git repository")
+            self.tree.blockSignals(False)
+            self._set_buttons_enabled(False)
+            self.refreshed.emit()
+            return
+
+        branch = self.repository.branch()
+        ahead_behind = self.repository.upstream_ahead_behind()
+        suffix = ""
+        if ahead_behind is not None:
+            ahead, behind = ahead_behind
+            if ahead:
+                suffix += f"  ↑{ahead}"
+            if behind:
+                suffix += f"  ↓{behind}"
+        self.header.setText(f"{branch}{suffix}")
+
+        files = self.repository.status()
+        for changed in files:
+            item = QTreeWidgetItem([
+                "", changed.letter, os.path.basename(changed.path),
+                os.path.dirname(changed.path)])
+            item.setData(0, Qt.UserRole, changed.path)
+            item.setData(0, Qt.UserRole + 1, changed.letter)
+            item.setData(0, Qt.UserRole + 2, changed.staged)
+            item.setToolTip(2, changed.path)
+            item.setToolTip(1, changed.kind)
+            flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+            if not changed.untracked:
+                flags |= Qt.ItemIsUserCheckable
+                item.setCheckState(0, Qt.Checked if changed.staged else Qt.Unchecked)
+            item.setFlags(flags)
+            item.setForeground(1, QColor(self._status_colour(changed.letter)))
+            item.setForeground(2, QColor(self.theme["fg"]))
+            item.setForeground(3, QColor(self.theme["fg_dim"]))
+            self.tree.addTopLevelItem(item)
+
+        if not files:
+            self.header.setText(f"{branch}{suffix}  —  no changes")
+        self._refresh_colours()
+        self._set_buttons_enabled(bool(files))
+        self.tree.blockSignals(False)
+        self.refreshed.emit()
+
+    def _set_buttons_enabled(self, enabled):
+        self.commit_button.setEnabled(enabled and self.repository is not None)
+        self.stage_all_button.setEnabled(enabled and self.repository is not None)
+
+    def selected_paths(self):
+        return [item.data(0, Qt.UserRole) for item in self.tree.selectedItems()
+                if item.data(0, Qt.UserRole)]
+
+    # ---------------------------------------------------------------- actions
+
+    def _on_double_click(self, item, _column):
+        path = item.data(0, Qt.UserRole)
+        if not path:
+            return
+        staged = bool(item.data(0, Qt.UserRole + 2))
+        full = os.path.join(self.repository.root, path) if self.repository else path
+        if os.path.exists(full):
+            self.openRequested.emit(full)
+        self.diffRequested.emit(full, staged)
+
+    def _on_check(self, item, column):
+        if column != 0 or self.repository is None:
+            return
+        path = item.data(0, Qt.UserRole)
+        if not path:
+            return
+        self.tree.blockSignals(True)
+        if item.checkState(0) == Qt.Checked:
+            self.repository.stage([path])
+        else:
+            self.repository.unstage([path])
+        self.tree.blockSignals(False)
+        self.refresh()
+
+    def _stage_all(self):
+        if self.repository is None:
+            return
+        self.repository.stage([changed.path for changed in self.repository.status()])
+        self.refresh()
+
+    def commit(self):
+        if self.repository is None:
+            return False, "not a repository"
+
+        message = self.message.toPlainText().strip()
+        if not message:
+            self.header.setText(f"{self.repository.branch()}  —  write a message first")
+            return False, "no message"
+
+        staged = [changed for changed in self.repository.status() if changed.staged]
+        if not staged:
+            self._stage_all()
+            staged = [changed for changed in self.repository.status() if changed.staged]
+        if not staged:
+            return False, "nothing staged"
+
+        ok, output = self.repository.commit(message)
+        if ok:
+            self.message.clear()
+            self.refresh()
+            self.committed.emit(message)
+        else:
+            self.header.setText(f"{self.repository.branch()}  —  commit failed")
+        return ok, output
+
+
+class DiffPanel(QWidget):
+    """A read-only view of one file's diff, coloured by line kind."""
+
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.banner = QLabel("")
+        layout.addWidget(self.banner)
+
+        self.view = QPlainTextEdit()
+        self.view.setReadOnly(True)
+        self.view.setFont(monospace(11))
+        self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        layout.addWidget(self.view, 1)
+        self.apply_theme(theme)
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        self.banner.setStyleSheet(
+            f"color: {theme['fg_dim']}; padding: 3px 8px;"
+            f" border-bottom: 1px solid {theme['border']}; background: {theme['panel']};")
+        self.view.setStyleSheet(
+            f"QPlainTextEdit {{ background: {theme['bg']}; color: {theme['fg']}; border: none;"
+            f" selection-background-color: {theme['selection']}; }}")
+        self._recolour()
+
+    def set_diff(self, title, lines):
+        """`lines` is what vcs.parse_diff returns: (kind, text) pairs."""
+        from PySide6.QtGui import QTextCharFormat
+
+        self.banner.setText(title)
+        self.lines = lines
+        self.view.setPlainText("\n".join(text for _kind, text in lines))
+        self._recolour()
+
+    def _recolour(self):
+        from PySide6.QtGui import QTextCharFormat
+
+        if not hasattr(self, "lines"):
+            return
+
+        colours = {
+            "add": self.theme.get("added", "#4a8a4a"),
+            "remove": self.theme.get("error", "#cc4444"),
+            "hunk": self.theme.get("accent", "#4a88c7"),
+            "meta": self.theme.get("fg_dim", "#888888"),
+        }
+
+        document = self.view.document()
+        block = document.begin()
+        for kind, text in self.lines:
+            if block is None or not block.isValid():
+                break
+            colour = colours.get(kind)
+            if colour is not None:
+                cursor = QTextCursor(block)
+                cursor.select(QTextCursor.BlockUnderCursor)
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor(colour))
+                cursor.mergeCharFormat(fmt)
+            block = block.next()
+        del document

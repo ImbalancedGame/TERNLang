@@ -26,7 +26,7 @@ caveats below.
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (36) |
-| TERN Studio, the desktop IDE | complete for editing, running, navigating | `tools/ide/ui_test.py` (23) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating, committing | `tools/ide/ui_test.py` (40) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
@@ -93,9 +93,14 @@ what `tools/tern run` reports.
 * **Studio** (`ide/Studio`, PySide6) — Rider-shaped shell: menu bar, toolbar,
   Project and Structure docks, Run/Problems/Terminal tabified at the bottom,
   breadcrumbs, status bar, Darcula and light themes, remembered state.
-* **Not there**: a debugger (the compiler has no breakpoint hook), a VCS panel,
-  a project model beyond "a directory", and multi-file *background* analysis.
-  None of these are blocked by the sandbox; they are simply not written.
+* **Version control** (`ide/Studio/vcs.py`) — git status, staging, commit and a
+  coloured diff view, all through the `git` CLI; degrades to "not a git
+  repository" when there is none.
+* **Not there**: a debugger, a project model beyond "a directory", and
+  multi-file *background* analysis. None of these are blocked by the sandbox.
+  The debugger is the one that needs design work: a per-instruction hook in the
+  VM costs 3-15% on the benchmarks (measured), so it has to be built on
+  breakpoint patching rather than polling, which is the next piece of work.
 
 ## What still needs fixing
 
