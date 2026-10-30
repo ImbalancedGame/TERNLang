@@ -28,9 +28,9 @@ from .editor import EditorArea
 from .lsp import LanguageServer, path_for, uri_for
 from .panels import (ChangesPanel, ConsolePanel, DebugPanel, DiffPanel,
                      FindInPathPanel, ProblemsPanel, ProjectPanel,
-                     SearchEverywhereDialog, StructurePanel, SymbolDialog,
-                     TerminalPanel)
+                     SearchEverywhereDialog, StructurePanel, SymbolDialog)
 from .debugger import DebugSession
+from .terminal import TerminalPanel
 from .vcs import parse_diff
 from .theme import THEMES, monospace, stylesheet
 
@@ -160,7 +160,7 @@ class StudioWindow(QMainWindow):
         self.problems_dock.setWidget(self.problems_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.problems_dock)
 
-        self.terminal = TerminalPanel(self.theme)
+        self.terminal = TerminalPanel(self.theme, self.root)
         self.terminal_dock = QDockWidget("Terminal", self)
         self.terminal_dock.setObjectName("terminalDock")
         self.terminal_dock.setWidget(self.terminal)
@@ -274,6 +274,10 @@ class StudioWindow(QMainWindow):
                                               self.toggle_breakpoint),
             "debug_window": self._action("Debug", "Alt+5",
                                          lambda: self._show_dock(self.debug_dock)),
+            # Wrapped: QAction.triggered passes `checked`, which would land in
+            # `command` and ask the shell to run `False`.
+            "run_in_terminal": self._action("Run Command in Terminal...", "Ctrl+Alt+T",
+                                            lambda: self.run_command_in_terminal()),
             "terminal": self._action("Terminal", "Alt+F12", lambda: self._show_dock(self.terminal_dock)),
             "commit": self._action("Commit", "Alt+0", lambda: self._show_dock(self.changes_dock)),
             "refresh_vcs": self._action("Refresh VCS", "Ctrl+Alt+F5", self.refresh_vcs),
@@ -333,6 +337,7 @@ class StudioWindow(QMainWindow):
         view_menu.addAction(a["problems"])
         view_menu.addAction(a["terminal"])
         view_menu.addAction(a["find_window"])
+        view_menu.addAction(a["run_in_terminal"])
         view_menu.addAction(a["debug_window"])
         view_menu.addAction(a["commit"])
         view_menu.addSeparator()
@@ -511,7 +516,6 @@ class StudioWindow(QMainWindow):
         self.log_lines.append(text)
         if len(self.log_lines) > 400:
             self.log_lines = self.log_lines[-200:]
-        self.terminal.write(f"[ls] {text}\n", info=True) if False else None
 
     def _start_timer(self):
         # Analysis is requested on every edit and answered immediately; the
@@ -597,6 +601,9 @@ class StudioWindow(QMainWindow):
             lambda _lines: self.debug_session.set_breakpoints(sorted(editor.breakpoints))
             if self.debug_session is not None and self.debug_session.running else None)
         editor.hoverRequested.connect(lambda x, y, point: self._hover(editor, point))
+        editor.signatureRequested.connect(lambda line, character: self._signature(editor, line, character))
+        editor.signatureHidden.connect(lambda: (self.signature_label.hide()
+                                                if hasattr(self, "signature_label") else None))
         editor.setStyleSheet(
             f"QPlainTextEdit {{ background: {self.theme['bg']}; color: {self.theme['fg']};"
             f" selection-background-color: {self.theme['selection']}; }}")
@@ -891,6 +898,54 @@ class StudioWindow(QMainWindow):
         self.server.hover(uri_for(editor.path), line, character,
                           lambda result: self._hover_arrived(editor, point, result))
 
+    def _signature(self, editor, line, character):
+        if not hasattr(self, "server") or not self._is_tern(editor.path):
+            return
+        if not hasattr(self, "signature_label"):
+            self.signature_label = QLabel(self)
+            self.signature_label.setObjectName("signatureHint")
+            self.signature_label.setTextFormat(Qt.PlainText)
+            self.signature_label.setMargin(6)
+            self.signature_label.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.signature_label.hide()
+
+        self.server.signature(uri_for(editor.path), line, character,
+                              lambda result: self._signature_arrived(editor, result))
+
+    def _signature_arrived(self, editor, result):
+        if not result or not result.get("signatures"):
+            self.signature_label.hide()
+            return
+        if not editor.isVisible():
+            self.signature_label.hide()
+            return
+
+        signatures = result["signatures"]
+        index = min(result.get("activeSignature", 0) or 0, len(signatures) - 1)
+        signature = signatures[index]
+        parameter = result.get("activeParameter", 0) or 0
+        names = [entry.get("label", "") for entry in signature.get("parameters", [])]
+
+        # Bold the argument being typed, the way Rider's hint reads.
+        label = signature.get("label", "")
+        if 0 <= parameter < len(names) and names[parameter]:
+            label = label.replace(names[parameter], f"<b>{names[parameter]}</b>", 1)
+            self.signature_label.setTextFormat(Qt.RichText)
+            self.signature_label.setText(label)
+        else:
+            self.signature_label.setTextFormat(Qt.PlainText)
+            self.signature_label.setText(label)
+
+        self.signature_label.setStyleSheet(
+            f"QLabel {{ background: {self.theme['panel_alt']}; color: {self.theme['fg']};"
+            f" border: 1px solid {self.theme['border']}; border-radius: 3px; }}")
+        self.signature_label.adjustSize()
+        # The label is a child of the window, so the anchor has to come back
+        # out of global coordinates before it can be moved there.
+        self.signature_label.move(self.mapFromGlobal(editor.signature_anchor()))
+        self.signature_label.show()
+        self.signature_label.raise_()
+
     def _hover_arrived(self, editor, point, result):
         if result is None:
             return
@@ -1127,6 +1182,27 @@ class StudioWindow(QMainWindow):
             return
         editor.goto(line - 1, column)
         editor.setFocus()
+
+    def run_command_in_terminal(self, command=None, directory=None):
+        """Opens the Terminal window and runs something in it.
+
+        Used by the menu and by actions that shell out — opening the project's
+        directory, running a script under the shell — so there is one terminal,
+        with its own history, rather than a dialog per command.
+        """
+        self._show_dock(self.terminal_dock)
+        self.terminal_dock.raise_()
+        if directory and os.path.isdir(directory):
+            self.terminal.cwd = directory
+            self.terminal._update_prompt()
+            self.terminal.process.setWorkingDirectory(directory)
+
+        if command is None:
+            command = QInputDialog.getText(self, "Run in Terminal", "Command:")[0]
+        if command:
+            self.terminal.input.setText(command)
+            self.terminal.submit()
+        self.terminal.input.setFocus()
 
     def show_keymap(self):
         """The shortcuts, in one dialog, because a menu is not a reference."""
@@ -1433,9 +1509,12 @@ class StudioWindow(QMainWindow):
             app.setStyleSheet(stylesheet(self.theme))
 
         for panel in (self.project_panel, self.structure_panel, self.problems_panel,
-                      self.console, self.terminal, self.changes_panel, self.debug_panel,
+                      self.console, self.changes_panel, self.debug_panel,
                       self.find_panel):
             panel.apply_theme(self.theme)
+
+        if hasattr(self, "terminal"):
+            self.terminal.apply_theme(self.theme)
 
         for area in self.tabs.values():
             area.apply_theme(self.theme)
@@ -1502,6 +1581,8 @@ class StudioWindow(QMainWindow):
         if self.debug_session is not None:
             self.debug_session.stop()
             self.debug_session = None
+        if hasattr(self, "terminal"):
+            self.terminal.stop()
         if hasattr(self, "server"):
             self.server.stop()
         self.stop_run()

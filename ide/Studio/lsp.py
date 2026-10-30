@@ -239,6 +239,12 @@ class LanguageServer(QObject):
             "position": {"line": line, "character": character},
         }, callback)
 
+    def signature(self, uri, line, character, callback):
+        self.request("textDocument/signatureHelp", {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+        }, callback)
+
     def definition(self, uri, line, character, callback):
         self.request("textDocument/definition", {
             "textDocument": {"uri": uri},

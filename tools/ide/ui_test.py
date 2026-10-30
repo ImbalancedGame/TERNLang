@@ -58,6 +58,8 @@ def main():
     verbose = "-v" in sys.argv or "--verbose" in sys.argv
     shots = "--shots" in sys.argv
 
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QTextCursor
     from PySide6.QtCore import Qt
@@ -277,7 +279,7 @@ def main():
                 "undo", "redo", "select_all", "cut", "copy", "paste", "exit",
                 "goto_file", "goto_line", "docs", "about", "keymap", "goto_symbol",
                 "goto_symbol_in_file", "find_usages", "rename", "check", "debug",
-                "compile"}
+                "compile", "run_in_terminal"}
     raised = []
     for name, action in window.actions_map.items():
         if name in blocking or not action.shortcut().toString():
@@ -292,6 +294,155 @@ def main():
         window._area().find_bar.hide()
     window.tabs_widget.setCurrentWidget(window.tabs[editor.path])
     pump(app, 200)
+
+    # ------------------------------------------------------ signature help
+    # Type inside a real call and read the hint that appears above the caret.
+    editor = window._editor()
+    editor.setPlainText("fn classify(line, rule) {\n    return line;\n}\n\nlet first = classify(\"x\", second);\n"
+                        "let second = 2;\n")
+    window.server.did_change(_uri(editor.path), editor.toPlainText())
+    pump(app, 400)
+    # The call, not the declaration: the first `classify(` is the `fn` line.
+    cursor = editor.textCursor()
+    call = editor.toPlainText().index('classify("') + len("classify(")
+    cursor.setPosition(call)
+    editor.setTextCursor(cursor)
+    pump(app, 1400)
+    hint = getattr(window, "signature_label", None)
+    checks.check("the parameter hint appears inside a call",
+                 hint is not None and hint.isVisible(), "no hint")
+    # Above the caret's own line, or it would cover the code being typed.
+    caret_top = editor.cursorRect().top()
+    checks.check("the hint sits at the caret", hint is not None and
+                 abs(hint.geometry().top() - window.mapFromGlobal(editor.viewport().mapToGlobal(
+                     editor.cursorRect().bottomLeft())).y()) <= 2,
+                 f"hint {hint.geometry().top()} vs caret {caret_top}")
+    checks.check("the hint names the function and its parameters",
+                 hint is not None and "classify" in hint.text() and "line" in hint.text(),
+                 hint.text() if hint else "none")
+
+    cursor.clearSelection()
+    cursor.setPosition(0)
+    editor.setTextCursor(cursor)
+    pump(app, 600)
+    checks.check("the hint goes away outside a call",
+                 hint is not None and not hint.isVisible(), "still visible")
+
+    # ---------------------------------------------------------- terminal
+    # The Terminal is a shell, so the checks run real commands through it.
+    terminal = window.terminal
+    terminal.clear()
+    terminal.input.setText("echo from-the-terminal")
+    terminal.submit()
+    pump(app, 900)
+    output = terminal.output.toPlainText()
+    checks.check("the terminal runs a command", "from-the-terminal" in output, output[-160:])
+    checks.check("the command is echoed as a prompt line", "$ echo from-the-terminal" in output,
+                 output[-200:])
+
+    scratch = tempfile.mkdtemp(prefix="tern-term-")
+    terminal.input.setText(f"cd {scratch} && pwd")
+    terminal.submit()
+    pump(app, 900)
+    checks.check("cd persists in the shell", os.path.realpath(terminal.cwd) == os.path.realpath(scratch),
+                 f"{terminal.cwd} != {scratch}")
+    checks.check("the prompt follows the directory", scratch.split(os.sep)[-1] in terminal.prompt.text(),
+                 terminal.prompt.text())
+
+    terminal.input.setText("false")
+    terminal.submit()
+    pump(app, 800)
+    checks.check("a failing status reaches the toolbar", "exit 1" in terminal.status.text(),
+                 terminal.status.text())
+
+    # `exit` ends the shell; the panel says so, and the next command starts a
+    # new one rather than typing into a corpse.
+    terminal.input.setText("exit 3")
+    terminal.submit()
+    pump(app, 900)
+    checks.check("closing the shell is reported", "exited" in terminal.status.text(),
+                 terminal.status.text())
+    terminal.input.setText("echo back-again")
+    terminal.submit()
+    pump(app, 1200)
+    checks.check("the next command restarts the shell",
+                 "back-again" in terminal.output.toPlainText(),
+                 terminal.output.toPlainText()[-140:])
+
+    # Colours: ask for red, then read the format back out of the document.
+    terminal.clear()
+    terminal.input.setText("printf '\\033[31mALARM\\033[0m\\n'")
+    terminal.submit()
+    pump(app, 900)
+    document = terminal.output.document()
+    reds = []
+    block = document.begin()
+    while block.isValid():
+        iterator = block.begin()
+        while not iterator.atEnd():
+            fragment = iterator.fragment()
+            if fragment.isValid() and "ALARM" in fragment.text():
+                reds.append(fragment.charFormat().foreground().color().name())
+            iterator += 1
+        block = block.next()
+    checks.check("ANSI colour is applied to output", reds and reds[0].lower() != "#a9b7c6",
+                 str(reds))
+
+    # The menu entry: no dialog, just the command in the dock's shell.
+    window.run_command_in_terminal("echo from-the-menu")
+    pump(app, 1200)
+    checks.check("Ctrl+Alt+T runs a command in the terminal",
+                 "from-the-menu" in terminal.output.toPlainText(),
+                 terminal.output.toPlainText()[-120:])
+    checks.check("the terminal window is showing", window.terminal_dock.isVisible(),
+                 str(window.terminal_dock.isVisible()))
+
+    # Ctrl+C on a sleeping command: the shell survives and takes the next one.
+    terminal.input.setText("sleep 30")
+    terminal.submit()
+    pump(app, 700)
+    terminal.interrupt()
+    pump(app, 900)
+    terminal.input.setText("echo after-interrupt")
+    terminal.submit()
+    pump(app, 900)
+    checks.check("Ctrl+C stops the running command",
+                 "after-interrupt" in terminal.output.toPlainText(),
+                 terminal.output.toPlainText()[-140:])
+
+    # Up-arrow history: the last command comes back to the prompt.
+    for command in ("echo first-one", "echo second-one"):
+        terminal.input.setText(command)
+        terminal.submit()
+        pump(app, 600)
+    terminal.input.setFocus()
+    QTest.keyClick(terminal.input, Qt.Key_Up)
+    pump(app, 150)
+    recalled = terminal.input.text()
+    checks.check("Up recalls the previous command", recalled == "echo second-one", recalled)
+    QTest.keyClick(terminal.input, Qt.Key_Up)
+    pump(app, 150)
+    checks.check("Up again walks further back", terminal.input.text() == "echo first-one",
+                 terminal.input.text())
+    terminal.input.clear()
+
+    # Ctrl+L clears the view, as in a shell.
+    QTest.keyClick(terminal.input, Qt.Key_L, Qt.ControlModifier)
+    pump(app, 200)
+    checks.check("Ctrl+L clears the terminal", terminal.output.toPlainText().strip() == "",
+                 repr(terminal.output.toPlainText()[:60]))
+
+    terminal.restart()
+    pump(app, 900)
+    terminal.input.setText("echo after-restart")
+    terminal.submit()
+    pump(app, 900)
+    checks.check("the shell restarts and takes commands", "after-restart" in terminal.output.toPlainText(),
+                 terminal.output.toPlainText()[-120:])
+    shutil_quiet(scratch)
+    terminal.cwd = ROOT
+    terminal.restart()
+    pump(app, 500)
 
     # ------------------------------------------------------ find in path
     window.show_find_in_path("classify")
@@ -542,6 +693,13 @@ def main():
     second._shutdown()
     pump(app, 300)
     second.deleteLater()
+    # Let Qt actually destroy the second window before the first one is
+    # re-polished: theming while its widgets are half-deleted trips a
+    # refcount bug in shiboken, which shows up as a fatal Python error.
+    pump(app, 300)
+    second = None
+    import gc
+    gc.collect()
     window.set_theme("darcula")
 
     # --------------------------------------------------------- screenshots

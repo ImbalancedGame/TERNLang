@@ -122,7 +122,34 @@ def main():
     pump(app, 4500)
     save("run.png")
 
-    # 6. Find in Path, with a Markdown hit opened at its line.
+    # 6. Terminal: a couple of commands with coloured output.
+    window._show_dock(window.terminal_dock)
+    window.terminal.clear()
+    for command in ("ls examples",
+                    "grep -c 'Rule(' examples/triage.tern",
+                    "printf '\\033[32mpass\\033[0m: examples/triage.tern\\n'"):
+        window.terminal.input.setText(command)
+        window.terminal.submit()
+        pump(app, 450)
+    save("terminal.png")
+    window._show_dock(window.console_dock)
+
+    # 7. Signature help while typing a call.
+    editor = window._area().editor
+    editor.setPlainText("fn classify(line, rule) {\n    return rule;\n}\n\n"
+                        "let rules = [1];\nlet found = classify(\"timeout\", rules[0]);\n")
+    window.server.did_change(uri, editor.toPlainText())
+    pump(app, 400)
+    cursor = editor.textCursor()
+    cursor.setPosition(editor.toPlainText().index('classify("') + len("classify("))
+    editor.setTextCursor(cursor)
+    pump(app, 1500)
+    save("signature.png")
+    cursor.setPosition(0)
+    editor.setTextCursor(cursor)
+    pump(app, 200)
+
+    # 8. Find in Path, with a Markdown hit opened at its line.
     window.show_find_in_path("Diagnostics print")
     pump(app, 700)
     hits = window.find_panel.results
@@ -142,7 +169,12 @@ def main():
     window.open_file(editor.path)
     pump(app, 300)
 
-    # 7. The light theme.
+    # 7. The light theme, on the file the tour started with.
+    window._area().editor.setPlainText(original)
+    window.server.did_change(uri, window._area().editor.toPlainText())
+    window.find_dock.hide()
+    window._show_dock(window.console_dock)
+    pump(app, 500)
     window.set_theme("light")
     pump(app, 400)
     save("light.png")

@@ -164,6 +164,8 @@ class Editor(QPlainTextEdit):
     referencesRequested = Signal()
     definitionRequested = Signal()
     completionRequested = Signal(int)
+    signatureRequested = Signal(int, int)
+    signatureHidden = Signal()
     breakpointsChanged = Signal(list)
     hoverRequested = Signal(int, int, QPoint)
 
@@ -308,8 +310,40 @@ class Editor(QPlainTextEdit):
 
         cursor = self.textCursor()
         self.cursorMoved.emit(cursor.blockNumber() + 1, cursor.positionInBlock() + 1)
+        self._request_signature()
         self._match_brackets()
         self.gutter.update()
+
+    def _request_signature(self):
+        """Asks for signature help when the caret sits inside a call's brackets.
+
+        A cheap local test keeps this off the wire for ordinary typing; the
+        server decides the rest.
+        """
+        cursor = self.textCursor()
+        text = self.toPlainText()
+        position = cursor.position()
+        depth = 0
+        scan = position - 1
+        while scan >= 0 and scan > position - 400:
+            character = text[scan]
+            if character in ")]}":
+                depth += 1
+            elif character in "([{":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif character == "\n" and depth == 0:
+                scan = -1
+                break
+            scan -= 1
+
+        if scan < 0 or text[scan] != "(":
+            self.signatureHidden.emit()
+            return
+
+        block = cursor.block()
+        self.signatureRequested.emit(block.blockNumber(), cursor.positionInBlock())
 
     def _on_text(self):
         self._update_margins()
@@ -695,6 +729,12 @@ class Editor(QPlainTextEdit):
 
     def request_completion(self):
         self.completionRequested.emit(self.completion_offset())
+
+    def signature_anchor(self):
+        """Where the parameter hint should point: under the caret's line."""
+        cursor = self.textCursor()
+        rect = self.cursorRect(cursor)
+        return self.viewport().mapToGlobal(rect.bottomLeft())
 
     def show_hover(self, point, markdown):
         if not markdown:

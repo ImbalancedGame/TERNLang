@@ -281,10 +281,6 @@ class ConsolePanel(QWidget):
         self.status.setText(text)
 
 
-class TerminalPanel(ConsolePanel):
-    """A second console for shell commands, as Rider has."""
-
-
 class SearchEverywhereDialog(QWidget):
     """Ctrl+Shift+A: symbols across the project, as a popup list."""
 
