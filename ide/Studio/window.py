@@ -15,6 +15,7 @@ highlighter needs to colour text.
 
 import json
 import os
+import subprocess
 import sys
 
 from PySide6.QtCore import QEvent, QProcess, QSize, Qt, QTimer
@@ -160,6 +161,7 @@ class StudioWindow(QMainWindow):
 
         # Bottom: run, problems, terminal.
         self.console = ConsolePanel(self.theme)
+        self.console.interruptRequested.connect(self.stop_run)
         self.console_dock = QDockWidget("Run", self)
         self.console_dock.setObjectName("runDock")
         self.console_dock.setWidget(self.console)
@@ -223,6 +225,19 @@ class StudioWindow(QMainWindow):
         self.resizeDocks([self.debug_dock], [250], Qt.Vertical)
         self.resizeDocks([self.find_dock], [250], Qt.Vertical)
 
+    def _edit_shortcut(self, operation):
+        """Undo/cut/copy/paste/select-all on whatever has the keyboard.
+
+        The actions used to call into the current editor, which is right until
+        the focus is in a tool window — then they silently did nothing, or did
+        it to a document nobody was looking at.
+        """
+        widget = QApplication.focusWidget()
+        for candidate in (widget, self._editor()):
+            if candidate is not None and hasattr(candidate, operation):
+                getattr(candidate, operation)()
+                return
+
     def _action(self, text, shortcut=None, slot=None, checkable=False):
         action = QAction(text, self)
         if shortcut:
@@ -241,12 +256,19 @@ class StudioWindow(QMainWindow):
             "save_all": self._action("Save All", "Ctrl+Shift+S", self.save_all),
             "close_tab": self._action("Close Tab", "Ctrl+W", lambda: self.close_tab(self.tabs_widget.currentIndex())),
             "exit": self._action("Exit", "Ctrl+Q", self.close),
-            "undo": self._action("Undo", "Ctrl+Z", lambda: self._editor() and self._editor().undo()),
+            "undo": self._action("Undo", "Ctrl+Z", lambda: self._edit_shortcut("undo")),
             "redo": self._action("Redo", "Ctrl+Shift+Z", lambda: self._editor() and self._editor().redo()),
-            "cut": self._action("Cut", "Ctrl+X", lambda: self._editor() and self._editor().cut()),
-            "copy": self._action("Copy", "Ctrl+C", lambda: self._editor() and self._editor().copy()),
-            "paste": self._action("Paste", "Ctrl+V", lambda: self._editor() and self._editor().paste()),
-            "select_all": self._action("Select All", "Ctrl+A", lambda: self._editor() and self._editor().selectAll()),
+            # No shortcuts on the clipboard actions. A window-level Ctrl+C
+            # intercepts the key before any widget sees it, which is why
+            # Ctrl+C did nothing in the Run window and the terminal: the Copy
+            # action claimed it and copied from an editor that did not have
+            # focus. The widgets handle their own clipboard keys; the menu
+            # items below still work when clicked, and act on what has focus.
+            "cut": self._action("Cut", None, lambda: self._edit_shortcut("cut")),
+            "copy": self._action("Copy", None, lambda: self._edit_shortcut("copy")),
+            "paste": self._action("Paste", None, lambda: self._edit_shortcut("paste")),
+            "select_all": self._action("Select All", None,
+                                       lambda: self._edit_shortcut("selectAll")),
             "find": self._action("Find...", "Ctrl+F", self.find),
             "replace": self._action("Replace...", "Ctrl+H", lambda: self.find(with_replace=True)),
             "find_next": self._action("Find Next", "F3", self.find_next),
@@ -1532,7 +1554,9 @@ class StudioWindow(QMainWindow):
         if editor.document().isModified():
             self.save_current()
 
-        output = os.path.join(self.root, "build", "studio", os.path.splitext(os.path.basename(editor.path))[0])
+        name = os.path.splitext(os.path.basename(editor.path))[0]
+        output = os.path.join(self.root, "build", "studio",
+                              name + (".exe" if runtime.WINDOWS else ""))
         os.makedirs(os.path.dirname(output), exist_ok=True)
         self.console.clear()
         self.console.write(f"Compiling {os.path.basename(editor.path)} with the native backend...\n", info=True)
@@ -1543,13 +1567,22 @@ class StudioWindow(QMainWindow):
         compiler.setProcessChannelMode(QProcess.MergedChannels)
         compiler.readyReadStandardOutput.connect(
             lambda: self.console.write(bytes(compiler.readAllStandardOutput()).decode("utf-8", "replace")))
-        compiler.finished.connect(lambda code, _status: self._compiled(code, output))
+        compiler.finished.connect(
+            lambda code, _status: self._compiled(code, output, compiler))
+        # Tracked like any other run, so Ctrl+C and the Stop button can end a
+        # compile too — building the runtime takes seconds and can hang.
+        self.run_process = compiler
+        self.console.set_running(True)
         compiler.start(sys.executable, [os.path.join(self.root, "native", "ternc.py"), editor.path, "-o", output])
 
-    def _compiled(self, code, output):
+    def _compiled(self, code, output, process=None):
+        if process is not None and process is not self.run_process:
+            return
+        self.run_process = None
         if code != 0:
             self.console.write(f"\nCompilation failed (exit {code}).\n", error=True)
             self.console.set_status("compile failed")
+            self.console.set_running(False)
             return
         self.console.write("\nRunning the compiled binary:\n\n", info=True)
         self._start_process([output], "Compiled", append=True)
@@ -1562,25 +1595,52 @@ class StudioWindow(QMainWindow):
 
         self._show_dock(self.console_dock)
         self.console.set_status(f"{name}: running")
+        self.console.set_running(True)
 
         process = QProcess(self)
         process.setWorkingDirectory(self.root)
         process.setProcessChannelMode(QProcess.MergedChannels)
         process.readyReadStandardOutput.connect(
             lambda: self.console.write(bytes(process.readAllStandardOutput()).decode("utf-8", "replace")))
-        process.finished.connect(lambda code, _status: self._process_finished(name, code))
+        process.finished.connect(
+            lambda code, _status: self._process_finished(name, code, process))
         process.start(command[0], command[1:])
         self.run_process = process
 
-    def _process_finished(self, name, code):
-        self.console.write(f"\n[{name} exited with {code}]\n", info=code == 0, error=code != 0)
-        self.console.set_status(f"{name}: exited with {code}")
+    def _process_finished(self, name, code, process=None):
+        # A stopped process still reports `finished`, a moment later and after
+        # `stop_run` has forgotten it. Without this the window reports an exit
+        # for something the user already cancelled — and at teardown it reports
+        # it to panels that no longer exist.
+        if process is not None and process is not self.run_process:
+            return
         self.run_process = None
+        try:
+            self.console.write(f"\n[{name} exited with {code}]\n",
+                               info=code == 0, error=code != 0)
+            self.console.set_status(f"{name}: exited with {code}")
+            self.console.set_running(False)
+        except RuntimeError:
+            # The window was destroyed while the process was still finishing.
+            # A process outliving its window has nobody left to tell.
+            pass
 
     def stop_run(self):
+        """Ctrl+C and the Stop button: end the program, and say so."""
         if self.run_process is not None and self.run_process.state() != QProcess.NotRunning:
-            self.run_process.kill()
+            pid = self.run_process.processId()
+            if runtime.WINDOWS and pid:
+                # TerminateProcess ends the process it is given and leaves
+                # anything that process started running. /T takes the tree.
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True)
+                self.run_process.waitForFinished(1500)
+            if self.run_process.state() != QProcess.NotRunning:
+                self.run_process.kill()
+            self.console.write("\n[stopped]\n", info=True)
+            self.console.set_status("stopped")
             self.run_process = None
+        self.console.set_running(False)
 
     def check_file(self):
         editor = self._editor()
@@ -1713,6 +1773,8 @@ class StudioWindow(QMainWindow):
         self.stop_run()
 
     def closeEvent(self, event):
+        # Do not leave a program running with no window to stop it from.
+        self.stop_run()
         for path in list(self.tabs):
             if self.tabs[path].editor.document().isModified():
                 self.tabs_widget.setCurrentWidget(self.tabs[path])

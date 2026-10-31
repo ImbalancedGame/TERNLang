@@ -224,7 +224,14 @@ class ProblemsPanel(QWidget):
 
 
 class ConsolePanel(QWidget):
-    """The Run tool window: program output, coloured by stream."""
+    """The Run tool window: program output, coloured by stream.
+
+    Ctrl+C stops whatever is running, unless there is a selection to copy —
+    the same rule a terminal uses, and the one everybody tries first when a
+    program will not finish.
+    """
+
+    interruptRequested = Signal()
 
     def __init__(self, theme, parent=None):
         super().__init__(parent)
@@ -238,16 +245,24 @@ class ConsolePanel(QWidget):
         row.setContentsMargins(6, 4, 6, 4)
         self.status = QLabel("No process running")
         self.status.setStyleSheet(f"color: {theme['fg_dim']};")
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setFixedHeight(22)
+        self.stop_button.setToolTip("Stop the running program (Ctrl+C)")
+        self.stop_button.clicked.connect(self.interruptRequested.emit)
+        self.stop_button.setEnabled(False)
         self.clear_button = QPushButton("Clear")
         self.clear_button.setFixedHeight(22)
         self.clear_button.clicked.connect(self.clear)
         row.addWidget(self.status, 1)
+        row.addWidget(self.stop_button)
         row.addWidget(self.clear_button)
         layout.addWidget(toolbar)
 
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.output.setFont(monospace(11))
+        self.output.setContextMenuPolicy(Qt.DefaultContextMenu)
+        self.output.installEventFilter(self)
         layout.addWidget(self.output, 1)
 
         self._error_format = QTextCharFormat()
@@ -262,6 +277,26 @@ class ConsolePanel(QWidget):
         self.status.setStyleSheet(f"color: {theme['fg_dim']};")
         self._error_format.setForeground(QColor(theme["error"]))
         self._info_format.setForeground(QColor(theme["fg_dim"]))
+
+    def eventFilter(self, watched, event):
+        """Ctrl+C in the output: copy a selection, otherwise stop the program.
+
+        The output is a read-only text view, so Ctrl+C normally does nothing at
+        all — which is why "you cannot Ctrl+C the Run window" is a fair
+        complaint. Copy still wins when something is selected, because that is
+        the other thing Ctrl+C is for.
+        """
+        from PySide6.QtCore import QEvent
+
+        if watched is self.output and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_C and event.modifiers() & Qt.ControlModifier:
+                if not self.output.textCursor().hasSelection():
+                    self.interruptRequested.emit()
+                    return True
+        return super().eventFilter(watched, event)
+
+    def set_running(self, running):
+        self.stop_button.setEnabled(bool(running))
 
     def clear(self):
         self.output.clear()
