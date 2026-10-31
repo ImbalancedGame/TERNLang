@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 
 def search_roots(invoked_from=None):
-    """Directories a virtualenv might be in, nearest first.
+    r"""Directories a virtualenv might be in, nearest first.
 
     The repository root, then the directory the launcher was invoked from and
     its parents. The second part is not decoration: `cd tools` then

@@ -2594,8 +2594,9 @@ static Value case_map(Value self, bool upper) {
         int size;
         uint32_t code = utf8_decode(p, end, &size);
         wint_t mapped = upper ? towupper((wint_t)code) : towlower((wint_t)code);
-        if (mapped != 0 && mapped != (wint_t)code && mapped <= 0x10FFFF) {
-            code = (uint32_t)mapped;
+        uint32_t wide = (uint32_t)mapped;
+        if (wide != 0 && wide != code && wide <= 0x10FFFFu) {
+            code = wide;
         }
         char bytes[4];
         int written = utf8_encode(code, bytes);
@@ -5527,7 +5528,7 @@ static void net_write_all(int fd, const void *data, size_t length, const char *w
     const unsigned char *bytes = (const unsigned char *)data;
     size_t sent = 0;
     while (sent < length) {
-        ssize_t n = send(fd, bytes + sent, length - sent, MSG_NOSIGNAL);
+        ssize_t n = send(fd, (const char *)bytes + sent, length - sent, MSG_NOSIGNAL);
         if (n <= 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 tern_panic("NetError", "%s() timed out", what);
@@ -5543,7 +5544,7 @@ static void net_write_all(int fd, const void *data, size_t length, const char *w
 static ssize_t net_read_raw(int fd, unsigned char *buffer, size_t length) {
     size_t got = 0;
     while (got < length) {
-        ssize_t n = recv(fd, buffer + got, length - got, 0);
+        ssize_t n = recv(fd, (char *)buffer + got, length - got, 0);
         if (n == 0) {
             return (ssize_t)got;
         }

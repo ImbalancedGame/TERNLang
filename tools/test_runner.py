@@ -169,6 +169,22 @@ def main(argv):
             os.environ["MSYS2_ROOT"] = saved_root
         os.environ["PATH"] = saved_path
 
+    # The compiler asks the CLI for bytecode on every compile. That one call is
+    # what raised WinError 193, so exercise it directly and look at the file it
+    # leaves behind; on Windows this is the same call, with the same runner.
+    sample = os.path.join(ROOT, "examples", "wordcount.tern")
+    if os.path.exists(sample):
+        target = os.path.join(tempfile.mkdtemp(prefix="tern-emit-"), "wc.json")
+        emitted = runner.run(ROOT, ["emit", sample, "-o", target],
+                             capture_output=True, text=True)
+        checks.check("the CLI emits bytecode through the runner",
+                     emitted.returncode == 0 and os.path.exists(target)
+                     and os.path.getsize(target) > 0,
+                     (emitted.stderr or emitted.stdout or emitted.args)[-300:])
+        module = runner_c_module()
+        checks.check("ternc starts the CLI through the runner, not a script",
+                     getattr(module, "runner", None) is runner)
+
     # The end-to-end case from the bug report: a .tern file compiled straight
     # to a binary, which is the path that raised WinError 193.
     sample = os.path.join(ROOT, "examples", "wordcount.tern")

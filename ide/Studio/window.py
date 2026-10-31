@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 from PySide6.QtCore import QEvent, QProcess, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDockWidget, QFileDialog,
                                QInputDialog, QLabel, QListWidget, QMainWindow,
                                QMessageBox, QPlainTextEdit, QSizePolicy, QTabWidget,
@@ -322,14 +322,26 @@ class StudioWindow(QMainWindow):
             "project": self._action("Project", "Alt+1", lambda: self._show_dock(self.project_dock)),
             "structure": self._action("Structure", "Alt+7", lambda: self._show_dock(self.structure_dock)),
             "run_window": self._action("Run Window", "Alt+4", lambda: self._show_dock(self.console_dock)),
+            # `triggered` passes the checked flag; without a parameter to
+            # swallow it, `n` becomes True and set_theme throws it away — after
+            # Qt has already ticked the item, so the menu accumulates ticks and
+            # nothing changes.
             **{f"theme_{name}": self._action(label, None,
-                                             lambda n=name: self.set_theme(n), checkable=True)
+                                             lambda checked=False, n=name: self.set_theme(n),
+                                             checkable=True)
                for name, label in THEME_NAMES.items()},
             "docs": self._action("Standard Library Reference", None, self.open_docs),
             "about": self._action("About TERN Studio", None, self.about),
         }
+        # One palette at a time, and clicking the current one does not turn
+        # theming off. An exclusive action group is what makes the menu read as
+        # a radio list instead of a row of independent ticks.
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
         for name in THEME_NAMES:
-            self.actions_map[f"theme_{name}"].setChecked(self.theme_name == name)
+            action = self.actions_map[f"theme_{name}"]
+            self.theme_group.addAction(action)
+            action.setChecked(self.theme_name == name)
 
     def _build_menus(self):
         bar = self.menuBar()

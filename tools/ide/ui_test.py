@@ -321,6 +321,30 @@ def main():
     checks.check("the carbon theme is darker than darcula",
                  _luminance(THEMES["carbon"]["bg"]) < _luminance(THEMES["darcula"]["bg"]),
                  f"{THEMES['carbon']['bg']} vs {THEMES['darcula']['bg']}")
+
+    # Clicking the menu, which is not the same thing as calling set_theme.
+    # A checkable QAction hands its checked flag to the slot, so
+    # `lambda n=name:` received True, set_theme refused an unknown name, and
+    # Qt had already ticked the item: the palette never moved and every entry
+    # the user clicked stayed ticked. Both symptoms came from this path, and
+    # only this path — calling set_theme directly skipped it.
+    window.set_theme("darcula")
+    before_css = app.styleSheet()
+    window.actions_map["theme_carbon"].trigger()
+    pump(app, 200)
+    checks.check("clicking a theme in the menu applies it", window.theme_name == "carbon",
+                 window.theme_name)
+    checks.check("clicking a theme in the menu restyles the window",
+                 app.styleSheet() != before_css)
+    ticked = [name for name in THEMES if window.actions_map[f"theme_{name}"].isChecked()]
+    checks.check("the theme menu is a radio list, not checkboxes", ticked == ["carbon"], str(ticked))
+
+    window.actions_map["theme_light"].trigger()
+    pump(app, 200)
+    ticked = [name for name in THEMES if window.actions_map[f"theme_{name}"].isChecked()]
+    checks.check("a second click moves the tick instead of adding one",
+                 window.theme_name == "light" and ticked == ["light"], str(ticked))
+    checks.check("the editor follows a menu click", window._editor().theme is THEMES["light"])
     window.set_theme("darcula")
 
     # ------------------------------------------------------------ format
