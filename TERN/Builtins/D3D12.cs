@@ -67,6 +67,7 @@ namespace TERN.Builtins
         {
             var map = new TernMap();
             var targets = new Targets();
+            var windows = new D3D12Windows();
 
             Add(map, "available", 0, 0, (vm, a) => Value.Bool(Driver.Load() is not null),
                 "True when d3d12.dll could be loaded (or TERN_D3D12_LIBRARY points at one).");
@@ -158,6 +159,35 @@ namespace TERN.Builtins
                 targets.Remove(vm, a[0]);
                 return Value.Nil;
             }, "Releases the device and everything it owns.");
+
+            Add(map, "window", 3, 3, (vm, a) =>
+            {
+                var width = Dimension(vm, a[0], "width");
+                var height = Dimension(vm, a[1], "height");
+                if (a[2].Kind != ValueKind.Str)
+                {
+                    throw vm.Error("TypeError", $"title must be a string, got {vm.TypeName(a[2])}");
+                }
+
+                // nil, not an error: a machine with no window layer can still
+                // use everything else in this module.
+                var window = D3D12Window.Create(width, height, a[2].AsString());
+                return window is null ? Value.Nil : new Value(windows.Add(vm, window));
+            }, "Opens a window to show frames in: d3d12.window(width, height, title), or nil.");
+
+            Add(map, "present", 2, 2, (vm, a) =>
+            {
+                var window = windows.Get(vm, a[0]);
+                var target = targets.Get(vm, a[1]);
+                var pixels = target.ReadPixels(vm);
+                return Value.Bool(window.Present(pixels, target.Width, target.Height));
+            }, "Shows the target in the window: d3d12.present(window, device); false once it is closed.");
+
+            Add(map, "closeWindow", 1, 1, (vm, a) =>
+            {
+                windows.Remove(vm, a[0]);
+                return Value.Nil;
+            }, "Closes a window and forgets its handle.");
 
             engine.RegisterValue("d3d12", Value.Of(map));
             engine.RegisterStdModule(new StdModule
@@ -911,6 +941,7 @@ namespace TERN.Builtins
             private IntPtr _allocator;
             private IntPtr _list;
             private IntPtr _heap;
+            private uint _state = StateCommon;
             private IntPtr _texture;
             private IntPtr _readback;
             private IntPtr _fence;
@@ -1273,7 +1304,7 @@ namespace TERN.Builtins
 
                 var view = Upload(vm, packed);
                 Reset();
-                Barrier(_texture, StateCommon, StateRenderTarget);
+                Transition(StateRenderTarget);
 
                 var handle = _rtv;
                 Slot<OMSetRenderTargetsFn>(_list, 46)(_list, 1, ref handle, 0, IntPtr.Zero);
@@ -1283,7 +1314,7 @@ namespace TERN.Builtins
                 Slot<SetVertexBuffersFn>(_list, 44)(_list, 0, 1, ref view);
                 Slot<DrawInstancedFn>(_list, 12)(_list, (uint)count, 1, 0, 0);
 
-                Barrier(_texture, StateRenderTarget, StateCopySource);
+                Transition(StateCopySource);
                 Submit(vm);
             }
 
@@ -1341,6 +1372,24 @@ namespace TERN.Builtins
                 Slot<ResetListFn>(_list, 10)(_list, _allocator, IntPtr.Zero);
             }
 
+            /// <summary>
+            /// Moves the render target to <paramref name="after"/>, naming the
+            /// state it is really in. The calls used to write both states by
+            /// hand, and <c>Clear</c> leaves the target in CopySource while
+            /// <c>Draw</c> announced Common — a lie to the driver on every
+            /// frame, which on real hardware can remove the device.
+            /// </summary>
+            private void Transition(uint after)
+            {
+                if (_state == after)
+                {
+                    return;
+                }
+
+                Barrier(_texture, _state, after);
+                _state = after;
+            }
+
             private void Barrier(IntPtr resource, uint before, uint after)
             {
                 var barrier = new ResourceBarrier
@@ -1392,7 +1441,7 @@ namespace TERN.Builtins
             public void Clear(VM vm, float r, float g, float b, float a)
             {
                 Reset();
-                Barrier(_texture, StateCommon, StateRenderTarget);
+                Transition(StateRenderTarget);
 
                 var handle = _rtv;
                 Slot<OMSetRenderTargetsFn>(_list, 46)(_list, 1, ref handle, 0, IntPtr.Zero);
@@ -1400,7 +1449,7 @@ namespace TERN.Builtins
                 var colour = new[] { r, g, b, a };
                 Slot<ClearRenderTargetViewFn>(_list, 48)(_list, _rtv, ref colour[0], 0, IntPtr.Zero);
 
-                Barrier(_texture, StateRenderTarget, StateCopySource);
+                Transition(StateCopySource);
                 Submit(vm);
             }
 
@@ -1432,7 +1481,7 @@ namespace TERN.Builtins
                 };
 
                 Slot<CopyTextureRegionFn>(_list, 16)(_list, ref destination, 0, 0, ref source, IntPtr.Zero);
-                Barrier(_texture, StateCopySource, StateCommon);
+                Transition(StateCommon);
                 Submit(vm);
 
                 var range = new Range { Begin = 0, End = 0 };

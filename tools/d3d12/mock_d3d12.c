@@ -117,7 +117,22 @@ typedef struct {
     unsigned long long size;
     unsigned char colour[4];
     unsigned char *memory;
+    unsigned state;             // the D3D12_RESOURCE_STATES it is really in
 } MockResource;
+
+// The transition half of D3D12_RESOURCE_BARRIER, laid out as the header has it.
+typedef struct {
+    int type;
+    unsigned flags;
+    union {
+        struct {
+            void *resource;
+            unsigned subresource;
+            unsigned state_before;
+            unsigned state_after;
+        } transition;
+    } u;
+} MockBarrier;
 
 typedef struct {
     void **vtbl;
@@ -501,9 +516,10 @@ static long device_create_committed_resource(void *self, const HeapProps *heap, 
                                              const ResourceDesc *desc, int state, const void *clear,
                                              const Guid *iid, void **out) {
     CHECK_IID("CreateCommittedResource", IID_ID3D12Resource_);
-    (void)self; (void)heap; (void)flags; (void)state; (void)clear; (void)iid;
+    (void)self; (void)heap; (void)flags; (void)clear; (void)iid;
     MockResource *resource = (MockResource *)calloc(1, sizeof(MockResource));
     resource->vtbl = resource_vtbl;
+    resource->state = (unsigned)state;
     resource->kind = desc->dimension == 3 ? 0u : 1u;
     resource->width = (unsigned)desc->width;
     resource->height = desc->height;
@@ -591,8 +607,35 @@ static long list_reset(void *self, void *allocator, void *state) {
     return 0;
 }
 
+static unsigned mock_state_mismatches;
+
 static void list_barrier(void *self, unsigned count, const void *barriers) {
-    (void)self; (void)count; (void)barriers;
+    (void)self;
+    const MockBarrier *list = (const MockBarrier *)barriers;
+    for (unsigned i = 0; i < count; i++) {
+        if (list[i].type != 0) {
+            continue;   // not a transition barrier
+        }
+        MockResource *resource = (MockResource *)list[i].u.transition.resource;
+        if (!resource) {
+            continue;
+        }
+        // This is the check the debug layer makes and a driver acts on. A
+        // barrier that names the wrong `before` state is undefined behaviour:
+        // the debug layer complains, and Windows can remove the device, which
+        // then shows up much later as an unrelated call failing with
+        // 0x887A0005. It happened for real — `clear` left the target in
+        // COPY_SOURCE and `draw` announced COMMON — so it is an error here.
+        if (resource->state != list[i].u.transition.state_before) {
+            mock_state_mismatches++;
+            fprintf(stderr,
+                    "mock_d3d12: RESOURCE STATE MISMATCH: a barrier claims state %u "
+                    "but the resource is in %u (going to %u)\n",
+                    list[i].u.transition.state_before, resource->state,
+                    list[i].u.transition.state_after);
+        }
+        resource->state = list[i].u.transition.state_after;
+    }
 }
 
 static void list_om_set_targets(void *self, unsigned count, const CpuHandle *targets, int single, const void *depth) {

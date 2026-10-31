@@ -258,6 +258,17 @@ assertions against the real `d3d12.h`, and `tools/test-d3d12.sh` compiles that
 translation unit with the Windows target. A structure that drifts is a compile
 error on this machine, without a Windows machine.
 
+The window a frame is shown in is the same idea one layer up:
+[`runtime/tern_window.h`](runtime/tern_window.h) writes `WNDCLASSEXW`, `MSG`,
+`BITMAPINFOHEADER`, `BITMAPINFO` and `RECT` out by hand and loads `user32`,
+`gdi32` and `kernel32` with `tern_lib_open`, so the header builds anywhere and
+`tools/d3d12/mock_user32.c` can answer in their place.
+`tools/d3d12/gen_window_layout_check.py` does the `_Static_assert` trick against
+the real `windows.h`, which is what makes a wrong offset a compile error rather
+than a crash on the first frame. `d3d12.window` answers `nil` when those
+libraries are absent, so the same program still runs on a machine with no
+display.
+
 The platform differences live in one file, [`runtime/tern_platform.h`](runtime/tern_platform.h):
 the CRT's names for the POSIX calls (`_mkdir`, `_unlink`, `_stricmp`), a
 `memmem`, directory iteration over `FindFirstFile`, and a monotonic clock over

@@ -3,10 +3,13 @@
 #
 # tools/d3d12/mock_d3d12.c is built as a shared library with the same exported
 # entry points and the same COM vtables as d3d12.dll, so the runtime's calls land
-# on the right slots. The probe runs in the interpreter and as a compiled binary,
-# the two outputs must match, and the PNG is decoded afterwards. Finally the same
-# probe is cross-compiled for Windows with Zig, which proves the Direct3D 12 code
-# compiles against the real headers as well as the fake ones.
+# on the right slots. tools/d3d12/mock_user32.c is the same trick for the window:
+# user32, gdi32 and kernel32 in one library, so d3d12.window() opens, presents and
+# closes without a display. The probe runs in the interpreter and as a compiled
+# binary, the two outputs must match, and the PNG is decoded afterwards. Finally
+# the same probe is cross-compiled for Windows with Zig, which proves the
+# Direct3D 12 and Win32 code compiles against the real headers as well as the
+# fake ones.
 set -u
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,12 +28,36 @@ export TERN_DXGI_LIBRARY="$WORK/libd3d12.so"
 # The mock exports D3DCompile too, so the shader path runs without HLSL.
 export TERN_D3DCOMPILER_LIBRARY="$WORK/libd3d12.so"
 
-echo "d3d12: running the probe in the interpreter"
-TERN_D3D12_PNG="$WORK/interp.png" ./tools/tern tools/d3d12/probe.tern > "$WORK/interp.txt" 2>&1 || {
-    echo "d3d12: the interpreter probe failed" >&2
-    cat "$WORK/interp.txt" >&2
+echo "d3d12: building the mock window"
+cc -shared -fPIC -o "$WORK/libuser32.so" tools/d3d12/mock_user32.c || {
+    echo "d3d12: cannot build the mock window" >&2
     exit 1
 }
+export TERN_USER32_LIBRARY="$WORK/libuser32.so"
+export TERN_GDI32_LIBRARY="$WORK/libuser32.so"
+export TERN_KERNEL32_LIBRARY="$WORK/libuser32.so"
+
+# A barrier that names the wrong "before" state is undefined behaviour on real
+# hardware; the driver may remove the device and the failure then surfaces at the
+# next call that touches it. The mock tracks every resource's state and says so,
+# and any such line fails this script.
+check_states() {
+    if grep -q "STATE MISMATCH" "$1"; then
+        echo "d3d12: a barrier named the wrong resource state" >&2
+        grep "STATE MISMATCH" "$1" | head -5 >&2
+        exit 1
+    fi
+}
+
+echo "d3d12: running the probe in the interpreter"
+TERN_D3D12_PNG="$WORK/interp.png" ./tools/tern tools/d3d12/probe.tern \
+    > "$WORK/interp.out" 2> "$WORK/interp.err" || {
+    echo "d3d12: the interpreter probe failed" >&2
+    cat "$WORK/interp.out" "$WORK/interp.err" >&2
+    exit 1
+}
+check_states "$WORK/interp.out"
+check_states "$WORK/interp.err"
 
 echo "d3d12: compiling the probe natively"
 python3 native/ternc.py tools/d3d12/probe.tern -o "$WORK/probe" > "$WORK/build.txt" 2>&1 || {
@@ -39,17 +66,28 @@ python3 native/ternc.py tools/d3d12/probe.tern -o "$WORK/probe" > "$WORK/build.t
     exit 1
 }
 
-TERN_D3D12_PNG="$WORK/native.png" "$WORK/probe" > "$WORK/native.txt" 2>&1 || {
+TERN_D3D12_PNG="$WORK/native.png" "$WORK/probe" > "$WORK/native.out" 2> "$WORK/native.err" || {
     echo "d3d12: the native probe failed" >&2
-    cat "$WORK/native.txt" >&2
+    cat "$WORK/native.out" "$WORK/native.err" >&2
     exit 1
 }
+check_states "$WORK/native.out"
+check_states "$WORK/native.err"
 
-if ! diff -u "$WORK/interp.txt" "$WORK/native.txt"; then
+if ! diff -u "$WORK/interp.out" "$WORK/native.out"; then
     echo "d3d12: the two back ends disagree" >&2
     exit 1
 fi
 echo "d3d12: both back ends agree"
+
+# A window may not appear unless a program asks for one: on a machine that has a
+# display, a test run that quietly opened a window would be a bug in the test.
+grep -q "window: unavailable" "$WORK/interp.out" || {
+    echo "d3d12: the probe opened a window without being asked to" >&2
+    grep "window" "$WORK/interp.out" >&2
+    exit 1
+}
+echo "d3d12: no window is opened unless one is asked for"
 
 python3 - "$WORK" <<'PY'
 import struct, sys, zlib
@@ -79,6 +117,108 @@ for name in ("interp", "native"):
     assert (255, 0, 0, 255) in set(pixels), set(pixels)
 print("d3d12: the PNG decodes to the drawn colour")
 PY
+
+# ------------------------------------------------------------------ the window
+#
+# The same probe with a window: TERN_D3D12_WINDOW=1 lets the mock hand back a
+# window, and TERN_WINDOW_FRAMES=2 makes it close itself after two frames, which
+# is what a person closing it would do. Both back ends have to present the same
+# frames - the checksums are over the pixels that reached the window, so they
+# catch a flipped image or a wrong channel order in either implementation.
+echo "d3d12: presenting frames through the mock window"
+export TERN_D3D12_WINDOW=1
+export TERN_WINDOW_FRAMES=2
+
+TERN_D3D12_PNG="$WORK/interp_window.png" ./tools/tern tools/d3d12/probe.tern \
+    > "$WORK/win_interp.out" 2> "$WORK/win_interp.err" || {
+    echo "d3d12: the interpreter probe failed with a window" >&2
+    cat "$WORK/win_interp.out" "$WORK/win_interp.err" >&2
+    exit 1
+}
+TERN_D3D12_PNG="$WORK/native_window.png" "$WORK/probe" \
+    > "$WORK/win_native.out" 2> "$WORK/win_native.err" || {
+    echo "d3d12: the native probe failed with a window" >&2
+    cat "$WORK/win_native.out" "$WORK/win_native.err" >&2
+    exit 1
+}
+check_states "$WORK/win_interp.out"
+
+grep -q "window: open" "$WORK/win_interp.out" || {
+    echo "d3d12: the probe did not open a window when asked" >&2
+    cat "$WORK/win_interp.out" >&2
+    exit 1
+}
+if [ "$(grep -c 'mock_user32: frame' "$WORK/win_interp.err")" != 2 ]; then
+    echo "d3d12: the interpreter did not present two frames" >&2
+    cat "$WORK/win_interp.err" >&2
+    exit 1
+fi
+if ! diff -u <(grep 'mock_user32: frame' "$WORK/win_interp.err") \
+             <(grep 'mock_user32: frame' "$WORK/win_native.err"); then
+    echo "d3d12: the two back ends put different pixels in the window" >&2
+    exit 1
+fi
+if ! diff -u "$WORK/win_interp.out" "$WORK/win_native.out"; then
+    echo "d3d12: the two back ends disagree about the window" >&2
+    exit 1
+fi
+echo "d3d12: both back ends presented the same frames"
+
+# The rotating cube drives the same code with five renderers and far more
+# transitions than the probe, so it gets its own turn.
+echo "d3d12: rendering the cube through the same mock"
+python3 native/ternc.py examples/rotating_cube.tern -o "$WORK/cube" > "$WORK/cube_build.txt" 2>&1 || {
+    echo "d3d12: the cube did not build" >&2
+    sed -n 1,20p "$WORK/cube_build.txt" >&2
+    exit 1
+}
+if ! TERN_D3D12_PNG="$WORK/cube.png" "$WORK/cube" --frames 2 --out "$WORK/cube_frames" \
+        > "$WORK/cube.txt" 2>&1; then
+    echo "d3d12: the cube failed through the mock" >&2
+    cat "$WORK/cube.txt" >&2
+    exit 1
+fi
+check_states "$WORK/cube.txt"
+grep -q "with d3d12" "$WORK/cube.txt" || {
+    echo "d3d12: the cube did not use the Direct3D 12 renderer" >&2
+    cat "$WORK/cube.txt" >&2
+    exit 1
+}
+echo "d3d12: the cube keeps every resource state consistent"
+
+# And the cube in a window, in both back ends: the thing a person sees when they
+# run it on Windows, minus the window.
+echo "d3d12: animating the cube in the mock window"
+export TERN_WINDOW_FRAMES=5
+"$WORK/cube" > "$WORK/cube_window.out" 2> "$WORK/cube_window.err" || {
+    echo "d3d12: the cube failed in a window" >&2
+    cat "$WORK/cube_window.out" "$WORK/cube_window.err" >&2
+    exit 1
+}
+./tools/tern examples/rotating_cube.tern > "$WORK/cube_window_interp.out" \
+    2> "$WORK/cube_window_interp.err" || {
+    echo "d3d12: the interpreter could not animate the cube in a window" >&2
+    cat "$WORK/cube_window_interp.out" "$WORK/cube_window_interp.err" >&2
+    exit 1
+}
+for stream in "$WORK/cube_window.err" "$WORK/cube_window_interp.err"; do
+    if [ "$(grep -c 'mock_user32: frame' "$stream")" != 5 ]; then
+        echo "d3d12: the cube did not present five frames ($stream)" >&2
+        cat "$stream" >&2
+        exit 1
+    fi
+done
+if ! grep -q "window closed." "$WORK/cube_window.out"; then
+    echo "d3d12: the cube did not report the window closing" >&2
+    cat "$WORK/cube_window.out" >&2
+    exit 1
+fi
+if ! diff -u "$WORK/cube_window_interp.out" "$WORK/cube_window.out"; then
+    echo "d3d12: the two back ends disagree about the cube's window" >&2
+    exit 1
+fi
+echo "d3d12: the cube animates in both back ends"
+unset TERN_D3D12_WINDOW
 
 echo "d3d12: the unavailable path"
 cat > "$WORK/missing.tern" <<'TERN'
@@ -125,6 +265,15 @@ if [ -n "$ZIG" ] && [ -x "$ZIG" ]; then
         exit 1
     fi
     echo "d3d12: the mirror matches d3d12.h"
+
+    echo "d3d12: checking the window structures against the real windows.h"
+    python3 tools/d3d12/gen_window_layout_check.py > "$WORK/window_layout.c"
+    if ! "$ZIG" cc -target x86_64-windows-gnu -c -o "$WORK/window_layout.o" "$WORK/window_layout.c" 2> "$WORK/window_layout.txt"; then
+        echo "d3d12: the window structures do not match windows.h" >&2
+        sed -n 1,20p "$WORK/window_layout.txt" >&2
+        exit 1
+    fi
+    echo "d3d12: the window structures match windows.h"
 
     echo "d3d12: cross-compiling the probe for Windows"
     if ! python3 native/ternc.py --target windows tools/d3d12/probe.tern -o "$WORK/probe.exe" > "$WORK/win.txt" 2>&1; then

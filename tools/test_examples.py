@@ -430,6 +430,12 @@ def test_graphics(checks):
                      and "with d3d12" in direct.stdout, (direct.stderr or direct.stdout)[-400:])
         checks.check("every Direct3D interface id is the one Windows expects",
                      "E_NOINTERFACE" not in direct.stderr, direct.stderr[-400:])
+        # A barrier that names the wrong "before" state is undefined behaviour on
+        # real hardware: the driver is entitled to drop the device, which is how
+        # 0x887A0005 turned up in save_frame far from the call that caused it.
+        checks.check("no barrier lies about the resource state",
+                     "STATE MISMATCH" not in (direct.stdout + direct.stderr),
+                     (direct.stdout + direct.stderr)[-400:])
 
     # Point the driver at something that is not a driver: the availability probe
     # itself throws, and the example still has to finish with its text frames.
@@ -448,6 +454,17 @@ def test_graphics(checks):
     checks.check("--help explains the options", "--ascii" in help_run.stdout
                  and "--frames" in help_run.stdout, help_run.stdout[:200])
 
+    # A machine with no window layer gets the frames instead of a failure, and
+    # says so when a window was what was asked for. This is the path a Linux
+    # user, a headless build agent and this test all take.
+    windowed = subprocess.run(CLI + [example, "--window", "--size", "40x20"],
+                              cwd=ROOT, capture_output=True, text=True, env=environment)
+    checks.check("asking for a window without one still finishes", windowed.returncode == 0
+                 and "Traceback" not in (windowed.stdout + windowed.stderr),
+                 (windowed.stderr or windowed.stdout)[-400:])
+    checks.check("and it says where the window went",
+                 "no window on this machine" in windowed.stdout, windowed.stdout[-300:])
+
     binary = os.path.join(work, "cube")
     native = subprocess.run([PYTHON, os.path.join(ROOT, "native", "ternc.py"), example,
                              "-o", binary], cwd=ROOT, capture_output=True, text=True, timeout=900)
@@ -458,6 +475,17 @@ def test_graphics(checks):
                               capture_output=True, text=True, env=environment)
     checks.check("the compiled cube prints the same views", compiled.stdout == text.stdout,
                  "outputs differ")
+
+    # Same claim as above, but through the native runtime, whose Direct3D 12 code
+    # is a separate implementation and so can drift on its own.
+    if build_d3d.returncode == 0:
+        native_d3d = subprocess.run([binary, "--frames", "2", "--out", os.path.join(work, "native_d3d")],
+                                    cwd=ROOT, capture_output=True, text=True, env=environment_d3d)
+        checks.check("the compiled cube renders through Direct3D 12", native_d3d.returncode == 0
+                     and "with d3d12" in native_d3d.stdout, (native_d3d.stderr or native_d3d.stdout)[-400:])
+        checks.check("and it does not lie about the resource state either",
+                     "STATE MISMATCH" not in (native_d3d.stdout + native_d3d.stderr),
+                     (native_d3d.stdout + native_d3d.stderr)[-400:])
 
 
 def main(argv):

@@ -843,8 +843,9 @@ FUNCTIONS = {
                    ("blue", "number", "0..1."), ("alpha", "number", "0..1.")],
         "returns": None,
         "errors": [("ArgumentError", "A component is outside 0..1.")],
-        "remarks": "Records a barrier to the render target state, a clear, and a barrier back to "
-                   "copy source; the call returns once the GPU has finished.",
+        "remarks": "Records a barrier from whatever state the target is in to the render target "
+                   "state, a clear, and a barrier back to copy source; the call returns once the "
+                   "GPU has finished.",
         "example": ["d3d12.clear(target, 0.1, 0.1, 0.15, 1);"],
         "see": ["d3d12.draw", "d3d12.pixels"],
     },
@@ -902,5 +903,53 @@ FUNCTIONS = {
         "errors": [("D3D12Error", "There is no open device with that handle.")],
         "example": ["d3d12.close(target);"],
         "see": ["d3d12.create"],
+    },
+    "d3d12.window": {
+        "summary": "Opens a window to show frames in.",
+        "params": [("width", "int", "1..16384; the client area, in pixels."),
+                   ("height", "int", "1..16384."),
+                   ("title", "string", "The text in the title bar.")],
+        "returns": ("int?", "A window handle, or `nil` when this machine has no window layer."),
+        "errors": [("ArgumentError", "A dimension is out of range."),
+                   ("TypeError", "The title is not a string.")],
+        "remarks": "Win32, loaded at run time. `nil` rather than an error is deliberate: a "
+                   "headless machine can still use the rest of this module, and a program that "
+                   "tries a window and falls back to files should not need a `try`. Windows only "
+                   "for now; on a system without `user32` it always answers `nil`. "
+                   "`TERN_USER32_LIBRARY`, `TERN_GDI32_LIBRARY` and `TERN_KERNEL32_LIBRARY` "
+                   "override the libraries, which is how the tests drive it.",
+        "example": ["let window = d3d12.window(640, 480, \"rotating cube\");"],
+        "see": ["d3d12.present", "d3d12.closeWindow"],
+    },
+    "d3d12.present": {
+        "summary": "Shows the target in the window.",
+        "params": [("window", "int", "A window handle."),
+                   ("device", "int", "A device handle whose target has been drawn to.")],
+        "returns": ("bool", "`false` once the window has been closed."),
+        "errors": [("D3D12Error", "There is no open window or device with that handle, or the "
+                                  "readback buffer cannot be mapped.")],
+        "remarks": "Copies the target back, blits it into the window, processes the window's "
+                   "messages and paces the frame at about 60 per second. Escape or the close "
+                   "button ends the loop that calls it. This is not a DXGI swap chain: a frame "
+                   "round-trips through the readback buffer, which is slower than presenting "
+                   "properly but needs no presentation surface. `present` is also the call that "
+                   "keeps the window responsive, so a loop that stops calling it stops for good.",
+        "example": [
+            "let window = d3d12.window(640, 480, \"cube\");",
+            "while (d3d12.present(window, target)) {",
+            "    d3d12.clear(target, 0.05, 0.06, 0.09, 1);",
+            "}",
+        ],
+        "see": ["d3d12.window", "d3d12.pixels"],
+    },
+    "d3d12.closeWindow": {
+        "summary": "Closes a window.",
+        "params": [("window", "int", "A window handle.")],
+        "returns": None,
+        "errors": [("D3D12Error", "There is no open window with that handle.")],
+        "remarks": "Destroys the window and forgets the handle. A window that the user has "
+                   "already closed still has to be released this way, or its slot stays taken.",
+        "example": ["d3d12.closeWindow(window);"],
+        "see": ["d3d12.window"],
     },
 }
