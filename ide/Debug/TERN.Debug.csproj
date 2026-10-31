@@ -10,8 +10,14 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>TERN.Debug</AssemblyName>
     <RootNamespace>TERN.Debug</RootNamespace>
-    <BaseOutputPath>$(MSBuildThisFileDirectory)..\..\build\</BaseOutputPath>
+    <!-- Flat into build\, with no configuration or framework folder: the same
+         layout tools/build.py writes, so `dotnet build` and the sandbox
+         bootstrap give an interchangeable result and every launcher finds the
+         assembly by the one path it knows. Debug and Release overwrite each
+         other, which is what the bootstrap does too. -->
+    <OutputPath>$(MSBuildThisFileDirectory)..\..\build\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
   <ItemGroup>

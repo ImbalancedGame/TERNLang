@@ -86,6 +86,13 @@ def assembly(install_root, name, configuration="Release"):
     if _exists(flat):
         return flat
 
+    # A build that honours Configuration lands one level down; anything under
+    # build/ is still "the build", wherever the SDK decided to put it.
+    under_build = sorted(glob.glob(
+        os.path.join(install_root, "build", "**", name + ".dll"), recursive=True))
+    if under_build:
+        return under_build[0]
+
     patterns = [
         os.path.join(install_root, "**", "bin", configuration, "**", name + ".dll"),
         os.path.join(install_root, "**", "bin", "**", name + ".dll"),

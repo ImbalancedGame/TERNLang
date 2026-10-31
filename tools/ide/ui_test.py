@@ -484,6 +484,33 @@ def main():
                  runtime.environment(ROOT, "/usr/bin/dotnet") == {},
                  str(runtime.environment(ROOT, "/usr/bin/dotnet")))
 
+    # --------------------------------------------------- finding a virtualenv
+    # The launcher searched only the repository root, so a venv made where the
+    # user happened to be standing — tools\.venv, say — "did not exist".
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "studio_launcher", os.path.join(ROOT, "tools", "studio.py"))
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+
+    nested = tempfile.mkdtemp(prefix="tern-venv-")
+    os.makedirs(os.path.join(nested, "inner"), exist_ok=True)
+    roots = launcher.search_roots(Path(nested))
+    checks.check("the directory the launcher ran from is searched first",
+                 roots[0] == Path(nested), str(roots[:3]))
+    checks.check("the repository root is searched too",
+                 Path(ROOT) in roots, str(roots[:4]))
+
+    fake = Path(nested) / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    fake.mkdir(parents=True)
+    (fake / ("python.exe" if os.name == "nt" else "python")).write_text("")
+    checks.check("a virtualenv beside the launcher is found",
+                 str(fake / ("python.exe" if os.name == "nt" else "python"))
+                 in launcher.venv_pythons(Path(nested)),
+                 str(launcher.venv_pythons(Path(nested))[:3]))
+
     # ------------------------------------------------------ find in path
     window.show_find_in_path("classify")
     pump(app, 700)

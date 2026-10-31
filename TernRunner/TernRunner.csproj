@@ -13,8 +13,11 @@
          layout tools/build.py produces, so `dotnet build` and the sandbox
          bootstrap give an interchangeable result. `tools/tern` and the IDE both
          run `dotnet build/TERN.Runner.dll`. -->
-    <BaseOutputPath>$(MSBuildThisFileDirectory)..\build\</BaseOutputPath>
+    <!-- Flat into build\, the layout tools/build.py writes; see
+         ide/Server/TERN.Ide.csproj for why. -->
+    <OutputPath>$(MSBuildThisFileDirectory)..\build\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
