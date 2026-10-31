@@ -55,6 +55,13 @@ check_states() {
         grep "CLEAR VALUE" "$1" | head -5 >&2
         exit 1
     fi
+    # A draw with no viewport, no scissor rect or no vertex buffer produces an
+    # empty frame on a real device while the mock used to paint one anyway.
+    if grep -q "DRAW WITHOUT" "$1"; then
+        echo "d3d12: a draw ran without the state that makes it draw" >&2
+        grep "DRAW WITHOUT" "$1" | head -5 >&2
+        exit 1
+    fi
     if grep -q "COPY ARGUMENT MISMATCH" "$1"; then
         echo "d3d12: a copy call does not match the documented signature" >&2
         grep "COPY ARGUMENT MISMATCH" "$1" | head -5 >&2
@@ -102,7 +109,7 @@ grep -q "window: unavailable" "$WORK/interp.out" || {
 }
 echo "d3d12: no window is opened unless one is asked for"
 
-python3 - "$WORK" <<'PY'
+if ! python3 - "$WORK" <<'PY'
 import struct, sys, zlib
 
 def read_png(path):
@@ -125,11 +132,26 @@ for name in ("interp", "native"):
     assert (width, height, depth, colour) == (3, 2, 8, 6), (width, height, depth, colour)
     stride = width * 4 + 1
     pixels = [tuple(raw[i * stride + 1 + x * 4:i * stride + 5 + x * 4]) for i in range(height) for x in range(width)]
-    # The probe clears, then draws a triangle whose first vertex is red: the mock
-    # paints the target with that colour, so both have to show up.
-    assert (255, 0, 0, 255) in set(pixels), set(pixels)
-print("d3d12: the PNG decodes to the drawn colour")
+
+    # The probe clears to (0.25, 0.5, 0.75) and then draws one triangle whose
+    # vertices are red, green and blue. The mock rasterises it the way the
+    # pass-through shader would, so a correct frame is more than one colour, it
+    # still has the clear colour in the corner the triangle misses, and the
+    # corner nearest the red vertex is red-dominant.
+    #
+    # A flat frame is what a renderer that draws nothing produces - no viewport,
+    # no scissor rect - and that is exactly what reached a real window once.
+    colours = set(pixels)
+    assert len(colours) >= 3, colours
+    assert (64, 128, 191, 255) in colours, colours
+    reddest = max(pixels, key=lambda pixel: pixel[0] - pixel[1] - pixel[2])
+    assert reddest[0] > 150 and reddest[0] > reddest[1] and reddest[0] > reddest[2], reddest
+print("d3d12: the PNG shows the triangle over the cleared background")
 PY
+then
+    echo "d3d12: the saved PNG did not contain what was drawn" >&2
+    exit 1
+fi
 
 # ------------------------------------------------------------------ the window
 #

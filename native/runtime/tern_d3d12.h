@@ -38,7 +38,7 @@
 // built before the fix that caused it: the two are indistinguishable without a
 // stamp, and the fix looked like it had failed. Bump it whenever the D3D12 or
 // window code changes what a failure means.
-#define TERN_D3D12_BUILD "2026-10-31.7"
+#define TERN_D3D12_BUILD "2026-10-31.8"
 
 // --- the structures, with the offsets the SDK headers give them -------------
 
@@ -350,6 +350,27 @@ typedef struct {
     unsigned stride_in_bytes;
 } D3D12_VERTEX_BUFFER_VIEW;     // 16
 
+// Where the rasteriser is allowed to draw. Direct3D 12 has no default viewport:
+// until RSSetViewports is called the viewport list is empty and every triangle
+// is discarded, while ClearRenderTargetView - which does not consult it - still
+// paints the whole target. That is exactly what a window showing the clear
+// colour and no cube looked like.
+typedef struct {
+    float top_left_x;
+    float top_left_y;
+    float width;
+    float height;
+    float min_depth;
+    float max_depth;
+} D3D12_VIEWPORT;               // 24
+
+typedef struct {
+    int left;
+    int top;
+    int right;
+    int bottom;
+} D3D12_RECT;                   // 16
+
 // The values the pipeline needs, from the same headers.
 #define D3D12_HEAP_TYPE_UPLOAD_ 2
 #define D3D12_RESOURCE_STATE_GENERIC_READ_ 2755
@@ -402,6 +423,10 @@ _Static_assert(sizeof(D3D12_RASTERIZER_DESC) == 44, "rasterizer state size");
 _Static_assert(sizeof(D3D12_DEPTH_STENCIL_DESC) == 52, "depth stencil state size");
 _Static_assert(sizeof(D3D12_ROOT_SIGNATURE_DESC) == 40, "root signature desc size");
 _Static_assert(sizeof(D3D12_VERTEX_BUFFER_VIEW) == 16, "vertex buffer view size");
+_Static_assert(sizeof(D3D12_VIEWPORT) == 24, "viewport size");
+_Static_assert(offsetof(D3D12_VIEWPORT, max_depth) == 20, "viewport max depth offset");
+_Static_assert(sizeof(D3D12_RECT) == 16, "rect size");
+_Static_assert(offsetof(D3D12_RECT, bottom) == 12, "rect bottom offset");
 _Static_assert(sizeof(D3D12_INPUT_ELEMENT_DESC) == 32, "input element size");
 _Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, blend_state) == 120, "blend offset");
 _Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, rasterizer_state) == 452, "rasterizer offset");
@@ -1365,6 +1390,24 @@ static Value n_d3d12_draw(int argc, Value *argv) {
         target->list, target->signatures[handle - 1]);                        // SetGraphicsRootSignature
     ((void (*)(void *, void *))TERN_SLOT(target->list, 25))(
         target->list, target->programs[handle - 1]);                          // SetPipelineState
+    // The state that decides whether anything is drawn at all. Without these
+    // two the clear still covers the target and the triangles go nowhere.
+    D3D12_VIEWPORT viewport;
+    viewport.top_left_x = 0.0f;
+    viewport.top_left_y = 0.0f;
+    viewport.width = (float)target->width;
+    viewport.height = (float)target->height;
+    viewport.min_depth = 0.0f;
+    viewport.max_depth = 1.0f;
+    D3D12_RECT scissor;
+    scissor.left = 0;
+    scissor.top = 0;
+    scissor.right = target->width;
+    scissor.bottom = target->height;
+    ((void (*)(void *, unsigned, const D3D12_VIEWPORT *))TERN_SLOT(target->list, 21))(
+        target->list, 1, &viewport);                                          // RSSetViewports
+    ((void (*)(void *, unsigned, const D3D12_RECT *))TERN_SLOT(target->list, 22))(
+        target->list, 1, &scissor);                                           // RSSetScissorRects
     ((void (*)(void *, int))TERN_SLOT(target->list, 20))(
         target->list, D3D12_PRIMITIVE_TOPOLOGY_TRIANGLELIST_);                // IASetPrimitiveTopology
     ((void (*)(void *, unsigned, unsigned, const D3D12_VERTEX_BUFFER_VIEW *))TERN_SLOT(target->list, 44))(
@@ -1624,9 +1667,12 @@ static Value n_d3d12_present(int argc, Value *argv) {
         d3d12_fail_removed(target, "the readback buffer could not be mapped", hr);
     }
 
-    // tern_window_present wants rows top-first with no padding between them;
-    // the readback has a row pitch and its rows are the other way up, so copy
-    // through a scratch buffer only when the pitch does not already match.
+    // The window takes the same layout d3d12.pixels() returns - bottom row
+    // first - so that both back ends have one convention to get wrong rather
+    // than two. The readback has the top row first, so the rows are reversed
+    // here while the pitch is packed out. Getting this wrong is not subtle on a
+    // screenshot and is invisible in a checksum that only tests one backend,
+    // which is how it survived: the native window was upside down.
     size_t row_bytes = (size_t)target->width * 4;
     unsigned char *tight = (unsigned char *)malloc(row_bytes * (size_t)target->height);
     if (!tight) {
@@ -1634,7 +1680,8 @@ static Value n_d3d12_present(int argc, Value *argv) {
     }
     for (int y = 0; y < target->height; y++) {
         memcpy(tight + (size_t)y * row_bytes,
-               (const unsigned char *)data + (size_t)y * target->row_pitch, row_bytes);
+               (const unsigned char *)data + (size_t)(target->height - 1 - y) * target->row_pitch,
+               row_bytes);
     }
     ((PfnUnmap)TERN_SLOT(target->readback, 9))(target->readback, 0, &range);
 

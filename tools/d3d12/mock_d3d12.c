@@ -119,6 +119,7 @@ typedef struct {
     unsigned long long size;
     unsigned char colour[4];
     unsigned char *memory;
+    unsigned char *pixels;      // textures: width * height RGBA, top row first
     unsigned state;             // the D3D12_RESOURCE_STATES it is really in
     unsigned readback;          // created in a READBACK heap
 } MockResource;
@@ -144,6 +145,13 @@ typedef struct {
     int closing;
     unsigned long long vertex_address;
     unsigned vertex_count;
+    unsigned stride;
+    int cleared;                // the clear colour was set on this list
+    int drew;                   // DrawInstanced ran on this list
+    int has_viewport;
+    float viewport[4];          // x, y, width, height
+    int has_scissor;
+    int scissor[4];             // left, top, right, bottom
 } MockList;
 
 typedef struct {
@@ -166,6 +174,8 @@ static long device_create_root_signature(void *self, unsigned node_mask, const v
 static void list_draw_instanced(void *self, unsigned vertices, unsigned instances,
                                 unsigned start_vertex, unsigned start_instance);
 static void list_set_topology(void *self, int topology);
+static void mock_fill(MockResource *target, const unsigned char rgba[4]);
+static void mock_rasterize(MockResource *target, const float *vertices, unsigned count);
 static void list_set_pipeline(void *self, void *pipeline);
 static void list_set_signature(void *self, void *signature);
 static void list_set_vertex_buffers(void *self, unsigned slot, unsigned count, const void *view);
@@ -452,31 +462,75 @@ static void list_set_vertex_buffers(void *self, unsigned slot, unsigned count, c
     MockList *list = (MockList *)self;
     list->vertex_address = fields[0];
     list->vertex_count = (unsigned)((const unsigned *)view)[2];
+    list->stride = ((const unsigned *)view)[3];
 }
 
 static void list_draw_instanced(void *self, unsigned vertices, unsigned instances,
                                 unsigned start_vertex, unsigned start_instance) {
     (void)instances; (void)start_vertex; (void)start_instance;
     MockList *list = (MockList *)self;
-    MockResource *buffer = resource_from_address(list->vertex_address);
-    if (!buffer || !buffer->memory) {
-        list->vertex_count = vertices;
+    list->vertex_count = vertices;
+
+    // Direct3D 12 has no default viewport: with an empty viewport list the
+    // rasteriser drops every primitive, while a clear - which does not consult
+    // it - still fills the target. A window showing the clear colour and no cube
+    // is exactly what that produces, and this mock said nothing because it
+    // painted the whole target with the first vertex's colour whatever the
+    // state was. It says something now.
+    if (!list->has_viewport || !list->has_scissor) {
+        const char *missing = !list->has_viewport && !list->has_scissor ? "no viewport and no scissor rect"
+                            : !list->has_viewport ? "no viewport" : "no scissor rect";
+        mock_state_mismatches++;
+        fprintf(stderr,
+                "mock_d3d12: DRAW WITHOUT VIEWPORT: a draw ran with %s, and Direct3D 12 "
+                "rasterises nothing without one\n", missing);
         return;
     }
-    // The first vertex's colour, which is how the readback proves the vertex data
-    // travelled from the script into the buffer. The layout is seven floats:
-    // x, y, z, r, g, b, a.
-    const float *vertex = (const float *)buffer->memory;
-    for (int channel = 0; channel < 4; channel++) {
-        double scaled = (double)vertex[3 + channel] * 255.0;
-        list->colour[channel] = (unsigned char)(scaled + 0.5);
+    if (list->viewport[2] <= 0.0f || list->viewport[3] <= 0.0f ||
+            list->scissor[2] <= list->scissor[0] || list->scissor[3] <= list->scissor[1]) {
+        mock_state_mismatches++;
+        fprintf(stderr,
+                "mock_d3d12: DRAW WITHOUT VIEWPORT: the viewport is %gx%g and the scissor rect is "
+                "%d,%d..%d,%d, which covers nothing\n",
+                (double)list->viewport[2], (double)list->viewport[3],
+                list->scissor[0], list->scissor[1], list->scissor[2], list->scissor[3]);
+        return;
     }
-    list->vertex_count = vertices;
+    if (!list->vertex_address || !resource_from_address(list->vertex_address)) {
+        mock_state_mismatches++;
+        fprintf(stderr,
+                "mock_d3d12: DRAW WITHOUT VERTICES: DrawInstanced ran with no vertex buffer "
+                "bound for slot 0\n");
+        return;
+    }
+    list->drew = 1;
+}
+
+static void list_set_viewports(void *self, unsigned count, const float *viewports) {
+    MockList *list = (MockList *)self;
+    if (count < 1 || !viewports) {
+        list->has_viewport = 0;
+        return;
+    }
+    list->has_viewport = 1;
+    memcpy(list->viewport, viewports, sizeof(float) * 4);
+}
+
+static void list_set_scissor_rects(void *self, unsigned count, const int *rects) {
+    MockList *list = (MockList *)self;
+    if (count < 1 || !rects) {
+        list->has_scissor = 0;
+        return;
+    }
+    list->has_scissor = 1;
+    memcpy(list->scissor, rects, sizeof(int) * 4);
 }
 
 static void *list_vtbl[60] = {
     [12] = (void *)list_draw_instanced,
     [20] = (void *)list_set_topology,
+    [21] = (void *)list_set_viewports,
+    [22] = (void *)list_set_scissor_rects,
     [25] = (void *)list_set_pipeline,
     [30] = (void *)list_set_signature,
     [44] = (void *)list_set_vertex_buffers,
@@ -749,6 +803,10 @@ static long device_create_committed_resource(void *self, const HeapProps *heap, 
                 }
             }
         }
+        resource->pixels = (unsigned char *)calloc((size_t)resource->width * resource->height, 4);
+        if (resource->pixels) {
+            mock_fill(resource, resource->colour);
+        }
         mock_target = resource;
     }
     *out = resource;
@@ -806,9 +864,113 @@ static void queue_execute(void *self, unsigned count, void *const *lists) {
     }
     for (unsigned i = 0; i < count; i++) {
         MockList *list = (MockList *)lists[i];
-        if (list->closing && mock_target) {
-            memcpy(mock_target->colour, list->colour, 4);
+        if (!list->closing || !mock_target) {
+            continue;
         }
+        if (list->cleared) {
+            mock_fill(mock_target, list->colour);
+        }
+        if (list->drew) {
+            MockResource *buffer = resource_from_address(list->vertex_address);
+            if (buffer && buffer->memory) {
+                mock_rasterize(mock_target, (const float *)buffer->memory, list->vertex_count);
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------ rasterisation
+//
+// The examples' vertex shader is a pass-through: the position is already in clip
+// space and the colour travels with the vertex. The mock is not a shader
+// compiler and does not try to be one - it interpolates that colour across each
+// triangle, which is what the pass-through shader would produce, so the pixels
+// that come back depend on the geometry.
+//
+// It was worth writing. Before it, `DrawInstanced` painted the whole target with
+// the first vertex's colour, so a renderer that rasterised nothing at all - no
+// viewport, no scissor rect - still produced a picture, still passed every
+// comparison, and still put a flat window on a real screen.
+
+static unsigned char mock_channel(double value) {
+    if (value <= 0.0) {
+        return 0;
+    }
+    if (value >= 1.0) {
+        return 255;
+    }
+    return (unsigned char)(value * 255.0 + 0.5);
+}
+
+static void mock_fill(MockResource *target, const unsigned char rgba[4]) {
+    if (!target->pixels) {
+        return;
+    }
+    size_t count = (size_t)target->width * (size_t)target->height;
+    for (size_t i = 0; i < count; i++) {
+        memcpy(target->pixels + i * 4, rgba, 4);
+    }
+}
+
+static void mock_triangle(MockResource *target, const float *a, const float *b, const float *c) {
+    if (!target->pixels || !target->width || !target->height) {
+        return;
+    }
+    // Clip space to pixels: x from -1..1 left to right, y from -1..1 bottom to
+    // top, which is why the vertical screen coordinate is flipped.
+    double ax = ((double)a[0] * 0.5 + 0.5) * target->width;
+    double ay = (1.0 - ((double)a[1] * 0.5 + 0.5)) * target->height;
+    double bx = ((double)b[0] * 0.5 + 0.5) * target->width;
+    double by = (1.0 - ((double)b[1] * 0.5 + 0.5)) * target->height;
+    double cx = ((double)c[0] * 0.5 + 0.5) * target->width;
+    double cy = (1.0 - ((double)c[1] * 0.5 + 0.5)) * target->height;
+
+    // Dividing by the signed area makes the weights below positive inside the
+    // triangle whichever way it winds.
+    double area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    if (area > -1e-9 && area < 1e-9) {
+        return;
+    }
+
+    double low_x = ax < bx ? (ax < cx ? ax : cx) : (bx < cx ? bx : cx);
+    double high_x = ax > bx ? (ax > cx ? ax : cx) : (bx > cx ? bx : cx);
+    double low_y = ay < by ? (ay < cy ? ay : cy) : (by < cy ? by : cy);
+    double high_y = ay > by ? (ay > cy ? ay : cy) : (by > cy ? by : cy);
+
+    int x0 = (int)low_x;
+    int x1 = (int)high_x + 1;
+    int y0 = (int)low_y;
+    int y1 = (int)high_y + 1;
+    if (x0 < 0) { x0 = 0; }
+    if (y0 < 0) { y0 = 0; }
+    if (x1 > (int)target->width) { x1 = (int)target->width; }
+    if (y1 > (int)target->height) { y1 = (int)target->height; }
+
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            double px = (double)x + 0.5;
+            double py = (double)y + 0.5;
+            double wa = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area;
+            double wb = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area;
+            double wc = 1.0 - wa - wb;
+            if (wa < -1e-9 || wb < -1e-9 || wc < -1e-9) {
+                continue;
+            }
+            unsigned char *pixel = target->pixels + ((size_t)y * target->width + (size_t)x) * 4;
+            for (int channel = 0; channel < 4; channel++) {
+                double value = wa * a[3 + channel] + wb * b[3 + channel] + wc * c[3 + channel];
+                pixel[channel] = mock_channel(value);
+            }
+        }
+    }
+}
+
+static void mock_rasterize(MockResource *target, const float *vertices, unsigned count) {
+    for (unsigned base = 0; base + 3 <= count; base += 3) {
+        const float *a = vertices + (size_t)(base + 0) * 7;
+        const float *b = vertices + (size_t)(base + 1) * 7;
+        const float *c = vertices + (size_t)(base + 2) * 7;
+        mock_triangle(target, a, b, c);
     }
 }
 
@@ -827,6 +989,10 @@ static long list_reset(void *self, void *allocator, void *state) {
     (void)allocator; (void)state;
     MockList *list = (MockList *)self;
     list->closing = 0;
+    list->cleared = 0;
+    list->drew = 0;
+    list->has_viewport = 0;
+    list->has_scissor = 0;
     return 0;
 }
 
@@ -866,6 +1032,7 @@ static void list_om_set_targets(void *self, unsigned count, const CpuHandle *tar
 static void list_clear_rtv(void *self, CpuHandle handle, const float *colour, unsigned count, const void *rects) {
     (void)handle; (void)count; (void)rects;
     MockList *list = (MockList *)self;
+    list->cleared = 1;
     list->colour[0] = mock_byte(colour[0]);
     list->colour[1] = mock_byte(colour[1]);
     list->colour[2] = mock_byte(colour[2]);
@@ -908,13 +1075,17 @@ static void list_copy_region(void *self, const CopyLocation *destination, unsign
     if (!buffer || !texture || !buffer->memory) {
         return;
     }
+    if (!texture->pixels) {
+        return;
+    }
     unsigned pitch = destination->u.placed.footprint.pitch;
     unsigned width = destination->u.placed.footprint.width;
     unsigned height = destination->u.placed.footprint.height;
-    for (unsigned row = 0; row < height; row++) {
+    for (unsigned row = 0; row < height && row < texture->height; row++) {
         unsigned char *line = buffer->memory + (size_t)row * pitch;
-        for (unsigned column = 0; column < width; column++) {
-            memcpy(line + (size_t)column * 4, texture->colour, 4);
+        for (unsigned column = 0; column < width && column < texture->width; column++) {
+            memcpy(line + (size_t)column * 4,
+                   texture->pixels + ((size_t)row * texture->width + column) * 4, 4);
         }
     }
 }
