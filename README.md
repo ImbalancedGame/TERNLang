@@ -123,7 +123,7 @@ The examples are meant to be read:
 | `examples/rcon.tern` | A Source RCON client: login, commands with spaces, an interactive prompt |
 | `examples/sftp_deploy.tern` | A dry-run-first deploy over `std:sftp` (the OpenSSH client, no library) |
 | `examples/rotating_cube.tern` | a rotating cube in a real window through `d3d12`, plus PNG frames and a text rasteriser |
-| `examples/d3d12_diagnose.tern` | Direct3D 12 one call at a time: what each call did, and which build did it |
+| `examples/d3d12_diagnose.tern` | Direct3D 12 one call at a time: what each call did, and which build did it. Run this first when a Direct3D call fails; add `--debug` to the cube for the same validation |
 | `examples/inventory.tern`, `triage.tern`, `wordcount.tern`, `fizzbuzz.tern` | Structs, pattern matching, files and arguments |
 
 `python3 tools/test_examples.py` runs them against mock servers and a mock

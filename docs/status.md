@@ -200,6 +200,41 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **The first real GPU removed the device on the first copy: `CopyTextureRegion`
+  was missing an argument.** The method is
+  `CopyTextureRegion(pDst, DstX, DstY, DstZ, pSrc, pSrcBox)`. TERN calls it
+  through a function pointer it declares itself, both back ends declared five
+  parameters instead of six, and the driver therefore read the source location
+  as `DstZ`, the next stack slot as the source location and the one after that
+  as the box. That is not a compile error and it cannot be one — the call goes
+  through a pointer TERN builds from the vtable slot — and the mock driver was
+  compiled from the same wrong signature, so it agreed. On an RTX 4080 SUPER
+  the first `d3d12.pixels` removed the device, and everything after it
+  (`d3d12.save`, the pipeline) failed because the device was already gone.
+  Both typedefs now carry `DstZ`, and `tools/d3d12/mock_d3d12.c` is compiled
+  against the documented signature and checks that the arguments arrive where
+  they belong: it prints `COPY ARGUMENT MISMATCH` and the script fails.
+  Proved by putting the old five-argument typedef and call back: the mock
+  rejects the copy, the pixels come back empty, and `tools/test-d3d12.sh`
+  fails on the disagreement between the back ends.
+* **Nothing on a real machine said why the device went.** A driver reports a
+  removal at whatever call touches the device next, which is how a broken
+  barrier or a bad copy surfaced as a map failure in `save_frame`. Both back
+  ends now ask `GetDeviceRemovedReason` after every submit — `d3d12.clear`,
+  `d3d12.draw`, and the copy behind `d3d12.pixels`, `d3d12.save` and
+  `d3d12.present` — and say which call did it and what the driver called it
+  (`the GPU hung and the driver reset it (TDR)`, `out of memory`, …), with the
+  raw code included when the code is not one TERN knows. `d3d12.debug(true)`
+  additionally turns on the Direct3D 12 debug layer before the device is
+  created; the driver's own validation messages are then printed, with their
+  severity, immediately after each submit, which is the difference between
+  "the device was removed" and "CopyTextureRegion: resource state is invalid".
+  A machine without the optional "Graphics Tools" feature answers `false` and
+  says so once, in words that name the setting. All of it runs headless: the
+  mock has a debug interface and an info queue of its own, and
+  `tools/test-d3d12.sh` checks that the stored message reaches the program in
+  both back ends with identical wording.
+
 * **A fix that looked like it had not worked.** The report after the resource
   state fix was the same sentence as before it —
   `the readback buffer could not be mapped (0x887a0005)` at
@@ -257,7 +292,10 @@ SSH is what the servers actually offer).
   reinstating the old pair and watching the script fail. A map failure is also
   followed by `GetDeviceRemovedReason` now, so the next report of this kind
   says whether the device was removed, reset, or out of memory instead of only
-  quoting the HRESULT.
+  quoting the HRESULT. The copy itself no longer parks the target in `COMMON`
+  afterwards: it transitions to `COPY_SOURCE` first and stays there, so a
+  second read in a row needs no barrier and the render-target layout survives
+  until the next draw, which is both faster and the state the driver prefers.
 * **The Direct3D 12 binding would have failed on any real GPU.** Every `Create*`
   was given `IID_ID3D12Device` instead of the id of the interface it was
   creating — `CreateCommandQueue` wants `IID_ID3D12CommandQueue`, a resource

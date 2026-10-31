@@ -82,6 +82,20 @@ fn main() {
         return;
     }
 
+    // Validation, before the device exists: the layer can only be turned on
+    // ahead of creation, and without it a driver reports a bad call as "the
+    // device was removed" rather than by naming the call.
+    let validating = false;
+    try {
+        validating = d3d12.debug(true);
+    } catch (error) {
+        validating = false;
+    }
+    println("debug: " + str(validating));
+    if (!validating) {
+        println("validation is off; a failure below will say less.");
+    }
+
     // The map is printed above; this is the same data, one fact per line.
     try {
         info = d3d12.info();
@@ -142,6 +156,9 @@ fn main() {
         return "ok";
     });
 
+    if (validating) {
+        println("validation was on: any line starting with \"d3d12 debug:\" above is the driver's own.");
+    }
     println("done");
 }
 

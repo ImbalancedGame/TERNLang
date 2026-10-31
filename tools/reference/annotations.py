@@ -820,6 +820,28 @@ FUNCTIONS = {
         "example": ["println(d3d12.available());"],
         "see": ["d3d12.info"],
     },
+    "d3d12.debug": {
+        "summary": "Turns the Direct3D 12 debug layer on, and says whether it is running.",
+        "params": [("enabled", "bool", "Optional. `true` turns validation on and `false` turns "
+                                        "it off; omit it to ask without changing anything.")],
+        "returns": ("bool", "Whether validation is on. `false` means this machine has no "
+                             "debug layer (Windows Settings > Apps > Optional features > "
+                             "Graphics Tools), and the reason is printed once to stderr."),
+        "remarks": " ".join([
+            "The layer has to be on before the device is created: `d3d12.debug(true)` then "
+            "`d3d12.create`, in that order. It makes the driver print exactly which call was "
+            "illegal and why, which turns \"the device was removed for an unknown reason\" into "
+            "something that can be fixed.",
+            "It is off by default because it slows rendering down and is not installed on every "
+            "machine.",
+        ]),
+        "errors": [("TypeError", "The argument is not `true` or `false`.")],
+        "example": [
+            'd3d12.debug(true);',
+            "let target = d3d12.create(640, 480);",
+        ],
+        "see": ["d3d12.create", "d3d12.info"],
+    },
     "d3d12.info": {
         "summary": "Describes the adapter and the binding.",
         "returns": ("map", "`name`, `nodes` and `build`; `build` is the revision of the "
@@ -879,6 +901,8 @@ FUNCTIONS = {
         "params": [("device", "int", "A device handle.")],
         "returns": ("list of int", "`width * height * 4` bytes, bottom row first, like `gl.pixels`."),
         "errors": [("D3D12Error", "The readback buffer cannot be mapped.")],
+        "remarks": "Leaves the target in the copy-source state, ready to be read again, so a "
+                   "second call in a row needs no barrier of its own.",
         "example": ["println(d3d12.pixels(target)[0..4]);"],
         "see": ["d3d12.save"],
     },

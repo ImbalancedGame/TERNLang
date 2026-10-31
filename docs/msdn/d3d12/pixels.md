@@ -19,6 +19,10 @@ d3d12.pixels(device)
 - Type: `list of int`
 - `width * height * 4` bytes, bottom row first, like `gl.pixels`.
 
+## Remarks
+
+Leaves the target in the copy-source state, ready to be read again, so a second call in a row needs no barrier of its own.
+
 ## Errors
 
 | Error | Raised when |
