@@ -146,6 +146,22 @@ fn main() {
         return;
     }
 
+    // The copy comes first, before anything has been drawn: it is the step a
+    // report on a real machine failed in ("the device was removed during
+    // d3d12.pixels"), and running it before the clear is what tells a copy that
+    // breaks the device apart from a clear that does. Read twice, because a
+    // second read in a row is a different state (the target is already a copy
+    // source) and used to be the one that lied about it.
+    if (!step("pixels, copied but not drawn", fn() {
+        return str(len(d3d12.pixels(target))) + " bytes";
+    })) {
+        println("the copy on its own removed the device; nothing after it can help.");
+        return;
+    }
+    step("pixels, copied twice", fn() {
+        return str(len(d3d12.pixels(target))) + " bytes";
+    });
+
     if (!step("clear", fn() {
         d3d12.clear(target, 0.1, 0.2, 0.3, 1);
         return "ok";
@@ -154,7 +170,7 @@ fn main() {
         return;
     }
 
-    step("pixels", fn() { return str(len(d3d12.pixels(target))) + " bytes"; });
+    step("pixels after clear", fn() { return str(len(d3d12.pixels(target))) + " bytes"; });
 
     let program = nil;
     step("pipeline", fn() {
