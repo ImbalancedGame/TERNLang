@@ -47,6 +47,19 @@ check_states() {
         grep "STATE MISMATCH" "$1" | head -5 >&2
         exit 1
     fi
+    # A render target created without the colour it will be cleared to makes
+    # every clear ordered against the old contents, and the debug layer on a
+    # real machine says so. The same run fails here.
+    if grep -q "CLEAR VALUE" "$1"; then
+        echo "d3d12: a render target has the wrong optimized clear value" >&2
+        grep "CLEAR VALUE" "$1" | head -5 >&2
+        exit 1
+    fi
+    if grep -q "COPY ARGUMENT MISMATCH" "$1"; then
+        echo "d3d12: a copy call does not match the documented signature" >&2
+        grep "COPY ARGUMENT MISMATCH" "$1" | head -5 >&2
+        exit 1
+    fi
 }
 
 echo "d3d12: running the probe in the interpreter"

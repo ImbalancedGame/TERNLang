@@ -5768,8 +5768,12 @@ static void tern_png_chunk(ByteBuf *out, const char *type, const unsigned char *
     tern_png_u32(out, crc ^ 0xFFFFFFFFu);
 }
 
-static void tern_png_write(const char *path, int width, int height,
-                         const unsigned char *rgba, int flip) {
+/// Writes an RGBA image as a PNG and returns how many bytes reached the file.
+/// The count is returned rather than assumed: it is the one number that says
+/// whether the picture was written, and a caller that prints it can tell a
+/// failed write from a failed stat.
+static size_t tern_png_write(const char *path, int width, int height,
+                             const unsigned char *rgba, int flip) {
     tern_png_crc_init();
 
     size_t row = (size_t)width * 4;
@@ -5831,9 +5835,15 @@ static void tern_png_write(const char *path, int width, int height,
         bb_free(&out);
         tern_panic("IOError", "cannot write '%s': %s", path, strerror(errno));
     }
-    fwrite(out.data, 1, out.len, file);
-    fclose(file);
+    size_t written = fwrite(out.data, 1, out.len, file);
+    int closed = fclose(file);
+    size_t wanted = out.len;
     bb_free(&out);
+    if (closed != 0 || written != wanted) {
+        tern_panic("IOError", "cannot write '%s': %llu of %llu bytes",
+                   path, (unsigned long long)written, (unsigned long long)wanted);
+    }
+    return written;
 }
 
 #ifndef _WIN32
@@ -9121,9 +9131,9 @@ static Value n_gl_save(int argc, Value *argv) {
     GlContext *ctx = gl_contexts[gl_slot_arg(argv[0])];
     const char *path = path_arg(argc, argv, 1);
     unsigned char *pixels = gl_read_pixels(ctx);
-    tern_png_write(path, ctx->width, ctx->height, pixels, 1);
+    size_t written = tern_png_write(path, ctx->width, ctx->height, pixels, 1);
     free(pixels);
-    return v_nil();
+    return v_int((int64_t)written);
 }
 
 static Value n_gl_size(int argc, Value *argv) {

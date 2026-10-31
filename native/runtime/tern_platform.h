@@ -10,8 +10,12 @@
 
 #ifdef _WIN32
 
-// Large files: the user's files are allowed to be more than 2 GiB.
+// Large files: the user's files are allowed to be more than 2 GiB. tern_rt.h
+// defines this too, before its own includes - it has to be seen before
+// <sys/types.h> is read, or struct stat and stat() disagree about st_size.
+#ifndef _FILE_OFFSET_BITS
 #define _FILE_OFFSET_BITS 64
+#endif
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -36,6 +40,17 @@
 #include <time.h>
 #include <wchar.h>
 #include <wctype.h>
+
+// stat() writes into a `struct stat`, and mingw redirects stat() to _stat64
+// when _FILE_OFFSET_BITS is 64. If the two ever describe different structures,
+// every fs call that stats a path writes past its buffer and reads st_size from
+// the wrong place - which is what happened: fs.size() said 0 for a 1.2 MB PNG.
+_Static_assert(sizeof(struct stat) == sizeof(struct _stat64),
+               "struct stat must match the 64-bit stat() this build calls");
+_Static_assert(offsetof(struct stat, st_size) == offsetof(struct _stat64, st_size),
+               "struct stat.st_size must sit where stat() writes it");
+_Static_assert(sizeof(off_t) == 8, "off_t must be 64-bit if stat() is");
+_Static_assert(sizeof(((struct stat *)0)->st_size) == 8, "st_size must be 64-bit if stat() is");
 
 // The CRT's names for the POSIX calls. Keeping the POSIX spelling means the
 // runtime reads the same on both platforms.

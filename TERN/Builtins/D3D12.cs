@@ -159,9 +159,10 @@ namespace TERN.Builtins
                 var target = targets.Get(vm, a[0]);
                 var path = OutputPath(vm, a[1]);
                 var bytes = target.ReadPixels(vm, "d3d12.save");
+                long written;
                 try
                 {
-                    Png.Write(path, target.Width, target.Height, bytes, flip: true);
+                    written = Png.Write(path, target.Width, target.Height, bytes, flip: true);
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException
                                                   or NotSupportedException or ArgumentException)
@@ -169,7 +170,7 @@ namespace TERN.Builtins
                     throw vm.Error("IOError", $"cannot write '{path}': {error.Message}");
                 }
 
-                return Value.Nil;
+                return new Value(written);
             }, "Saves the target as a PNG: d3d12.save(handle, path).");
 
             Add(map, "size", 1, 1, (vm, a) =>
@@ -370,6 +371,25 @@ namespace TERN.Builtins
             public SampleDesc SampleDesc;
             public int Layout;
             public int Flags;
+        }
+
+        /// <summary>
+        /// D3D12_CLEAR_VALUE: the colour a render target is optimised for.
+        /// </summary>
+        /// <remarks>
+        /// Passing NULL instead is legal, but the debug layer warns that every
+        /// clear is then ordered against the previous contents. Handing the
+        /// device the colour up front is what stops that warning, and it is the
+        /// same value the clear call uses.
+        /// </remarks>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ClearValue
+        {
+            public int Format;
+            public float R;
+            public float G;
+            public float B;
+            public float A;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -637,7 +657,7 @@ namespace TERN.Builtins
         /// stamp the two look identical, and a fix that worked looks like one
         /// that did not. Keep it equal to <c>TERN_D3D12_BUILD</c>.
         /// </summary>
-        private const string Build = "2026-10-31.6";
+        private const string Build = "2026-10-31.7";
 
         /// <summary>
         /// Why the driver removed the device, in the words the native backend
@@ -1311,8 +1331,26 @@ namespace TERN.Builtins
                 };
 
                 var heap = new HeapProperties { Type = HeapTypeDefault, CreationNodeMask = 1 };
-                if (IidResource.With(iid =>
-                    Slot<CreateCommittedResourceFn>(_device, 27)(_device, ref heap, 0, ref texture, StateCommon, IntPtr.Zero, iid, out _texture)) < 0)
+
+                // The colour the target is cleared to, told to the device when
+                // the resource is made: without it the debug layer warns, and
+                // it is right - a clear the driver knows about in advance can
+                // replace the contents instead of being ordered against them.
+                var clear = new ClearValue { Format = FormatRgba8, R = 0.05f, G = 0.06f, B = 0.09f, A = 1.0f };
+                var clearPointer = Marshal.AllocHGlobal(Marshal.SizeOf<ClearValue>());
+                Marshal.StructureToPtr(clear, clearPointer, false);
+                long created;
+                try
+                {
+                    created = IidResource.With(iid =>
+                        Slot<CreateCommittedResourceFn>(_device, 27)(_device, ref heap, 0, ref texture, StateCommon, clearPointer, iid, out _texture));
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(clearPointer);
+                }
+
+                if (created < 0)
                 {
                     throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a render target could not be created");
                 }

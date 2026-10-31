@@ -17,7 +17,12 @@ d3d12.save(device, path)
 
 ## Return value
 
-`nil`.
+- Type: `int`
+- The number of bytes written.
+
+## Remarks
+
+The byte count is the writer's own evidence that the picture reached the file. A PNG of a 640x480 frame is a few hundred kilobytes, so any other number is worth looking at. `d3d12.pixels` returns the same image as a list of ints if you want to look at it without a file.
 
 ## Errors
 
@@ -28,7 +33,9 @@ d3d12.save(device, path)
 ## Example
 
 ```tern
-d3d12.save(target, "frame.png");
+let device = d3d12.create(640, 480);
+d3d12.draw(device);
+println("saved", d3d12.save(device, "frame.png"), "bytes");
 ```
 
 ## See also
