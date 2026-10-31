@@ -280,7 +280,9 @@ namespace TERN.Builtins
             }
 
             var path = value.AsString();
-            return Path.IsPathRooted(path) ? path : Path.GetFullPath(Path.Combine(engine.WorkingDirectory, path));
+            // Same rule as fs: a relative destination is relative to where the
+            // program was started, which is also what a compiled binary does.
+            return Path.IsPathRooted(path) ? path : Path.GetFullPath(path);
         }
 
         // ---------------------------------------------------------------------- driver

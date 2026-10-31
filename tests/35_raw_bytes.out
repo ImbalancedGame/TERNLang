@@ -1,0 +1,27 @@
+[97, 98, 99]
+[104, 195, 169, 108, 108, 111]
+hi
+héllo
+BC
+3
+fromBytes() expects a list of bytes, not string
+fromBytes() range 2..7 is outside 3 bytes
+toBytes() expects a string, not int
+true
+true
+0123
+456789
+HTTP/1.1 200 OK
+
+hi
+eof: 0
+send() needs a framed connection; this one was opened raw, so use sendBytes/receiveBytes/receiveSome
+receive() needs a framed connection; this one was opened raw, so use sendBytes/receiveBytes/receiveSome
+receiveSome() needs a count between 1 and 67108864
+count must be a number, not string
+option 'raw' must be a boolean, not string
+receiveSome() timed out
+epoch millis: true
+epoch seconds: true
+seconds not millis: true
+iso looks like a date: true

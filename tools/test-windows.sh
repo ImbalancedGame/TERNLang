@@ -16,11 +16,17 @@ if [ -z "$ZIG" ]; then
     ZIG="$(command -v zig || true)"
 fi
 if [ -z "$ZIG" ]; then
-    ZIG="$(python3 - <<'PY' 2>/dev/null
+    # `pip install ziglang` may have gone into the checkout's virtualenv rather
+    # than the system interpreter, which is what this repository's own tests do.
+    for candidate in python3 "$HERE/.venv/bin/python" /tmp/qtenv/bin/python; do
+        [ -x "$candidate" ] || command -v "$candidate" >/dev/null 2>&1 || continue
+        ZIG="$("$candidate" - <<'ZIGPY' 2>/dev/null
 import os, ziglang
 print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))
-PY
+ZIGPY
 )"
+        [ -n "$ZIG" ] && break
+    done
 fi
 if [ -z "$ZIG" ] || [ ! -x "$ZIG" ]; then
     echo "windows: no Zig found (pip install ziglang, or set TERN_ZIG) — skipped"
@@ -31,7 +37,10 @@ cd "$HERE"
 echo "windows: using $ZIG"
 
 status=0
-for name in 01_basics 02_strings 05_collections 08_errors 09_builtins 22_fs 27_json 26_net; do
+# 35_raw_bytes is here because it is the only test that touches text.toBytes
+# and text.fromBytes, which used to sit inside the #ifndef _WIN32 block and
+# so failed to compile for this target while every Linux suite stayed green.
+for name in 01_basics 02_strings 05_collections 08_errors 09_builtins 22_fs 27_json 26_net 35_raw_bytes; do
     source="tests/$name.tern"
     [ -f "$source" ] || continue
     if ! TERN_ZIG="$ZIG" python3 native/ternc.py --target windows "$source" -o "$WORK/$name.exe" > "$WORK/$name.log" 2>&1; then

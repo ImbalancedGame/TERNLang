@@ -26,6 +26,7 @@ therefore refuse a stranger before the script ever sees a connection.
 | [`port`](port.md) | 1..1 | The port a server is bound to. |
 | [`receive`](receive.md) | 1..1 | Reads one frame and decodes it. |
 | [`receiveBytes`](receiveBytes.md) | 2..2 | Reads exactly n raw bytes. |
+| [`receiveSome`](receiveSome.md) | 2..2 | Reads up to n bytes, or returns an empty list at end of stream. |
 | [`send`](send.md) | 2..2 | Encodes a value and sends it as one frame. |
 | [`sendBytes`](sendBytes.md) | 2..2 | Writes raw bytes with no frame header. |
 | [`timeout`](timeout.md) | 2..2 | Sets the read and write timeout of a connection. |

@@ -1,0 +1,440 @@
+// A rotating cube, drawn two ways.
+//
+// 1. As text. A small software rasteriser with a depth buffer draws the cube
+//    into characters, so it turns in any terminal - no GPU, no driver, no
+//    display, and it works identically in the interpreter and in a compiled
+//    binary.
+// 2. As PNG files. The same triangles go through std:d3d12 (Direct3D 12, the
+//    preferred renderer) or std:gl (OpenGL 3.3 through EGL), whichever this
+//    machine can load, and every frame is read back and written out.
+//
+// There is no window. The runtime renders offscreen: a render target and a
+// readback buffer, no swap chain, so a frame ends up in a file rather than on
+// screen. A real window needs a presentation surface and a message loop, which
+// the runtime does not have yet. Everything above that last step - the
+// geometry, the rotation, the projection, the shading, the triangle order and
+// the draw calls - is what a windowed version would run unchanged.
+//
+//   tern run examples/rotating_cube.tern
+//   tern run examples/rotating_cube.tern --ascii
+//   tern run examples/rotating_cube.tern --frames 36 --out frames
+//   tern run examples/rotating_cube.tern --ascii --size 100x50
+//
+// Both renderers are driven from the same triangle list on purpose: when the
+// text cube looks right, the maths feeding the GPU is right too.
+
+import "std:d3d12";
+import "std:gl";
+import "std:fs";
+import "std:os";
+
+// ---------------------------------------------------------------- 3D vectors
+//
+// Just enough vector algebra to place a cube and light its faces. Points and
+// directions are the same struct; nothing here needs to tell them apart.
+
+struct V3 { x, y, z }
+struct Pt { x, y, depth }          // projected vertex: clip x/y, camera depth
+struct Tri { a, b, c, colour, light }
+struct Face { corners, colour }
+
+fn vadd(a, b) { return V3(a.x + b.x, a.y + b.y, a.z + b.z); }
+fn vsub(a, b) { return V3(a.x - b.x, a.y - b.y, a.z - b.z); }
+fn vscale(v, k) { return V3(v.x * k, v.y * k, v.z * k); }
+
+fn vdot(a, b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+fn vcross(a, b) {
+    return V3(a.y * b.z - a.z * b.y,
+              a.z * b.x - a.x * b.z,
+              a.x * b.y - a.y * b.x);
+}
+
+fn vunit(v) {
+    let length = math.sqrt(vdot(v, v));
+    if (length == 0) { return V3(0, 0, 0); }
+    return V3(v.x / length, v.y / length, v.z / length);
+}
+
+// ------------------------------------------------------------------- the cube
+//
+// Eight corners on the unit cube, six faces, twelve triangles. Coordinates are
+// -1..1 on every axis, so the cube is two units across and centred on the
+// origin; the camera sits on +z and looks at it.
+
+fn cube() {
+    let corners = [
+        V3(-1, -1, -1), V3(1, -1, -1), V3(1, 1, -1), V3(-1, 1, -1),
+        V3(-1, -1, 1),  V3(1, -1, 1),  V3(1, 1, 1),  V3(-1, 1, 1),
+    ];
+
+    // Each face lists its corners anticlockwise as seen from outside, then the
+    // colour it has before the light is applied. The light makes the six faces
+    // differ, which is what reads as a solid rather than a flat hexagon.
+    return [
+        Face([corners[4], corners[5], corners[6], corners[7]], V3(0.20, 0.55, 0.95)),  // +z
+        Face([corners[1], corners[0], corners[3], corners[2]], V3(0.10, 0.22, 0.45)),  // -z
+        Face([corners[5], corners[1], corners[2], corners[6]], V3(0.24, 0.70, 0.85)),  // +x
+        Face([corners[0], corners[4], corners[7], corners[3]], V3(0.08, 0.30, 0.55)),  // -x
+        Face([corners[7], corners[6], corners[2], corners[3]], V3(0.45, 0.85, 1.00)),  // +y
+        Face([corners[0], corners[1], corners[5], corners[4]], V3(0.05, 0.15, 0.30)),  // -y
+    ];
+}
+
+let LIGHT = vunit(V3(0.45, 0.80, 0.90));
+
+/// Turns a point around the y axis (yaw), then around the x axis (pitch).
+fn turn(v, yaw, pitch) {
+    let cy = math.cos(yaw);
+    let sy = math.sin(yaw);
+    let x = v.x * cy + v.z * sy;
+    let z = v.z * cy - v.x * sy;
+
+    let cp = math.cos(pitch);
+    let sp = math.sin(pitch);
+    let y = v.y * cp - z * sp;
+    let z2 = v.y * sp + z * cp;
+
+    return V3(x, y, z2);
+}
+
+/// Perspective divide: things further away come out smaller. The camera sits
+/// on +z looking back at the origin, so a bigger z is closer and a bigger depth
+/// is further away. The result is in clip space (-1..1 across the view), which
+/// is what both renderers take.
+fn project(v, camera, focal) {
+    let depth = camera - v.z;
+    return Pt(v.x * focal / depth, v.y * focal / depth, depth);
+}
+
+/// The twelve triangles of the cube at one angle, brightest first is not
+/// needed - sorted far to near, which is what a painter needs.
+fn triangles(yaw, pitch, camera, focal) {
+    let out = [];
+
+    for face in cube() {
+        let a = turn(face.corners[0], yaw, pitch);
+        let b = turn(face.corners[1], yaw, pitch);
+        let c = turn(face.corners[2], yaw, pitch);
+        let d = turn(face.corners[3], yaw, pitch);
+
+        // One normal for the whole face: the faces are flat, so every pixel of
+        // one gets the same light and the same colour.
+        let normal = vunit(vcross(vsub(b, a), vsub(d, a)));
+        let lit = math.max(0, vdot(normal, LIGHT));
+        let colour = vscale(face.colour, 0.22 + 0.78 * lit);
+
+        let pa = project(a, camera, focal);
+        let pb = project(b, camera, focal);
+        let pc = project(c, camera, focal);
+        let pd = project(d, camera, focal);
+
+        out.push(Tri(pa, pb, pc, colour, lit));
+        out.push(Tri(pa, pc, pd, colour, lit));
+    }
+
+    // Neither renderer has a depth buffer, so the far triangles have to go in
+    // first and the near ones over them. Average depth is enough for a convex
+    // solid; anything more complicated would want a real z-buffer.
+    return out.sort(fn(left, right) =>
+        (right.a.depth + right.b.depth + right.c.depth) -
+        (left.a.depth + left.b.depth + left.c.depth));
+}
+
+/// The cube at an angle, in the framing both renderers use.
+fn frame_at(degrees) {
+    return triangles(degrees * math.pi / 180, 0.52, 9.0, 5.2);
+}
+
+// ---------------------------------------------------------- text rendering
+//
+// A terminal cell is roughly twice as tall as it is wide, so the grid is 2:1
+// and a square on screen is a square in the output.
+
+let RAMP = [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@"];
+
+fn edge(ax, ay, bx, by, px, py) {
+    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+// Clip space (-1..1, y up) to a grid position (columns right, rows down).
+fn cell_x(x, width) { return (x * 0.5 + 0.5) * (width - 1); }
+fn cell_y(y, height) { return (0.5 - y * 0.5) * (height - 1); }
+
+fn rasterise(triangles, width, height) {
+    let cells = [];
+    let zbuf = [];
+    for i in range(width * height) {
+        cells.push(" ");
+        zbuf.push(0.0);
+    }
+
+    for tri in triangles {
+        let ax = cell_x(tri.a.x, width);
+        let ay = cell_y(tri.a.y, height);
+        let bx = cell_x(tri.b.x, width);
+        let by = cell_y(tri.b.y, height);
+        let cx = cell_x(tri.c.x, width);
+        let cy = cell_y(tri.c.y, height);
+
+        // Signed area; zero means the triangle is edge-on and covers nothing.
+        let area = edge(ax, ay, bx, by, cx, cy);
+        if (area == 0) { continue; }
+
+        // A flat face is one shade: pick the character once, not per pixel, and
+        // from the shaded colour rather than the light alone, so the blue faces
+        // stay apart from each other and not just from the lit ones.
+        let brightness = 0.30 * tri.colour.x + 0.59 * tri.colour.y + 0.11 * tri.colour.z;
+        let glyph = RAMP[int(math.min(0.999, 0.10 + 1.05 * brightness) * len(RAMP))];
+
+        let left = math.max(0, int(math.floor(math.min(ax, math.min(bx, cx)))));
+        let right = math.min(width - 1, int(math.ceil(math.max(ax, math.max(bx, cx)))));
+        let top = math.max(0, int(math.floor(math.min(ay, math.min(by, cy)))));
+        let bottom = math.min(height - 1, int(math.ceil(math.max(ay, math.max(by, cy)))));
+
+        for row in range(top, bottom + 1) {
+            for col in range(left, right + 1) {
+                // Barycentric weights: all three non-negative is inside.
+                let w1 = edge(bx, by, cx, cy, col, row) / area;
+                let w2 = edge(cx, cy, ax, ay, col, row) / area;
+                let w3 = 1 - w1 - w2;
+                if (w1 < 0 || w2 < 0 || w3 < 0) { continue; }
+
+                // 1/depth is the thing that interpolates linearly across a
+                // projected triangle; depth itself does not, so the buffer
+                // stores 1/depth and a bigger value means nearer.
+                let inverse = w1 / tri.a.depth + w2 / tri.b.depth + w3 / tri.c.depth;
+                let index = row * width + col;
+                if (inverse > zbuf[index]) {
+                    zbuf[index] = inverse;
+                    cells[index] = glyph;
+                }
+            }
+        }
+    }
+
+    let lines = [];
+    for row in range(height) {
+        lines.push(cells[row * width..(row + 1) * width].join(""));
+    }
+    return lines.join("\n");
+}
+
+fn show_frame(degrees, width, height) {
+    println("yaw " + str(degrees) + " degrees");
+    println(rasterise(frame_at(degrees), width, height));
+    println("");
+}
+
+// --------------------------------------------------------- the GPU renderers
+//
+// Both modules take the same thing: a flat list of vertices, six numbers each -
+// x and y in clip space, then red, green, blue and alpha - three vertices per
+// triangle. The shaders below do nothing but pass those colours through, which
+// keeps the two renderers comparable.
+
+fn glsl_vertex() {
+    return [
+        "#version 330 core",
+        "layout(location = 0) in vec2 position;",
+        "layout(location = 1) in vec4 colour;",
+        "out vec4 tint;",
+        "void main() {",
+        "    gl_Position = vec4(position, 0.0, 1.0);",
+        "    tint = colour;",
+        "}",
+    ].join("\n");
+}
+
+fn glsl_fragment() {
+    return [
+        "#version 330 core",
+        "in vec4 tint;",
+        "out vec4 pixel;",
+        "void main() {",
+        "    pixel = tint;",
+        "}",
+    ].join("\n");
+}
+
+fn hlsl_vertex() {
+    return [
+        "struct Vertex {",
+        "    float3 position : POSITION;",
+        "    float4 colour : COLOR;",
+        "};",
+        "struct Pixel {",
+        "    float4 position : SV_Position;",
+        "    float4 colour : COLOR;",
+        "};",
+        "Pixel main(Vertex input) {",
+        "    Pixel output;",
+        "    output.position = float4(input.position, 1.0);",
+        "    output.colour = input.colour;",
+        "    return output;",
+        "}",
+    ].join("\n");
+}
+
+fn hlsl_pixel() {
+    return [
+        "struct Pixel {",
+        "    float4 position : SV_Position;",
+        "    float4 colour : COLOR;",
+        "};",
+        "float4 main(Pixel input) : SV_Target {",
+        "    return input.colour;",
+        "}",
+    ].join("\n");
+}
+
+struct Surface { backend, target, program }
+
+/// Opens whichever renderer this machine has, Direct3D 12 first.
+///
+/// A module can be present and still fail - a Windows install without
+/// d3dcompiler_47.dll has Direct3D 12 but cannot compile the shaders - so each
+/// attempt is guarded and the next one is tried in turn.
+fn open_surface(width, height) {
+    if (d3d12.available()) {
+        try {
+            let handle = d3d12.create(width, height);
+            return Surface("d3d12", handle, d3d12.pipeline(handle, hlsl_vertex(), hlsl_pixel()));
+        } catch (error) {
+            println("Direct3D 12 is installed but not usable here: " + str(error));
+            println("trying OpenGL instead.");
+        }
+    }
+
+    if (gl.available()) {
+        try {
+            let handle = gl.create(width, height);
+            return Surface("gl", handle, gl.program(handle, glsl_vertex(), glsl_fragment()));
+        } catch (error) {
+            println("OpenGL is installed but not usable here: " + str(error));
+        }
+    }
+
+    return nil;
+}
+
+/// Flattens the triangles into the list both modules draw from.
+fn vertices_of(triangles) {
+    let out = [];
+    for tri in triangles {
+        for point in [tri.a, tri.b, tri.c] {
+            out.push(point.x);
+            out.push(point.y);
+            out.push(tri.colour.x);
+            out.push(tri.colour.y);
+            out.push(tri.colour.z);
+            out.push(1.0);
+        }
+    }
+    return out;
+}
+
+fn paint(surface, triangles) {
+    let vertices = vertices_of(triangles);
+    if (surface.backend == "d3d12") {
+        d3d12.clear(surface.target, 0.05, 0.06, 0.09, 1);
+        d3d12.draw(surface.target, surface.program, vertices);
+    } else {
+        gl.clear(surface.target, 0.05, 0.06, 0.09, 1);
+        gl.draw(surface.target, surface.program, vertices);
+    }
+}
+
+fn save_frame(surface, path) {
+    if (surface.backend == "d3d12") {
+        d3d12.save(surface.target, path);
+    } else {
+        gl.save(surface.target, path);
+    }
+}
+
+fn close_surface(surface) {
+    if (surface.backend == "d3d12") {
+        d3d12.close(surface.target);
+    } else {
+        gl.close(surface.target);
+    }
+}
+
+// ------------------------------------------------------------------- the CLI
+
+fn usage() {
+    println("usage: tern run examples/rotating_cube.tern [options]");
+    println("");
+    println("  --ascii           only draw the cube as text");
+    println("  --frames N        how many PNG frames to write (default 24)");
+    println("  --out DIR         where to put them (default cube_frames)");
+    println("  --size WIDTHxHEIGHT  text grid (default 72x36)");
+    println("  --help            this text");
+}
+
+fn main() {
+    let arguments = os.args();
+    let text_only = false;
+    let frames = 24;
+    let out = "cube_frames";
+    let width = 72;
+    let height = 36;
+
+    let index = 0;
+    while (index < len(arguments)) {
+        let argument = arguments[index];
+        if (argument == "--ascii") {
+            text_only = true;
+        } else if (argument == "--frames" && index + 1 < len(arguments)) {
+            index += 1;
+            frames = int(arguments[index]);
+        } else if (argument == "--out" && index + 1 < len(arguments)) {
+            index += 1;
+            out = arguments[index];
+        } else if (argument == "--size" && index + 1 < len(arguments)) {
+            index += 1;
+            let parts = arguments[index].split("x");
+            width = int(parts[0]);
+            height = int(parts[1]);
+        } else if (argument == "--help" || argument == "-h") {
+            usage();
+            return;
+        } else {
+            println("unknown option: " + argument);
+            usage();
+            return;
+        }
+        index += 1;
+    }
+
+    // Four views a quarter turn apart: enough to see the cube turn, few enough
+    // to read in a terminal. The cube has four-fold symmetry around y, so this
+    // is a full cycle of everything the shading shows.
+    for degrees in [0, 30, 60, 90] {
+        show_frame(degrees, width, height);
+    }
+
+    if (text_only) { return; }
+
+    let surface = open_surface(640, 480);
+    if (surface == nil) {
+        println("no GPU renderer: neither Direct3D 12 nor OpenGL could be loaded.");
+        println("The text frames above need neither. tools/gl/mock_driver.c and");
+        println("tools/d3d12/mock_d3d12.c stand in for a driver when there is none.");
+        return;
+    }
+
+    if (!fs.exists(out)) { fs.mkdir(out); }
+
+    for i in range(frames) {
+        let path = out + "/frame-" + str(i).padStart(3, "0") + ".png";
+        paint(surface, frame_at(360.0 * i / frames));
+        save_frame(surface, path);
+    }
+    close_surface(surface);
+
+    println("wrote " + str(frames) + " frames to " + out + "/ with " + surface.backend + ".");
+}
+
+main();

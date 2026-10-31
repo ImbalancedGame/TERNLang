@@ -72,6 +72,14 @@ namespace TERN.Builtins
 
         /// <summary>The token the peer must present, for a listener given one.</summary>
         public string? Token { get; set; }
+
+        /// <summary>
+        /// True when the connection speaks no TERN framing at all: no hello, no
+        /// length-prefixed frames, just the bytes. This is what a listener in
+        /// front of a browser, an HTTP server or any other protocol needs,
+        /// because a peer that has never heard of TERN cannot say hello.
+        /// </summary>
+        public bool Raw { get; set; }
     }
 
     /// <summary>
@@ -223,8 +231,9 @@ namespace TERN.Builtins
                 endpoint.Token = options.Token;
                 endpoint.MaxFrame = options.MaxFrame;
                 endpoint.TimeoutMs = options.Timeout;
+                endpoint.Raw = options.Raw;
                 return new Value(handle);
-            }, "Listens on a port and returns a server handle. Options: token, maxFrame.");
+            }, "Listens on a port and returns a server handle. Options: token, maxFrame, raw.");
 
             Add(map, "accept", 1, 1, (vm, a) =>
             {
@@ -251,14 +260,20 @@ namespace TERN.Builtins
                     throw vm.Error("NetError", $"accept() failed: {error.Message}");
                 }
 
-                var stream = Authenticate(vm, connection, endpoint);
+                // A raw listener has nothing to check: the peer is speaking
+                // something else entirely, and waiting for a hello it will never
+                // send is how a browser appears to hang a server.
+                var stream = endpoint.Raw
+                    ? new NetworkStream(connection, ownsSocket: false)
+                    : Authenticate(vm, connection, endpoint);
 
                 var handle = engine.Net.Add(connection, NetKind.Stream);
                 var accepted = engine.Net.Require(vm, handle);
                 accepted.MaxFrame = endpoint.MaxFrame;
                 accepted.Stream = stream;
+                accepted.Raw = endpoint.Raw;
                 return new Value(handle);
-            }, "Waits for one connection, checks its hello, and returns its handle.");
+            }, "Waits for one connection, checks its hello (unless the listener is raw), and returns its handle.");
 
             Add(map, "connect", 2, 3, (vm, a) =>
             {
@@ -302,7 +317,10 @@ namespace TERN.Builtins
                         StartTls(vm, endpoint, options, host);
                     }
 
-                    SendHello(vm, endpoint, options.Token);
+                    if (!options.Raw)
+                    {
+                        SendHello(vm, endpoint, options.Token);
+                    }
                 }
                 catch
                 {
@@ -311,11 +329,12 @@ namespace TERN.Builtins
                 }
 
                 return new Value(handle);
-            }, "Connects and says hello. Options: timeout, token, maxFrame.");
+            }, "Connects and says hello (unless raw). Options: timeout, token, maxFrame, raw.");
 
             Add(map, "send", 2, 2, (vm, a) =>
             {
                 var endpoint = Connection(vm, engine, a[0], "send");
+                RequireFramed(vm, endpoint, "send");
                 var payload = Wire.Encode(vm, a[1]);
                 if (payload.Length > FrameCeiling)
                 {
@@ -332,6 +351,7 @@ namespace TERN.Builtins
             Add(map, "receive", 1, 1, (vm, a) =>
             {
                 var endpoint = Connection(vm, engine, a[0], "receive");
+                RequireFramed(vm, endpoint, "receive");
                 return Wire.Decode(vm, ReceiveFrame(vm, endpoint));
             }, "Waits for one frame and returns the decoded value.");
 
@@ -356,6 +376,48 @@ namespace TERN.Builtins
                 ReadExactly(vm, endpoint, buffer);
                 return Value.Of(Wire.ToList(buffer));
             }, "Reads exactly n bytes (no frame header).");
+
+            Add(map, "receiveSome", 2, 2, (vm, a) =>
+            {
+                var endpoint = Connection(vm, engine, a[0], "receiveSome");
+                var count = (int)Number(vm, a[1], "count");
+                if (count <= 0 || count > FrameCeiling)
+                {
+                    throw vm.Error("NetError", $"receiveSome() needs a count between 1 and {FrameCeiling}");
+                }
+
+                var buffer = new byte[count];
+                int read;
+                try
+                {
+                    read = endpoint.Stream.Read(buffer, 0, count);
+                }
+                catch (IOException error) when (InnerSocket(error) is { SocketErrorCode: SocketError.TimedOut })
+                {
+                    throw vm.Error("NetError", "receiveSome() timed out");
+                }
+                catch (IOException error) when (InnerSocket(error) is { SocketErrorCode: SocketError.ConnectionReset })
+                {
+                    throw vm.Error("ConnectionError", "connection reset by the other side");
+                }
+                catch (IOException error)
+                {
+                    throw vm.Error("NetError", $"receiveSome() failed: {error.Message}");
+                }
+                catch (ObjectDisposedException)
+                {
+                    throw vm.Error("NetError", "socket is closed");
+                }
+
+                if (read <= 0)
+                {
+                    // End of stream is an empty list, not an error: a protocol
+                    // loop ends when the peer goes away.
+                    return Value.Of(new TernList(0));
+                }
+
+                return Value.Of(Wire.ToList(read == buffer.Length ? buffer : buffer[..read]));
+            }, "Reads up to n bytes, or returns an empty list at end of stream.");
 
             Add(map, "udpListen", 1, 3, (vm, a) =>
             {
@@ -787,7 +849,8 @@ namespace TERN.Builtins
         internal readonly struct NetOptions
         {
             public NetOptions(string? token, int maxFrame, int timeout,
-                              bool tls = false, string? sni = null, bool verify = true, string? ca = null)
+                              bool tls = false, string? sni = null, bool verify = true, string? ca = null,
+                              bool raw = false)
             {
                 Token = token;
                 MaxFrame = maxFrame;
@@ -796,6 +859,7 @@ namespace TERN.Builtins
                 Sni = sni;
                 Verify = verify;
                 Ca = ca;
+                Raw = raw;
             }
 
             public string? Token { get; }
@@ -805,6 +869,8 @@ namespace TERN.Builtins
             public string? Sni { get; }
             public bool Verify { get; }
             public string? Ca { get; }
+
+            public bool Raw { get; }
         }
 
         private static NetOptions ParseOptions(VM vm, in Value value, string operation)
@@ -894,7 +960,18 @@ namespace TERN.Builtins
                 ca = Text(vm, caValue, "option 'ca'");
             }
 
-            return new NetOptions(token, maxFrame, timeout, tls, sni, verify, ca);
+            var raw = false;
+            if (map.TryGet(Value.Str("raw"), out var rawValue))
+            {
+                if (rawValue.Kind != ValueKind.Bool)
+                {
+                    throw vm.Error("TypeError", $"option 'raw' must be a boolean, not {vm.TypeName(rawValue)}");
+                }
+
+                raw = rawValue.AsBool();
+            }
+
+            return new NetOptions(token, maxFrame, timeout, tls, sni, verify, ca, raw);
         }
 
         private static void Connect(VM vm, Socket socket, IPEndPoint endPoint, string host, int port, int timeoutMs)
@@ -1003,6 +1080,16 @@ namespace TERN.Builtins
             catch (ObjectDisposedException)
             {
                 throw vm.Error("NetError", "socket is closed");
+            }
+        }
+
+        /// <summary>Rejects framed calls on a connection that speaks raw bytes.</summary>
+        private static void RequireFramed(VM vm, NetEndpoint endpoint, string operation)
+        {
+            if (endpoint.Raw)
+            {
+                throw vm.Error("NetError",
+                    $"{operation}() needs a framed connection; this one was opened raw, so use sendBytes/receiveBytes/receiveSome");
             }
         }
 

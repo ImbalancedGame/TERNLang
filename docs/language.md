@@ -612,6 +612,20 @@ the file and is capped at 1 GiB per call. `fs.seek`, `fs.position` and
 `fs.fileSize` round out the handle, and `fs.close` releases it — a second close,
 or a read on a handle that is not open, raises `IOError`.
 
+Relative paths in `fs`, `gl` and `d3d12` calls resolve against the process's
+working directory, which is what a shell command means by a path, and is the
+same rule in the interpreter and in a compiled binary:
+
+```
+cd /srv/app && tern run /opt/tools/check.tern     # "logs/x.txt" is /srv/app/logs/x.txt
+```
+
+Only `import` resolves against the importing file, so a library can import its
+own neighbours without depending on where the caller was started. Before this
+rule the interpreter resolved `fs` paths against the script's directory while a
+compiled binary used the working directory, which made a script that passed its
+tests fail once it was run from another directory.
+
 `json.parse` raises a `JsonError` naming the problem and the offset in the text
 (`expected ':' at offset 4`); `json.tryParse` returns its fallback instead of
 raising. Documents nested deeper than 512 levels are refused rather than
@@ -833,6 +847,19 @@ Command line arguments are available as a list:
 let args = os.args();
 ```
 
+Runner options go before the script path; everything after it is the script's,
+even when it starts with `--`. The rule is a split, not a filter, because a
+script with its own flags has no other way to see them:
+
+```
+tern run --no-net backup.tern --dry-run /srv      # os.args() == ["--dry-run", "/srv"]
+```
+
+Before this split the runner scanned the whole command line for `--` options,
+so `tern run deploy.tern --dry-run` ran a real deployment and the flag never
+reached the script. `--` as the first argument is no longer special: everything
+after the path already belongs to the script.
+
 The embedder can disable file system access. When disabled, every `fs` call and
 `import` of a file raises a catchable error:
 
@@ -881,6 +908,7 @@ Both `listen` and `connect` take an optional options map:
 | `token` | Shared secret the peer must present before the connection is handed to the script | no token |
 | `maxFrame` | Largest frame this socket will accept, in bytes (1 .. 64 MiB) | 1 MiB |
 | `timeout` | Connect, send and receive timeout in milliseconds; `0` waits forever | no timeout |
+| `raw` | Talk to a peer that does not speak the framing protocol: no hello, no frames | `false` |
 | `tls` | Encrypt the connection (client side only) | `false` |
 | `sni` | Name used for SNI and for the certificate check | the host |
 | `verify` | Check the certificate chain and the name | `true` |
@@ -903,7 +931,36 @@ compared in constant time and gives up after five seconds (or the listener's own
 `net.sendBytes(socket, bytes)` and `net.receiveBytes(socket, count)` move raw
 bytes with no frame header, for protocols layered on top of `net` (HTTP, RCON,
 anything with its own framing). Byte lists use integers in 0..255 and are
-rejected otherwise.
+rejected otherwise. `text.toBytes` and `text.fromBytes` convert between text and
+those lists, so a line-oriented protocol does not need a hand-written encoder:
+
+```tern
+net.sendBytes(socket, text.toBytes("PING\r\n"));
+let line = text.fromBytes(net.receiveBytes(socket, 6));    // "PONG\r\n"
+```
+
+`{"raw": true}` on `listen` or `connect` skips the hello handshake and turns off
+framing entirely: `send`/`receive` then raise a `TypeError` explaining that the
+connection is raw, and only the byte calls work. That is the mode for a peer
+with its own protocol — a browser, an RCON server, a database — which would
+otherwise sit waiting for a hello nobody sends.
+
+`net.receiveSome(socket, count)` returns as soon as any bytes arrive, up to
+`count`, and returns `[]` at end of stream, which is what a read-until-closed
+loop wants; `net.receiveBytes` instead waits for exactly `count` and raises when
+the peer closes early. A timeout is still an error, so a loop that must tell
+"the peer went away" from "nothing arrived yet" sets `net.timeout` first:
+
+```tern
+net.timeout(socket, 2000);
+let total = 0;
+while true {
+    let chunk = net.receiveSome(socket, 65536);
+    if len(chunk) == 0 { break; }        // end of stream, not a timeout
+    total += len(chunk);
+}
+println("read " + str(total) + " bytes");
+```
 
 A connection can be encrypted with `{"tls": true}`:
 

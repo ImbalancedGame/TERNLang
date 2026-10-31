@@ -104,11 +104,17 @@ cat "$WORK/missing_interp.txt"
 # mock would have accepted.
 ZIG="${TERN_ZIG:-$(command -v zig || true)}"
 if [ -z "$ZIG" ]; then
-    ZIG="$(python3 - <<'PY' 2>/dev/null
+    # pip's ziglang may live in the checkout's virtualenv rather than the system
+    # interpreter, which is where this repository installs it.
+    for candidate in python3 "$HERE/.venv/bin/python" /tmp/qtenv/bin/python; do
+        [ -x "$candidate" ] || command -v "$candidate" >/dev/null 2>&1 || continue
+        ZIG="$("$candidate" - <<'ZIGPY' 2>/dev/null
 import os, ziglang
 print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))
-PY
+ZIGPY
 )"
+        [ -n "$ZIG" ] && break
+    done
 fi
 if [ -n "$ZIG" ] && [ -x "$ZIG" ]; then
     echo "d3d12: checking the structure mirror against the real d3d12.h"

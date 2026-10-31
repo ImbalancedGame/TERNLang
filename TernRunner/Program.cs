@@ -82,8 +82,10 @@ Usage:
   tern version                       Print the version
   tern help                          Show this help
 
-Options for `run`:
+Options for `run`, before the script path. Everything after the path is passed
+to the script as os.args():
   --no-fs        Disable file system access (sandbox mode)
+  --no-net       Disable network access
   --time         Print execution time to stderr
   --quiet        Suppress lint warnings
   --dump         Print the bytecode before running
@@ -99,16 +101,29 @@ Options for `run`:
 
             var options = new List<string>();
             var positional = new List<string>();
+            var scriptArguments = new List<string>();
 
+            // Options before the script belong to the runner, everything after
+            // it belongs to the script. The rule used to be "any argument that
+            // starts with -- is ours", which silently ate a script's own flags:
+            // `tern run deploy.tern --dry-run` ran a real deployment.
+            var sawScript = false;
             for (var i = startIndex; i < args.Length; i++)
             {
-                if (args[i].StartsWith("--", StringComparison.Ordinal))
+                if (!sawScript)
                 {
-                    options.Add(args[i]);
+                    if (args[i].StartsWith("--", StringComparison.Ordinal))
+                    {
+                        options.Add(args[i]);
+                        continue;
+                    }
+
+                    positional.Add(args[i]);
+                    sawScript = true;
                     continue;
                 }
 
-                positional.Add(args[i]);
+                scriptArguments.Add(args[i]);
             }
 
             if (positional.Count == 0)
@@ -139,9 +154,9 @@ Options for `run`:
             // the exit code; errors still throw out of LoadFile.
             engine.Warnings = diagnostic => Console.Error.WriteLine(diagnostic.Format());
 
-            for (var i = 1; i < positional.Count; i++)
+            foreach (var argument in scriptArguments)
             {
-                engine.ScriptArguments.Add(positional[i]);
+                engine.ScriptArguments.Add(argument);
             }
 
             var module = engine.LoadFile(Path.GetFullPath(path));

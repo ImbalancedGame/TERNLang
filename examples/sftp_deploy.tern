@@ -1,0 +1,162 @@
+// SFTP: upload a build, list the directory it landed in, fetch a log back.
+//
+//   tern run examples/sftp_deploy.tern                        dry run against the example host
+//   tern run examples/sftp_deploy.tern deploy@example.com     real run, default paths
+//   tern run examples/sftp_deploy.tern deploy@example.com:/srv/app
+//   tern run examples/sftp_deploy.tern --dry-run deploy@host  show the commands, send nothing
+//
+// SFTP, not FTP: FTP sends the password in clear text on the wire, has no
+// integrity check, and cannot resume a file safely. TERN's std:sftp drives the
+// OpenSSH client in batch mode — `BatchMode=yes` so a missing key fails loudly
+// instead of sitting there asking a question nobody can answer — and the
+// transport is SSH, written by people whose job that is.
+//
+// The host must accept key authentication. Point `TERN_SSH_KEY` at the private
+// key (or leave it unset to let ssh use its own agent and ~/.ssh/config).
+
+import "std:sftp";
+import "std:fs";
+import "std:time";
+
+let remoteFile = "tern-deploy.txt";
+let localFile = "tern-deploy.txt";
+let remoteLog = "tern-deploy.log";
+let localLog = "tern-deploy.log";
+
+fn usage() {
+    println("usage: tern run examples/sftp_deploy.tern [--dry-run] [user@]host[:remote-dir] [key]");
+    println();
+    println("  --dry-run     print the sftp command line and batch, send nothing");
+    println("  TERN_SSH_KEY  private key to use (default: whatever ssh picks up)");
+}
+
+// --- arguments --------------------------------------------------------------
+// `user@host:/dir` says who, where, and where on the other side, which is the
+// form people already type at the terminal.
+
+let arguments = os.args();
+let dryRun = false;
+let target = "";
+let key = os.env("TERN_SSH_KEY", "");
+
+for argument in arguments {
+    if argument == "--dry-run" or argument == "-n" {
+        dryRun = true;
+    } else if target == "" {
+        target = argument;
+    } else {
+        key = argument;
+    }
+}
+
+if target == "" or target == "--help" or target == "-h" {
+    usage();
+    if target == "" {
+        println();
+        println("Nothing to deploy to, so this is what a real run would do:");
+        target = "deploy@example.com:/srv/app";
+        dryRun = true;
+    }
+}
+
+let at = target.indexOf("@");
+let user = at > 0 ? target.substring(0, at) : os.env("USER", "deploy");
+let rest = at > 0 ? target.substring(at + 1) : target;
+let colon = rest.indexOf(":");
+let host = colon > 0 ? rest.substring(0, colon) : rest;
+let directory = colon > 0 ? rest.substring(colon + 1) : "/srv/app";
+
+let port = os.env("TERN_SSH_PORT", "22").toInt(22);
+let server = {"host": host, "user": user, "port": port};
+if key != "" {
+    server["key"] = key;
+}
+
+// --- what is being deployed -------------------------------------------------
+
+if !fs.exists(localFile) {
+    // A stand-in for a build artefact, so the example runs on a fresh checkout.
+    fs.write(localFile, "built at ${time.iso(time.now())}\nflavour: example\n");
+    println("wrote ${localFile} (${fs.size(localFile)} bytes) as the payload");
+}
+
+let remotePath = "${directory}/${remoteFile}";
+let remoteLogPath = "${directory}/${remoteLog}";
+
+let upload = ["put \"${localFile}\" \"${remotePath}\""];
+let listing = ["ls -l \"${directory}\""];
+let download = ["get \"${remoteLogPath}\" \"${localLog}\""];
+
+// --- dry run ----------------------------------------------------------------
+
+if dryRun {
+    println("host:      ${host}:${port}");
+    println("user:      ${user}");
+    println("key:       ${key == "" ? "(ssh default)" : key}");
+    println("remote:    ${directory}");
+    println();
+    println("command:");
+    for part in sftp.command(server) {
+        println("  " + part);
+    }
+    println();
+    println("batch written to its stdin:");
+    for line in sftp.batch(upload.concat(listing).concat(download)).lines() {
+        println("  " + line);
+    }
+    println();
+    println("(nothing was sent: --dry-run)");
+} else {
+    // --- upload -------------------------------------------------------------
+    // sftp.upload raises SftpError with the client's first line of complaint,
+    // so a bad key, an unknown host or a full disk all stop here instead of
+    // turning into a mystery a few steps later.
+    let began = time.millis();
+    let uploaded = false;
+    try {
+        sftp.upload(localFile, remotePath, server);
+        println("uploaded  ${localFile} -> ${remotePath} (${time.millis() - began} ms)");
+        uploaded = true;
+    } catch (e) {
+        // Nothing after this is worth attempting if the upload did not land.
+        eprint("upload failed: ${e}\n");
+    }
+
+    // --- list ---------------------------------------------------------------
+    let files = [];
+    try {
+        files = sftp.list(directory, server);
+        println("listing   ${directory}: ${len(files)} entr${len(files) == 1 ? "y" : "ies"}");
+        for entry in files {
+            println("  " + entry);
+        }
+    } catch (e) {
+        eprint("listing failed: ${e}\n");
+    }
+
+    // --- download -----------------------------------------------------------
+    // A log that is not there is not a failure of the deployment: sftp.run
+    // reports the exit status instead of raising, which is the difference
+    // between a missing file and a broken connection.
+    let fetched = sftp.run(download, server);
+    if fetched["status"] == 0 {
+        println("downloaded ${remoteLogPath} -> ${localLog} (${fs.size(localLog)} bytes)");
+        println();
+        for line in fs.read(localLog).trim().lines().take(10) {
+            println("  " + line);
+        }
+    } else {
+        let reason = fetched["error"].trim().lines();
+        println("no ${remoteLogPath} to fetch: " + (len(reason) > 0 ? reason[0] : "sftp exited ${fetched["status"]}"));
+    }
+
+    // --- anything else ------------------------------------------------------
+    // `sftp.run` takes any batch command, so a deployment that needs `mkdir`,
+    // `chmod` or `rename` is three more lines rather than another API.
+    if uploaded {
+        let tidy = sftp.run(["rename \"${remotePath}\" \"${remotePath}.live\""], server);
+        if tidy["status"] == 0 {
+            println("renamed   ${remotePath} -> ${remotePath}.live");
+        }
+    }
+}

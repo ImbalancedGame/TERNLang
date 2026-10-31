@@ -1,0 +1,383 @@
+// A small HTTP/1.1 server that runs in a terminal until Ctrl+C.
+//
+//   tern run examples/http_server.tern            listens on 127.0.0.1:8080
+//   tern run examples/http_server.tern 9000       ... on another port
+//   tern run examples/http_server.tern 9000 0.0.0.0
+//
+// Open http://127.0.0.1:8080/ and it answers. Every request is one connection:
+// the response says `Connection: close`, so there is no keep-alive bookkeeping
+// and no state to get wrong. That is also why this is short enough to read.
+//
+// `net.listen(..., {"raw": true})` is the whole trick. TERN's own sockets open
+// with a hello frame and then carry length-prefixed values; a browser has never
+// heard of either. A raw listener skips the handshake and hands the script the
+// bytes, so `net.receiveSome` and `net.sendBytes` are the only two calls that
+// matter from here on.
+
+import "std:net";
+import "std:text";
+import "std:json";
+import "std:time";
+
+let arguments = os.args();
+let port = arguments.length > 0 ? arguments[0].toInt(8080) : os.env("PORT", "8080").toInt(8080);
+let host = arguments.length > 1 ? arguments[1] : "127.0.0.1";
+
+// Everything the server knows about itself.
+let started = time.millis();
+let served = 0;
+let routes = [];
+
+fn lines(parts) {
+    return parts.join("\n");
+}
+
+// HTTP is strict about CRLF: a response that ends its headers with a bare "\n"
+// works with the forgiving clients and breaks the strict ones.
+fn crlf(parts) {
+    return parts.join("\r\n");
+}
+
+fn page(title, body) {
+    let head = lines([
+        "<!doctype html>",
+        "<html lang=\"en\">",
+        "<head>",
+        "<meta charset=\"utf-8\">",
+        "<title>${title}</title>",
+        "<style>",
+        "  body { font: 15px/1.5 system-ui, sans-serif; max-width: 38rem; margin: 4rem auto;",
+        "         padding: 0 1rem; background: #14171c; color: #c8d1da; }",
+        "  h1 { font-size: 1.5rem; margin-bottom: .25rem; }",
+        "  h2 { font-size: 1.1rem; margin-top: 2rem; }",
+        "  p { color: #8b98a6; }",
+        "  a { color: #4a9eff; }",
+        "  code { background: #1d2229; padding: .1rem .3rem; border-radius: 4px; color: #d8e0e8; }",
+        "  ul { padding-left: 1.1rem; line-height: 1.9; }",
+        "</style>",
+        "</head>",
+        "<body>",
+        "<h1>${title}</h1>"
+    ]);
+    return head + "\n" + body + "\n</body>\n</html>\n";
+}
+
+fn asJson(status, value) {
+    return {
+        "status": status,
+        "reason": status == 200 ? "OK" : "Error",
+        "type": "application/json; charset=utf-8",
+        "body": json.stringify(value, 2) + "\n"
+    };
+}
+
+fn plain(status, reason, body) {
+    return {"status": status, "reason": reason, "type": "text/plain; charset=utf-8", "body": body};
+}
+
+fn html(status, body) {
+    return {"status": status, "reason": "OK", "type": "text/html; charset=utf-8", "body": body};
+}
+
+// --- routing ----------------------------------------------------------------
+
+fn route(method, pattern, handler) {
+    routes.push({"method": method, "pattern": pattern, "handler": handler});
+}
+
+fn handlerFor(method, path) {
+    for entry in routes {
+        if entry["method"] == method && entry["pattern"] == path {
+            return entry["handler"];
+        }
+    }
+    return nil;
+}
+
+// --- the site ---------------------------------------------------------------
+
+fn home(request) {
+    let uptime = (time.millis() - started) / 1000.0;
+    let body = lines([
+        "<p>This is a TERN program. It is talking HTTP on a socket it opened itself,",
+        "with no web framework behind it — <code>examples/http_server.tern</code> is",
+        "the whole server.</p>",
+        "<p>It has answered <b>${served}</b> request(s) in ${uptime.round(1)} seconds,",
+        "and thinks the visitor is <code>${request["headers"]["user-agent"] ?? "a mystery"}</code>.</p>",
+        "<h2>What it can do</h2>",
+        "<ul>",
+        "<li><a href=\"/api/time\">/api/time</a> — the clock, as JSON</li>",
+        "<li><a href=\"/api/echo?message=hello\">/api/echo?message=hello</a> — send it back</li>",
+        "<li><a href=\"/hello/ada\">/hello/ada</a> — a greeting for anyone</li>",
+        "<li><code>POST /api/upper</code> with a body — upper-cased</li>",
+        "</ul>"
+    ]);
+    return html(200, page("TERN says hello", body));
+}
+
+fn clock(request) {
+    return asJson(200, {
+        "now": time.iso(time.now()),
+        "milliseconds": time.millis(),
+        "uptimeSeconds": (time.millis() - started) / 1000.0,
+        "requests": served
+    });
+}
+
+fn echo(request) {
+    let message = request["query"]["message"] ?? "(nothing)";
+    return asJson(200, {
+        "youSaid": message,
+        "reversed": message.reversed(),
+        "length": len(message),
+        "method": request["method"],
+        "path": request["path"]
+    });
+}
+
+fn greeting(request) {
+    let name = request["path"].substring(7);   // after "/hello/"
+    if len(name) == 0 {
+        return plain(400, "Bad Request", "who should I greet? try /hello/ada\n");
+    }
+
+    // Everything user-supplied is escaped: a server that echoes input back as
+    // HTML is the oldest way to write a cross-site scripting bug.
+    let safe = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    let body = lines([
+        "<p>Hello, <b>${safe}</b>. Your name was <code>${len(name)}</code> character(s)",
+        "long in the address bar.</p>",
+        "<p><a href=\"/\">back to the site</a></p>"
+    ]);
+    return html(200, page("Hello, ${safe}", body));
+}
+
+fn upper(request) {
+    return asJson(200, {
+        "received": request["body"],
+        "upper": request["body"].upper(),
+        "bytes": request["bodyBytes"]
+    });
+}
+
+fn notFound(request) {
+    let body = lines([
+        "<p>No route for <code>${request["method"]} ${request["path"]}</code>.</p>",
+        "<p><a href=\"/\">back to the site</a></p>"
+    ]);
+    return html(404, page("404", body));
+}
+
+route("GET", "/", home);
+route("GET", "/api/time", clock);
+route("GET", "/api/echo", echo);
+route("POST", "/api/upper", upper);
+
+// --- HTTP -------------------------------------------------------------------
+//
+// A request is a request line, headers, a blank line, then a body of the length
+// Content-Length says (or nothing at all). Only what is needed is implemented:
+// no chunked requests, no pipelining, no ranges — and each gap is named in the
+// comments rather than hidden.
+
+fn indexOfBytes(bytes, needle) {
+    // Where a short ASCII needle starts inside a list of byte values.
+    let last = len(bytes) - len(needle);
+    for i in 0..last {
+        let found = true;
+        for j in 0..<len(needle) {
+            if bytes[i + j] != needle[j] {
+                found = false;
+                break;
+            }
+        }
+        if found {
+            return i;
+        }
+    }
+    return -1;
+}
+
+fn hexValue2(a, b) {
+    // "0-9a-fA-F": the only character class a percent escape can contain.
+    let high = "0123456789abcdef".indexOf(a.lower());
+    let low = "0123456789abcdef".indexOf(b.lower());
+    if high < 0 or low < 0 {
+        return -1;
+    }
+    return high * 16 + low;
+}
+
+fn urlDecode(raw) {
+    let bytes = [];
+    let i = 0;
+    while i < len(raw) {
+        let c = raw[i];
+        if c == "%" and i + 2 < len(raw) {
+            let value = hexValue2(raw[i + 1], raw[i + 2]);
+            if value >= 0 {
+                bytes.push(value);
+                i += 3;
+                continue;
+            }
+        }
+        if c == "+" {
+            bytes.push(32);
+        } else {
+            for b in text.toBytes(c) {
+                bytes.push(b);
+            }
+        }
+        i += 1;
+    }
+    // Percent escapes are UTF-8 bytes, so decode the whole run at once rather
+    // than one character at a time.
+    return text.fromBytes(bytes);
+}
+
+fn readRequest(connection) {
+    let bytes = [];
+    let headerEnd = -1;
+    let opening = text.toBytes("\r\n\r\n");
+
+    // Read until the blank line that ends the headers. receiveSome returns what
+    // has arrived, not what was asked for, so this is a loop and not one call.
+    while headerEnd < 0 {
+        let chunk = net.receiveSome(connection, 4096);
+        if len(chunk) == 0 {
+            return nil;                     // the peer hung up mid-request
+        }
+        for b in chunk {
+            bytes.push(b);
+        }
+        if len(bytes) > 65536 {
+            return nil;                     // longer than any browser sends
+        }
+        headerEnd = indexOfBytes(bytes, opening);
+    }
+
+    let head = text.fromBytes(bytes, 0, headerEnd);
+    let bodyStart = headerEnd + 4;
+    let requestLines = head.lines();
+    if len(requestLines) == 0 {
+        return nil;
+    }
+
+    let first = requestLines[0].split(" ");
+    if len(first) < 3 {
+        return nil;
+    }
+
+    let headers = {};
+    for line in requestLines.drop(1) {
+        let colon = line.indexOf(":");
+        if colon > 0 {
+            headers[line.substring(0, colon).trim().lower()] = line.substring(colon + 1).trim();
+        }
+    }
+
+    let length = (headers["content-length"] ?? "0").toInt(0);
+    while len(bytes) - bodyStart < length {
+        let more = net.receiveSome(connection, 4096);
+        if len(more) == 0 {
+            break;
+        }
+        for b in more {
+            bytes.push(b);
+        }
+    }
+
+    let target = first[1].split("?");
+    let path = target[0];
+    let query = {};
+    if len(target) > 1 {
+        for pair in target[1].split("&") {
+            let parts = pair.split("=");
+            if len(parts) == 2 {
+                query[urlDecode(parts[0])] = urlDecode(parts[1]);
+            }
+        }
+    }
+
+    return {
+        "method": first[0].upper(),
+        "target": first[1],
+        "path": path,
+        "version": first[2],
+        "headers": headers,
+        "query": query,
+        "bodyBytes": length,
+        "body": text.fromBytes(bytes, bodyStart, length)
+    };
+}
+
+fn respond(connection, response) {
+    let body = response["body"];
+    let head = crlf([
+        "HTTP/1.1 ${response["status"]} ${response["reason"]}",
+        "Content-Type: ${response["type"]}",
+        "Content-Length: ${len(body)}",
+        "Connection: close",
+        "X-Served-By: TERN",
+        "",
+        ""
+    ]);
+    net.sendBytes(connection, text.toBytes(head + body));
+}
+
+// --- the loop ---------------------------------------------------------------
+
+let server = net.listen(host, port, {"raw": true});
+println("TERN HTTP server on http://${host}:${port}/ — Ctrl+C to stop.");
+
+while true {
+    let connection = 0;
+    try {
+        connection = net.accept(server);
+    } catch (e) {
+        // A connection that dies before it says anything is not the server's
+        // problem, and neither is a listener timeout.
+        continue;
+    }
+
+    net.timeout(connection, 5000);
+    let began = time.millis();
+    let request = nil;
+    try {
+        request = readRequest(connection);
+    } catch (e) {
+        eprint("read failed: ${e}\n");
+    }
+
+    if request != nil {
+        let handler = handlerFor(request["method"], request["path"]);
+        if handler == nil and request["path"].startsWith("/hello/") {
+            handler = greeting;
+        }
+
+        let response = nil;
+        if handler == nil {
+            response = notFound(request);
+        } else {
+            try {
+                response = handler(request);
+            } catch (e) {
+                eprint("handler failed: ${e}\n");
+                response = asJson(500, {"error": str(e)});
+            }
+        }
+
+        let took = time.millis() - began;
+        println("${request["method"].padEnd(5)}${request["path"].padEnd(28)}"
+                + "${str(response["status"]).padEnd(5)}${took} ms");
+        served += 1;
+
+        try {
+            respond(connection, response);
+        } catch (e) {
+            eprint("write failed: ${e}\n");
+        }
+    }
+
+    net.close(connection);
+}

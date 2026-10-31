@@ -110,7 +110,23 @@ Script arguments are exposed as `os.args()`:
 ```
 
 Add `--time` to `run` for a wall-clock measurement and `--no-fs` / `--no-net` to
-run with the file system or the network sandboxed.
+run with the file system or the network sandboxed. Everything after the script
+path belongs to the script, so `--dry-run` in
+`tern run examples/sftp_deploy.tern --dry-run deploy@host:/srv/app` arrives as
+`os.args()` instead of being swallowed by the runner.
+
+The examples are meant to be read:
+
+| File | What it shows |
+| --- | --- |
+| `examples/http_server.tern` | An HTTP/1.1 server on `std:net`: routing, query decoding, JSON, request logging |
+| `examples/rcon.tern` | A Source RCON client: login, commands with spaces, an interactive prompt |
+| `examples/sftp_deploy.tern` | A dry-run-first deploy over `std:sftp` (the OpenSSH client, no library) |
+| `examples/rotating_cube.tern` | 3D maths and a text rasteriser, plus PNG frames through `d3d12` or `gl` |
+| `examples/inventory.tern`, `triage.tern`, `wordcount.tern`, `fizzbuzz.tern` | Structs, pattern matching, files and arguments |
+
+`python3 tools/test_examples.py` runs the first four against mock servers and a
+mock graphics driver, in both back ends.
 
 ## Language tour
 
