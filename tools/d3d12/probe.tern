@@ -15,6 +15,11 @@ fn kind(block) {
 }
 
 println("available:", d3d12.available());
+
+// Validation, before the device exists: the layer can only be turned on ahead of
+// creation. The mock answers true (it has a debug interface of its own); a
+// machine without the "Graphics Tools" feature answers false and says why.
+println("debug:", d3d12.debug(true));
 println(d3d12.info());
 
 let target = d3d12.create(3, 2);

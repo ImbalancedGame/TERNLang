@@ -9432,6 +9432,8 @@ static Value namespace_map(const char *ns) {
         // The argument counts mirror TERN/Builtins/D3D12.cs.
         map_set(map, str_from_cstr("available"),
                 make_native_arity("available", n_d3d12_available, 0, 0));
+        map_set(map, str_from_cstr("debug"),
+                make_native_arity("debug", n_d3d12_debug, 0, 1));
         map_set(map, str_from_cstr("info"),
                 make_native_arity("info", n_d3d12_info, 0, 0));
         map_set(map, str_from_cstr("create"),

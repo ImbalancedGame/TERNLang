@@ -316,6 +316,42 @@ grep -q "the readback buffer could not be mapped: the GPU hung and the driver re
 }
 echo "d3d12: the report says why the map failed"
 
+# ------------------------------------------------------------- the debug layer
+# The layer is what makes a failure on somebody else's machine actionable: the
+# driver names the illegal call instead of the device quietly disappearing. The
+# mock stores a message of its own when asked to, so the query, the message
+# structure, the size negotiation, the severity and the clearing all run.
+echo "d3d12: the debug layer reports what the driver stored"
+TERN_D3D12_INVALID_CALL=1 TERN_D3D12_PNG="$WORK/dbg.png" ./tools/tern tools/d3d12/probe.tern \
+    > "$WORK/dbg_interp.out" 2> "$WORK/dbg_interp.err" || {
+    echo "d3d12: the interpreter probe failed with validation on" >&2
+    cat "$WORK/dbg_interp.out" "$WORK/dbg_interp.err" >&2
+    exit 1
+}
+TERN_D3D12_INVALID_CALL=1 TERN_D3D12_PNG="$WORK/dbg.png" "$WORK/probe" \
+    > "$WORK/dbg_native.out" 2> "$WORK/dbg_native.err" || {
+    echo "d3d12: the native probe failed with validation on" >&2
+    cat "$WORK/dbg_native.out" "$WORK/dbg_native.err" >&2
+    exit 1
+}
+for stream in "$WORK/dbg_interp.err" "$WORK/dbg_native.err"; do
+    if [ "$(grep -c 'd3d12 debug: ERROR: ID3D12CommandList::CopyTextureRegion' "$stream")" -lt 1 ]; then
+        echo "d3d12: the stored validation message did not reach the program ($stream)" >&2
+        cat "$stream" >&2
+        exit 1
+    fi
+done
+if ! diff -u <(grep '^d3d12 debug:' "$WORK/dbg_interp.err") \
+             <(grep '^d3d12 debug:' "$WORK/dbg_native.err"); then
+    echo "d3d12: the two back ends report validation differently" >&2
+    exit 1
+fi
+if ! diff -u "$WORK/dbg_interp.out" "$WORK/dbg_native.out"; then
+    echo "d3d12: validation changed the two back ends' output" >&2
+    exit 1
+fi
+echo "d3d12: both back ends print the driver's own words"
+
 echo "d3d12: the unavailable path"
 cat > "$WORK/missing.tern" <<'TERN'
 import "std:d3d12";

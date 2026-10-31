@@ -184,10 +184,163 @@ static unsigned long mock_release(void *self) {
     return 0;
 }
 
-static long mock_query(void *self, const Guid *iid, void **out) {
-    (void)iid;
-    *out = self;
+static const Guid IID_ID3D12InfoQueue_ = {
+    0x0742a90b, 0xc387, 0x483f, { 0xb9, 0x46, 0x30, 0xa7, 0xe4, 0xe6, 0x14, 0x58 }
+};
+static const Guid IID_ID3D12Debug_ = {
+    0x344488b7, 0x6846, 0x474b, { 0xb9, 0x89, 0xf0, 0x27, 0x44, 0x82, 0x45, 0xe0 }
+};
+static const Guid IID_IUnknown_ = {
+    0x00000000, 0x0000, 0x0000, { 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 }
+};
+static const Guid IID_ID3D12Device_early = {
+    0x189819f1, 0x1db6, 0x4b57, { 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7 }
+};
+
+// The debug layer's message queue. Real Windows stores the driver's validation
+// problems here; storing a made-up one lets the plumbing be tested (the query,
+// the message struct, the sizes, the severity, the clear) without a GPU.
+#define MOCK_MESSAGE_SLOTS 8
+#define MOCK_MESSAGE_TEXT 256
+
+typedef struct {
+    int severity;
+    unsigned id;
+    char text[MOCK_MESSAGE_TEXT];
+} MockMessage;
+
+static struct {
+    void **vtbl;
+    MockMessage messages[MOCK_MESSAGE_SLOTS];
+    unsigned count;
+} mock_info_queue;
+
+static struct {
+    void **vtbl;
+    int enabled;
+} mock_debug;
+
+static int mock_invalid_calls_wanted(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *value = getenv("TERN_D3D12_INVALID_CALL");
+        cached = value && value[0] && strcmp(value, "0") != 0;
+    }
+    return cached;
+}
+
+static void mock_store_message(int severity, unsigned id, const char *text) {
+    if (mock_info_queue.count >= MOCK_MESSAGE_SLOTS) {
+        return;
+    }
+    MockMessage *slot = &mock_info_queue.messages[mock_info_queue.count++];
+    slot->severity = severity;
+    slot->id = id;
+    snprintf(slot->text, sizeof slot->text, "%s", text);
+}
+
+// D3D12_MESSAGE as d3d12sdklayers.h lays it out: Category, Severity, ID,
+// const char *pDescription, SIZE_T DescriptionByteLength.
+typedef struct {
+    int category;
+    int severity;
+    unsigned id;
+    const char *description;
+    size_t description_bytes;
+} MockDebugMessage;
+
+static unsigned long long info_get_num_stored(void *self) {
+    (void)self;
+    return mock_info_queue.count;
+}
+
+static long info_get_message(void *self, unsigned long long index, MockDebugMessage *message,
+                             size_t *size) {
+    (void)self;
+    if (!size) {
+        return E_INVALIDARG_;
+    }
+    if (index >= mock_info_queue.count) {
+        return E_INVALIDARG_;
+    }
+    MockMessage *slot = &mock_info_queue.messages[index];
+    size_t needed = sizeof(MockDebugMessage) + strlen(slot->text) + 1;
+    if (!message) {
+        // The documented two-call pattern: ask for the size, then the message.
+        *size = needed;
+        return 0;
+    }
+    if (*size < needed) {
+        *size = needed;
+        return E_INVALIDARG_;
+    }
+    // The description follows the structure, the way the runtime reads it.
+    char *text = (char *)(message + 1);
+    memcpy(text, slot->text, strlen(slot->text) + 1);
+    message->category = 0;
+    message->severity = slot->severity;
+    message->id = slot->id;
+    message->description = text;
+    message->description_bytes = strlen(slot->text) + 1;
+    *size = needed;
     return 0;
+}
+
+static void info_clear(void *self) {
+    (void)self;
+    mock_info_queue.count = 0;
+}
+
+static void *info_vtbl[9] = {
+    [0] = (void *)mock_query, [1] = (void *)mock_addref, [2] = (void *)mock_release,
+    [4] = (void *)info_clear,
+    [5] = (void *)info_get_message,
+    [8] = (void *)info_get_num_stored,
+};
+
+static void debug_enable(void *self) {
+    (void)self;
+    mock_debug.enabled = 1;
+    fprintf(stderr, "mock_d3d12: the debug layer was enabled\n");
+}
+
+static void *debug_vtbl[4] = {
+    [0] = (void *)mock_query, [1] = (void *)mock_addref, [2] = (void *)mock_release,
+    [3] = (void *)debug_enable,   // EnableDebugLayer
+};
+
+/// D3D12GetDebugInterface, exported like the real one.
+long D3D12GetDebugInterface(const Guid *iid, void **out) {
+    if (!iid || !out) {
+        return E_INVALIDARG_;
+    }
+    if (memcmp(iid, &IID_ID3D12Debug_, sizeof(Guid)) != 0) {
+        *out = NULL;
+        return E_NOINTERFACE_;
+    }
+    mock_debug.vtbl = debug_vtbl;
+    *out = &mock_debug;
+    return 0;
+}
+
+static long mock_query(void *self, const Guid *iid, void **out) {
+    if (!out) {
+        return E_INVALIDARG_;
+    }
+    if (iid && memcmp(iid, &IID_ID3D12InfoQueue_, sizeof(Guid)) == 0) {
+        mock_info_queue.vtbl = info_vtbl;
+        *out = &mock_info_queue;
+        return 0;
+    }
+    if (iid && (memcmp(iid, &IID_IUnknown_, sizeof(Guid)) == 0 ||
+                memcmp(iid, &IID_ID3D12Device_early, sizeof(Guid)) == 0)) {
+        *out = self;
+        return 0;
+    }
+    // Anything else really does answer E_NOINTERFACE on Windows, and answering it
+    // here is what makes a wrong interface id visible in a test.
+    *out = NULL;
+    return E_NOINTERFACE_;
 }
 
 static unsigned char mock_byte(float value) {
@@ -277,7 +430,7 @@ static void *allocator_vtbl[9] = {
 static long list_close(void *self);
 static long list_reset(void *self, void *allocator, void *state);
 static void list_copy_region(void *self, const CopyLocation *destination, unsigned x, unsigned y,
-                             const CopyLocation *source, const void *box);
+                             unsigned z, const CopyLocation *source, const void *box);
 static void list_barrier(void *self, unsigned count, const void *barriers);
 static void list_om_set_targets(void *self, unsigned count, const CpuHandle *targets, int single, const void *depth);
 static void list_clear_rtv(void *self, CpuHandle handle, const float *colour, unsigned count, const void *rects);
@@ -687,9 +840,37 @@ static void list_clear_rtv(void *self, CpuHandle handle, const float *colour, un
     list->colour[3] = mock_byte(colour[3]);
 }
 
+// ID3D12GraphicsCommandList::CopyTextureRegion, with every argument the real
+// method takes. That is deliberate: TERN called it through a function pointer of
+// its own making, the pointer was missing DstZ, and the mock - which had the
+// same omission - agreed with it. A real GPU did not, and removed the device on
+// the first copy. Compiling this against the documented signature means the
+// arguments have to arrive in the right registers or the check below fires.
 static void list_copy_region(void *self, const CopyLocation *destination, unsigned x, unsigned y,
-                             const CopyLocation *source, const void *box) {
-    (void)self; (void)x; (void)y; (void)box;
+                             unsigned z, const CopyLocation *source, const void *box) {
+    (void)self; (void)box;
+    if (z != 0 || x != 0 || y != 0) {
+        mock_state_mismatches++;
+        fprintf(stderr,
+                "mock_d3d12: COPY ARGUMENT MISMATCH: CopyTextureRegion(dst, %u, %u, %u, src, box) "
+                "for a 2D copy of the whole subresource\n", x, y, z);
+        return;
+    }
+    if (!destination || !source) {
+        mock_state_mismatches++;
+        fprintf(stderr,
+                "mock_d3d12: COPY ARGUMENT MISMATCH: CopyTextureRegion reached the wrong "
+                "arguments - the call site and the documented signature disagree\n");
+        return;
+    }
+    if (mock_invalid_calls_wanted()) {
+        // Stands in for whatever the driver would store here. What is being
+        // tested is the plumbing: that the queue can be found, that the message
+        // is read at the size it says it is, and that it is printed and cleared.
+        mock_store_message(1 /* D3D12_MESSAGE_SEVERITY_ERROR */, 0x00000001u,
+                           "ID3D12CommandList::CopyTextureRegion: the mock recorded a "
+                           "validation error (TERN_D3D12_INVALID_CALL=1)");
+    }
     MockResource *buffer = (MockResource *)destination->resource;
     MockResource *texture = (MockResource *)source->resource;
     if (!buffer || !texture || !buffer->memory) {

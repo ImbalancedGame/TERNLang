@@ -22,6 +22,7 @@ input is `POSITION` (`float3`) followed by `COLOR` (`float4`).
 | [`close`](close.md) | 1..1 | Releases the device and everything it owns. |
 | [`closeWindow`](closeWindow.md) | 1..1 | Closes a window. |
 | [`create`](create.md) | 2..2 | Creates a device and an offscreen render target. |
+| [`debug`](debug.md) | 0..1 | Turns the Direct3D 12 debug layer on, and says whether it is running. |
 | [`draw`](draw.md) | 3..3 | Draws triangles. |
 | [`info`](info.md) | 0..0 | Describes the adapter and the binding. |
 | [`pipeline`](pipeline.md) | 3..3 | Compiles HLSL and builds a pipeline state. |

@@ -45,6 +45,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `close` | `close(arg)` | Releases the device and everything it owns. |
 | `closeWindow` | `closeWindow(arg)` | Closes a window and forgets its handle. |
 | `create` | `create(arg, arg)` | Creates an offscreen device and render target, returning a handle. |
+| `debug` | `debug([arg])` | Turns the Direct3D 12 debug layer on (call before create) and reports whether it is running. |
 | `draw` | `draw(arg, arg, arg)` | Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. |
 | `info` | `info()` | Describes the adapter: {name, nodes, build}. |
 | `pipeline` | `pipeline(arg, arg, arg)` | Compiles HLSL and builds a pipeline: d3d12.pipeline(handle, vertex, pixel). |

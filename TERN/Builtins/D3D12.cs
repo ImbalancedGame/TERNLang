@@ -72,6 +72,32 @@ namespace TERN.Builtins
             Add(map, "available", 0, 0, (vm, a) => Value.Bool(Driver.Load() is not null),
                 "True when d3d12.dll could be loaded (or TERN_D3D12_LIBRARY points at one).");
 
+            Add(map, "debug", 0, 1, (vm, a) =>
+            {
+                if (a.Length > 0)
+                {
+                    if (a[0].Kind != ValueKind.Bool)
+                    {
+                        throw vm.Error("TypeError", $"d3d12.debug expects true or false, not {vm.TypeName(a[0])}");
+                    }
+
+                    _debugWanted = a[0].AsBool();
+                    if (_debugWanted)
+                    {
+                        EnableDebugLayer();
+                    }
+                }
+
+                if (_debugProblem.Length != 0)
+                {
+                    // A machine without the layer is a fact, not an error: say so
+                    // once, in words that can be acted on, and answer false.
+                    Console.Error.WriteLine($"d3d12: validation is off: {_debugProblem}");
+                }
+
+                return Value.Bool(_debugOn);
+            }, "Turns the Direct3D 12 debug layer on (call before create) and reports whether it is running.");
+
             Add(map, "info", 0, 0, (vm, a) =>
             {
                 var driver = Driver.Load() ?? throw vm.Error("D3D12Error", Unavailable);
@@ -611,13 +637,172 @@ namespace TERN.Builtins
         /// stamp the two look identical, and a fix that worked looks like one
         /// that did not. Keep it equal to <c>TERN_D3D12_BUILD</c>.
         /// </summary>
-        private const string Build = "2026-10-31.5";
+        private const string Build = "2026-10-31.6";
 
         /// <summary>
         /// Why the driver removed the device, in the words the native backend
         /// uses, or an empty string when it did not. The two tables have to
         /// match: both back ends report the same failures.
         /// </summary>
+        /// <summary>
+        /// What a GetDeviceRemovedReason code means. The raw code is kept on
+        /// every message: "the device was removed for an unknown reason" was all
+        /// one report said about a machine with a real GPU in it, and the code
+        /// is the difference between guessing and knowing. Same table as
+        /// <c>d3d12_removal_text</c> in the native runtime.
+        /// </summary>
+        // --- the debug layer -------------------------------------------------
+        //
+        // D3D12 can validate itself. With the layer on, the driver says exactly
+        // which call was illegal and why, which is the only way to fix a failure
+        // on a machine nobody here can run: "the device was removed for an
+        // unknown reason" cannot be acted on, and "CopyTextureRegion: resource
+        // state is invalid" can.
+        //
+        // Off by default - the layer is slower, and it needs the "Graphics
+        // Tools" optional Windows feature. d3d12.debug(true) turns it on and has
+        // to run before d3d12.create: a device cannot be validated afterwards.
+
+        private static bool _debugWanted;
+        private static bool _debugOn;
+        private static string _debugProblem = "";
+
+        internal static void ResetDebug()
+        {
+            _debugWanted = false;
+            _debugOn = false;
+            _debugProblem = "";
+        }
+
+        private static readonly Guid IidDebug =
+            Guid.Of(0x344488b7, 0x6846, 0x474b, 0xb9, 0x89, 0xf0, 0x27, 0x44, 0x82, 0x45, 0xe0);
+
+        private static readonly Guid IidInfoQueue =
+            Guid.Of(0x0742a90b, 0xc387, 0x483f, 0xb9, 0x46, 0x30, 0xa7, 0xe4, 0xe6, 0x14, 0x58);
+
+        private static IntPtr OpenInfoQueue(IntPtr device)
+        {
+            var iid = IidInfoQueue.Allocate();
+            try
+            {
+                var hr = Slot<QueryInterfaceFn>(device, 0)(device, iid, out var queue);
+                return hr >= 0 ? queue : IntPtr.Zero;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(iid);
+            }
+        }
+
+        private static string SeverityName(int severity) => severity switch
+        {
+            0 => "CORRUPTION",
+            1 => "ERROR",
+            2 => "WARNING",
+            3 => "INFO",
+            4 => "MESSAGE",
+            _ => "UNKNOWN",
+        };
+
+        private static bool EnableDebugLayer()
+        {
+            if (_debugOn)
+            {
+                return true;
+            }
+            if (_debugProblem.Length != 0)
+            {
+                return false;
+            }
+            var getDebugInterface = GetDebugInterface();
+            if (getDebugInterface == null)
+            {
+                _debugProblem = "D3D12GetDebugInterface could not be found in d3d12.dll";
+                return false;
+            }
+            var iid = IidDebug.Allocate();
+            IntPtr debug;
+            long hr;
+            try
+            {
+                hr = getDebugInterface(iid, out debug);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(iid);
+            }
+            if (hr < 0 || debug == IntPtr.Zero)
+            {
+                _debugProblem = "the debug layer is not installed: Windows Settings > " +
+                                "Apps > Optional features > Graphics Tools";
+                return false;
+            }
+            try
+            {
+                Slot<EnableDebugLayerFn>(debug, 3)(debug);
+            }
+            finally
+            {
+                Release(debug);
+            }
+            _debugOn = true;
+            return true;
+        }
+
+        /// <summary>Prints and clears the driver's stored validation messages.</summary>
+        private static void ReportMessages(IntPtr queue)
+        {
+            if (queue == IntPtr.Zero)
+            {
+                return;
+            }
+            var count = Slot<GetNumStoredMessagesFn>(queue, 8)(queue);
+            for (ulong i = 0; i < count; i++)
+            {
+                nuint size = 0;
+                var getMessage = Slot<GetMessageFn>(queue, 5);
+                if (getMessage(queue, i, IntPtr.Zero, ref size) < 0 || size == 0)
+                {
+                    break;
+                }
+                var buffer = Marshal.AllocHGlobal((int)size);
+                try
+                {
+                    if (getMessage(queue, i, buffer, ref size) >= 0)
+                    {
+                        var message = Marshal.PtrToStructure<DebugMessage>(buffer);
+                        if (message.Description != IntPtr.Zero)
+                        {
+                            var text = Marshal.PtrToStringAnsi(message.Description) ?? "";
+                            Console.Error.WriteLine($"d3d12 debug: {SeverityName(message.Severity)}: {text}");
+                        }
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+            Slot<ClearStoredMessagesFn>(queue, 4)(queue);
+        }
+
+        private static string RemovalText(uint code)
+        {
+            return code switch
+            {
+                0 => string.Empty,
+                0x887A0001 => "a command was rejected as invalid",
+                0x887A0005 => "the device was removed",
+                0x887A0006 => "the GPU hung and the driver reset it (TDR)",
+                0x887A0007 => "the device was reset",
+                0x887A000A => "the driver compiled a shader incorrectly",
+                0x887A0020 => "the driver hit an internal error",
+                0x887A002B => "the driver ran out of memory",
+                0x8007000E => "out of memory",
+                _ => "the device was removed for an unknown reason",
+            };
+        }
+
         private static string RemovedReason(IntPtr device)
         {
             if (device == IntPtr.Zero)
@@ -625,16 +810,7 @@ namespace TERN.Builtins
                 return string.Empty;
             }
 
-            return (uint)Slot<DeviceRemovedReasonFn>(device, 37)(device) switch
-            {
-                0 => string.Empty,
-                0x887A0005 => "the device was removed",
-                0x887A0006 => "the GPU hung and the driver reset it (TDR)",
-                0x887A0007 => "the device was reset",
-                0x887A0020 => "the driver hit an internal error",
-                0x8007000E => "out of memory",
-                _ => "the device was removed for an unknown reason",
-            };
+            return RemovalText((uint)Slot<DeviceRemovedReasonFn>(device, 37)(device));
         }
 
         /// <summary>
@@ -644,12 +820,12 @@ namespace TERN.Builtins
         /// </summary>
         private static Exception RemovedError(VM vm, IntPtr device, string what, long hr)
         {
-            if (((uint)hr) == 0x887A0005)
+            if (device != IntPtr.Zero)
             {
-                var reason = RemovedReason(device);
-                if (reason.Length != 0)
+                var code = (uint)Slot<DeviceRemovedReasonFn>(device, 37)(device);
+                if (code != 0)
                 {
-                    return vm.Error("D3D12Error", $"{what}: {reason} (0x{(uint)hr:x8})");
+                    return vm.Error("D3D12Error", $"{what}: {RemovalText(code)} (0x{(uint)hr:x8})");
                 }
             }
 
@@ -734,7 +910,12 @@ namespace TERN.Builtins
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void ResourceBarrierFn(IntPtr self, uint count, ref ResourceBarrier barrier);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void OMSetRenderTargetsFn(IntPtr self, uint count, ref CpuDescriptorHandle handle, int single, IntPtr depth);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void ClearRenderTargetViewFn(IntPtr self, CpuDescriptorHandle handle, ref float colour, uint count, IntPtr rects);
-        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void CopyTextureRegionFn(IntPtr self, ref TextureCopyLocation destination, uint x, uint y, ref TextureCopyLocation source, IntPtr box);
+        // CopyTextureRegion takes DstZ between DstY and the source location. Leaving
+        // it out is not a compile error - it is a function pointer - and the first
+        // real GPU removed the device on the first copy because of it: the driver
+        // read the source location as a Z coordinate and the next slot as the
+        // source. The native runtime had the same omission in its own typedef.
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void CopyTextureRegionFn(IntPtr self, ref TextureCopyLocation destination, uint x, uint y, uint z, ref TextureCopyLocation source, IntPtr box);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void ExecuteCommandListsFn(IntPtr self, uint count, IntPtr lists);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long FenceSignalFn(IntPtr self, IntPtr fence, ulong value);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long MapFn(IntPtr self, uint subresource, ref Range range, out IntPtr data);
@@ -753,6 +934,42 @@ namespace TERN.Builtins
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long EnumAdapters1Fn(IntPtr self, uint index, out IntPtr adapter);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void GetDesc1Fn(IntPtr self, IntPtr description);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long DeviceRemovedReasonFn(IntPtr self);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void EnableDebugLayerFn(IntPtr self);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long QueryInterfaceFn(IntPtr self, IntPtr iid, out IntPtr result);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long GetDebugInterfaceFn(IntPtr iid, out IntPtr debug);
+
+        /// <summary>
+        /// D3D12GetDebugInterface, or null when this d3d12.dll has no such export.
+        /// Optional, like the layer itself.
+        /// </summary>
+        private static GetDebugInterfaceFn? GetDebugInterface()
+        {
+            var name = Environment.GetEnvironmentVariable("TERN_D3D12_LIBRARY");
+            var candidates = string.IsNullOrEmpty(name) ? new[] { "d3d12.dll" } : new[] { name };
+            foreach (var candidate in candidates)
+            {
+                if (NativeLibrary.TryLoad(candidate, out var library) &&
+                    NativeLibrary.TryGetExport(library, "D3D12GetDebugInterface", out var address))
+                {
+                    return (GetDebugInterfaceFn)Marshal.GetDelegateForFunctionPointer(
+                        address, typeof(GetDebugInterfaceFn));
+                }
+            }
+            return null;
+        }
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate ulong GetNumStoredMessagesFn(IntPtr self);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long GetMessageFn(IntPtr self, ulong index, IntPtr message, ref nuint size);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void ClearStoredMessagesFn(IntPtr self);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DebugMessage
+        {
+            public int Category;
+            public int Severity;
+            public uint Id;
+            public IntPtr Description;
+            public nuint DescriptionBytes;
+        }
 
         private static T Slot<T>(IntPtr obj, int slot) where T : Delegate
         {
@@ -905,6 +1122,11 @@ namespace TERN.Builtins
 
             public IntPtr CreateDevice(VM vm, int width, int height)
             {
+                if (_debugWanted)
+                {
+                    EnableDebugLayer();
+                }
+
                 var iid = IidDevice.Allocate();
                 try
                 {
@@ -1003,6 +1225,7 @@ namespace TERN.Builtins
             private IntPtr _texture;
             private IntPtr _readback;
             private IntPtr _fence;
+            private IntPtr _infoQueue;
             private CpuDescriptorHandle _rtv;
             private ulong _fenceValue;
             private ulong _rowPitch;
@@ -1027,6 +1250,9 @@ namespace TERN.Builtins
                 var driver = Driver.Load() ?? throw vm.Error("D3D12Error", Unavailable);
                 var target = new Target(width, height);
                 target._device = driver.CreateDevice(vm, width, height);
+                // Validation messages are stored per device, so the queue is opened
+                // as soon as there is a device to ask.
+                target._infoQueue = _debugOn ? OpenInfoQueue(target._device) : IntPtr.Zero;
                 target.Prepare(vm);
                 return target;
             }
@@ -1488,16 +1714,31 @@ namespace TERN.Builtins
                 {
                     if (completed(_fence) >= _fenceValue)
                     {
+                        // Read the driver's messages once the work has run, so a
+                        // problem it reports at execution time is included.
+                        ReportStoredMessages();
                         return;
                     }
 
                     System.Threading.Thread.Sleep(1);
                 }
 
-                var why = RemovedReason(_device);
-                throw why.Length != 0
-                    ? vm.Error("D3D12Error", $"the GPU did not finish within {WaitTimeout} ms during {what}: {why}")
+                ReportStoredMessages();
+                var code = (uint)Slot<DeviceRemovedReasonFn>(_device, 37)(_device);
+                throw code != 0
+                    ? vm.Error("D3D12Error",
+                        $"the GPU did not finish within {WaitTimeout} ms during {what}: {RemovalText(code)} (0x{code:x8})")
                     : vm.Error("D3D12Error", $"the GPU did not finish within {WaitTimeout} ms during {what}");
+            }
+
+            /// <summary>
+            /// Prints whatever the debug layer stored for this submit. Validation
+            /// problems do not remove the device - that is the point of the layer -
+            /// so this has to run on every submit, not only on a failure.
+            /// </summary>
+            private void ReportStoredMessages()
+            {
+                ReportMessages(_infoQueue);
             }
 
             /// <summary>
@@ -1507,10 +1748,12 @@ namespace TERN.Builtins
             /// </summary>
             private void CheckDevice(VM vm, string what)
             {
-                var reason = RemovedReason(_device);
-                if (reason.Length != 0)
+                var code = (uint)Slot<DeviceRemovedReasonFn>(_device, 37)(_device);
+                if (code != 0)
                 {
-                    throw vm.Error("D3D12Error", $"the device was removed during {what}: {reason}");
+                    ReportMessages(_infoQueue);
+                    throw vm.Error("D3D12Error",
+                        $"the device was removed during {what}: {RemovalText(code)} (0x{code:x8})");
                 }
             }
 
@@ -1533,6 +1776,13 @@ namespace TERN.Builtins
             private IntPtr CopyOut(VM vm, string what)
             {
                 Reset();
+
+                // Reading a texture requires it to be in COPY_SOURCE, and a second
+                // read in a row has to be able to say so itself rather than trust
+                // the last call to have left it there. Transitioning back to COMMON
+                // afterwards was the habit; it also forces the driver to give up
+                // the render-target layout, so it is slower as well as wrong.
+                Transition(StateCopySource);
 
                 var destination = new TextureCopyLocation
                 {
@@ -1557,8 +1807,7 @@ namespace TERN.Builtins
                     SubresourceIndex = 0,
                 };
 
-                Slot<CopyTextureRegionFn>(_list, 16)(_list, ref destination, 0, 0, ref source, IntPtr.Zero);
-                Transition(StateCommon);
+                Slot<CopyTextureRegionFn>(_list, 16)(_list, ref destination, 0, 0, 0, ref source, IntPtr.Zero);
                 Submit(vm, what);
                 CheckDevice(vm, what);
 
@@ -1615,6 +1864,7 @@ namespace TERN.Builtins
                 Release(_queue);
                 Release(_device);
                 _device = _queue = _allocator = _list = _heap = _texture = _readback = _fence = IntPtr.Zero;
+                _infoQueue = IntPtr.Zero;
             }
         }
 

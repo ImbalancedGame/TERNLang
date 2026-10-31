@@ -29,6 +29,8 @@ FIELDS = {
     "rasterizer_state": "RasterizerState",
     "input_layout": "InputLayout",
     "render_target_formats": "RTVFormats",
+    "description": "pDescription",
+    "description_bytes": "DescriptionByteLength",
 }
 
 # Unions are named after their member in the SDK, and the member differs per type.

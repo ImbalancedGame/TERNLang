@@ -386,6 +386,7 @@ fn usage() {
     println("  --window          open a window and animate until it is closed (the default)");
     println("  --seconds N       stop the window after N seconds");
     println("  --ascii           only draw the cube as text");
+    println("  --debug           ask the driver to validate every call and report problems");
     println("  --frames N        write N PNG frames instead of opening a window (default 12)");
     println("  --out DIR         where to put them (default cube_frames)");
     println("  --size WIDTHxHEIGHT  text grid (default 72x36)");
@@ -447,6 +448,7 @@ fn main() {
     let arguments = os.args();
     let text_only = false;
     let window_only = false;
+    let validate = false;
     let seconds = 0;
     let frames_given = false;
     // Twelve is a half turn in 30-degree steps: enough to see the cube move,
@@ -464,6 +466,10 @@ fn main() {
             text_only = true;
         } else if (argument == "--window") {
             window_only = true;
+        } else if (argument == "--debug") {
+            // Validation, for when a frame fails on a machine nobody can log in
+            // to: the driver then names the call instead of dropping the device.
+            validate = true;
         } else if (argument == "--seconds" && index + 1 < len(arguments)) {
             index += 1;
             seconds = int(arguments[index]);
@@ -488,6 +494,10 @@ fn main() {
             return;
         }
         index += 1;
+    }
+
+    if (validate && d3d12.available()) {
+        println("validation: " + str(d3d12.debug(true)));
     }
 
     // A window first, because a turning cube belongs on a screen rather than in

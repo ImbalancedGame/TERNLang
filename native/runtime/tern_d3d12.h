@@ -38,7 +38,7 @@
 // built before the fix that caused it: the two are indistinguishable without a
 // stamp, and the fix looked like it had failed. Bump it whenever the D3D12 or
 // window code changes what a failure means.
-#define TERN_D3D12_BUILD "2026-10-31.5"
+#define TERN_D3D12_BUILD "2026-10-31.6"
 
 // --- the structures, with the offsets the SDK headers give them -------------
 
@@ -87,6 +87,16 @@ static const TernGuid TERN_IID_ID3D12RootSignature = {
 static const TernGuid TERN_IID_ID3D12PipelineState = {
     0x765a30f3u, 0xf624u, 0x4c6fu, { 0xa8, 0x28, 0xac, 0xe9, 0x48, 0x62, 0x24, 0x45 }
 };
+// From d3d12sdklayers.idl, the same way the rest are taken from d3d12.idl: the
+// debug interface is a different interface from the device, and a wrong id here
+// means validation silently does not happen.
+static const TernGuid TERN_IID_ID3D12Debug = {
+    0x344488b7, 0x6846, 0x474b, { 0xb9, 0x89, 0xf0, 0x27, 0x44, 0x82, 0x45, 0xe0 }
+};
+static const TernGuid TERN_IID_ID3D12InfoQueue = {
+    0x0742a90b, 0xc387, 0x483f, { 0xb9, 0x46, 0x30, 0xa7, 0xe4, 0xe6, 0x14, 0x58 }
+};
+
 static const TernGuid TERN_IID_IDXGIFactory1 = {
     0x770aae78u, 0xf26f, 0x4dba, { 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87 }
 };
@@ -187,6 +197,17 @@ typedef struct {
 typedef struct {
     size_t pointer;
 } D3D12_CPU_DESCRIPTOR_HANDLE;  // 8
+
+// d3d12sdklayers.h. Only the two calls that read a stored message are used, but
+// the structure has to be exact or the description pointer is read from the
+// wrong offset.
+typedef struct {
+    int category;
+    int severity;
+    unsigned id;
+    const char *description;
+    size_t description_bytes;
+} D3D12_MESSAGE;   // 32
 
 // The pipeline structures. The sizes and offsets here were printed from the
 // shipped d3d12.h and are asserted below, so a build on Linux fails loudly if a
@@ -347,6 +368,10 @@ _Static_assert(offsetof(D3D12_RESOURCE_BARRIER, u) == 8, "barrier union offset")
 _Static_assert(sizeof(D3D12_RANGE) == 16, "range size");
 _Static_assert(sizeof(D3D12_PLACED_SUBRESOURCE_FOOTPRINT) == 32, "placed footprint size");
 _Static_assert(offsetof(D3D12_PLACED_SUBRESOURCE_FOOTPRINT, footprint) == 8, "footprint offset");
+_Static_assert(sizeof(D3D12_MESSAGE) == 32, "debug message size");
+_Static_assert(offsetof(D3D12_MESSAGE, description) == 16, "debug message description offset");
+_Static_assert(offsetof(D3D12_MESSAGE, description_bytes) == 24,
+               "debug message description length offset");
 _Static_assert(sizeof(D3D12_TEXTURE_COPY_LOCATION) == 48, "copy location size");
 _Static_assert(offsetof(D3D12_TEXTURE_COPY_LOCATION, u) == 16, "copy location union offset");
 _Static_assert(sizeof(D3D12_CPU_DESCRIPTOR_HANDLE) == 8, "cpu handle size");
@@ -392,14 +417,26 @@ typedef long (*PfnCloseList)(void *);
 typedef void (*PfnResourceBarrier)(void *, unsigned, const D3D12_RESOURCE_BARRIER *);
 typedef void (*PfnOMSetRenderTargets)(void *, unsigned, const D3D12_CPU_DESCRIPTOR_HANDLE *, int, const void *);
 typedef void (*PfnClearRenderTargetView)(void *, D3D12_CPU_DESCRIPTOR_HANDLE, const float *, unsigned, const void *);
+// CopyTextureRegion(ID3D12GraphicsCommandList *, const D3D12_TEXTURE_COPY_LOCATION *dst,
+//                   UINT DstX, UINT DstY, UINT DstZ,
+//                   const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox)
+//
+// DstZ is easy to leave out - a 2D copy does not need it - and leaving it out is
+// not a compile error, because the call is a function pointer of our own making.
+// It was missing, and the first real GPU removed the device on the first copy:
+// the driver read the source location as a Z coordinate and the next stack slot
+// as the source. The mock had the same broken signature, so it agreed.
 typedef void (*PfnCopyTextureRegion)(void *, const D3D12_TEXTURE_COPY_LOCATION *, unsigned,
-                                     unsigned, const D3D12_TEXTURE_COPY_LOCATION *, const void *);
+                                     unsigned, unsigned,
+                                     const D3D12_TEXTURE_COPY_LOCATION *, const void *);
 typedef void (*PfnExecuteCommandLists)(void *, unsigned, void *const *);
 typedef long (*PfnMap)(void *, unsigned, const D3D12_RANGE *, void **);
 typedef void (*PfnUnmap)(void *, unsigned, const D3D12_RANGE *);
 typedef void (*PfnSetName)(void *, const wchar_t *);
 
 typedef long (*PfnD3D12CreateDevice)(void *, int, const TernGuid *, void **);
+typedef long (*PfnD3D12GetDebugInterface)(const TernGuid *, void **);
+typedef long (*PfnInfoQueueMessage)(void *, unsigned long long, D3D12_MESSAGE *, size_t *);
 typedef long (*PfnCreateDXGIFactory1)(const TernGuid *, void **);
 typedef void (*PfnGetDesc1)(void *, void *);
 
@@ -409,6 +446,7 @@ typedef struct {
     void *d3d12;
     void *dxgi;
     PfnD3D12CreateDevice create_device;
+    PfnD3D12GetDebugInterface get_debug_interface;
     PfnCreateDXGIFactory1 create_factory;
     int tried;
     int ready;
@@ -440,6 +478,10 @@ static TernD3D12Driver *d3d12_get_driver(void) {
     if (!d3d12_driver.create_device) {
         return NULL;
     }
+    // Optional: the debug layer ships with the "Graphics Tools" feature, which
+    // a machine can be without.
+    d3d12_driver.get_debug_interface = (PfnD3D12GetDebugInterface)
+        tern_lib_symbol(d3d12_driver.d3d12, "D3D12GetDebugInterface");
 
     // DXGI is only needed for the adapter name, so a missing one is not fatal.
     const char *dxgi_path = getenv("TERN_DXGI_LIBRARY");
@@ -470,6 +512,7 @@ typedef struct {
     void *target;       // the render target texture
     void *readback;     // the buffer the pixels are copied into
     void *fence;
+    void *info_queue;   // ID3D12InfoQueue, only when the debug layer is on
     D3D12_CPU_DESCRIPTOR_HANDLE rtv;
     unsigned long long fence_value;
     unsigned long long row_pitch;
@@ -497,7 +540,112 @@ static void d3d12_release(void *object) {
     ((unsigned long (*)(void *))TERN_SLOT(object, 2))(object);   // Release
 }
 
+// --- the debug layer -------------------------------------------------------
+//
+// D3D12 can validate itself. With the layer on, the driver says exactly which
+// call was illegal and why, which is the only way to fix a failure on a machine
+// nobody here can run: "the device was removed for an unknown reason" cannot be
+// acted on, and "ID3D12CommandList::CopyTextureRegion: resource state ..." can.
+//
+// It is off by default - the layer is slower, and it needs the "Graphics Tools"
+// optional feature, which is not installed on every machine. d3d12.debug(true)
+// turns it on, and it has to be called before d3d12.create, because a device
+// cannot be validated retroactively.
+
+static int d3d12_debug_wanted;
+static int d3d12_debug_on;
+static char d3d12_debug_problem[192];
+
+static const char *d3d12_severity_name(int severity) {
+    switch (severity) {
+    case 0: return "CORRUPTION";
+    case 1: return "ERROR";
+    case 2: return "WARNING";
+    case 3: return "INFO";
+    case 4: return "MESSAGE";
+    default: return "UNKNOWN";
+    }
+}
+
+/// Turns validation on, if this machine has it. Returns 1 when the layer is on.
+static int d3d12_enable_debug_layer(void) {
+    if (d3d12_debug_on) {
+        return 1;
+    }
+    if (d3d12_debug_problem[0]) {
+        return 0;
+    }
+    TernD3D12Driver *driver = d3d12_get_driver();
+    if (!driver) {
+        snprintf(d3d12_debug_problem, sizeof d3d12_debug_problem,
+                 "the Direct3D 12 library could not be loaded");
+        return 0;
+    }
+    if (!driver->get_debug_interface) {
+        snprintf(d3d12_debug_problem, sizeof d3d12_debug_problem,
+                 "this d3d12.dll has no D3D12GetDebugInterface");
+        return 0;
+    }
+    void *debug = NULL;
+    if (driver->get_debug_interface(&TERN_IID_ID3D12Debug, &debug) < 0 || !debug) {
+        snprintf(d3d12_debug_problem, sizeof d3d12_debug_problem,
+                 "the debug layer is not installed: Windows Settings > Apps > "
+                 "Optional features > Graphics Tools");
+        return 0;
+    }
+    ((void (*)(void *))TERN_SLOT(debug, 3))(debug);   // EnableDebugLayer
+    d3d12_release(debug);
+    d3d12_debug_on = 1;
+    return 1;
+}
+
+/// Asks the device for its stored validation messages once it exists.
+static void d3d12_open_info_queue(TernD3D12Target *target) {
+    if (!d3d12_debug_on || !target->device) {
+        return;
+    }
+    void *queue = NULL;
+    long hr = ((long (*)(void *, const TernGuid *, void **))TERN_SLOT(target->device, 0))(
+        target->device, &TERN_IID_ID3D12InfoQueue, &queue);
+    if (hr >= 0 && queue) {
+        target->info_queue = queue;
+    }
+}
+
+/// Prints and clears whatever the debug layer has stored. Called after every
+/// submit and before any failure is reported, so the driver's own words appear
+/// before TERN's summary of them.
+static void d3d12_report_messages(TernD3D12Target *target) {
+    if (!target || !target->info_queue) {
+        return;
+    }
+    unsigned long long count = ((unsigned long long (*)(void *))
+        TERN_SLOT(target->info_queue, 8))(target->info_queue);   // GetNumStoredMessages
+    for (unsigned long long i = 0; i < count; i++) {
+        size_t size = 0;
+        PfnInfoQueueMessage get_message = (PfnInfoQueueMessage)
+            TERN_SLOT(target->info_queue, 5);                    // GetMessage
+        if (get_message(target->info_queue, i, NULL, &size) < 0 || size == 0) {
+            break;
+        }
+        D3D12_MESSAGE *message = (D3D12_MESSAGE *)calloc(1, size);
+        if (!message) {
+            break;
+        }
+        if (get_message(target->info_queue, i, message, &size) >= 0 && message->description) {
+            fprintf(stderr, "d3d12 debug: %s: %s\n",
+                    d3d12_severity_name(message->severity), message->description);
+        }
+        free(message);
+    }
+    ((void (*)(void *))TERN_SLOT(target->info_queue, 4))(target->info_queue);  // ClearStoredMessages
+    fflush(stderr);
+}
+
 static const char *d3d12_removed_reason(TernD3D12Target *target);
+static unsigned long d3d12_removal_code(TernD3D12Target *target);
+static const char *d3d12_removal_text(unsigned long code);
+static void d3d12_report_messages(TernD3D12Target *target);
 
 /// Fails when the device is gone, naming the call that broke it.
 ///
@@ -533,14 +681,15 @@ static void d3d12_submit(TernD3D12Target *target, const char *what) {
     target->fence_value++;
     ((PfnFenceSignal)TERN_SLOT(target->queue, 14))(target->queue, target->fence, target->fence_value);
     if (d3d12_wait(target) != 0) {
-        const char *reason = d3d12_removed_reason(target);
-        if (reason && reason[0]) {
-            tern_panic("D3D12Error", "the GPU did not finish within %d ms during %s: %s",
-                       D3D12_WAIT_TIMEOUT_MS, what, reason);
+        unsigned long code = d3d12_removal_code(target);
+        if (code != 0) {
+            tern_panic("D3D12Error", "the GPU did not finish within %d ms during %s: %s (0x%08lx)",
+                       D3D12_WAIT_TIMEOUT_MS, what, d3d12_removal_text(code), code);
         }
         tern_panic("D3D12Error", "the GPU did not finish within %d ms during %s",
                    D3D12_WAIT_TIMEOUT_MS, what);
     }
+    d3d12_report_messages(target);
     d3d12_check_device(target, what);
 }
 
@@ -622,26 +771,43 @@ static void d3d12_unavailable(const char *why) {
 /// fault, and DXGI_ERROR_DEVICE_REMOVED on its own says only that something went
 /// wrong earlier, often in a different call. Returns an empty string when the
 /// device is fine.
-static const char *d3d12_removed_reason(TernD3D12Target *target) {
+static unsigned long d3d12_removal_code(TernD3D12Target *target) {
     if (!target || !target->device) {
-        return "";
+        return 0;
     }
     long reason = ((long (*)(void *))TERN_SLOT(target->device, 37))(target->device);
-    switch ((unsigned long)reason & 0xFFFFFFFFul) {
+    return (unsigned long)reason & 0xFFFFFFFFul;
+}
+
+/// What a GetDeviceRemovedReason code means. Every reason keeps its raw code in
+/// the message: "the device was removed for an unknown reason" was all a report
+/// said about a machine with a real GPU on it, and the code would have been the
+/// difference between guessing and knowing.
+static const char *d3d12_removal_text(unsigned long code) {
+    switch (code) {
     case 0: return "";
+    case 0x887A0001ul: return "a command was rejected as invalid";
     case 0x887A0005ul: return "the device was removed";
     case 0x887A0006ul: return "the GPU hung and the driver reset it (TDR)";
     case 0x887A0007ul: return "the device was reset";
+    case 0x887A000Aul: return "the driver compiled a shader incorrectly";
     case 0x887A0020ul: return "the driver hit an internal error";
+    case 0x887A002Bull: return "the driver ran out of memory";
     case 0x8007000Eul: return "out of memory";
     default: return "the device was removed for an unknown reason";
     }
 }
 
+static const char *d3d12_removed_reason(TernD3D12Target *target) {
+    return d3d12_removal_text(d3d12_removal_code(target));
+}
+
 static void d3d12_check_device(TernD3D12Target *target, const char *what) {
-    const char *reason = d3d12_removed_reason(target);
-    if (reason && reason[0]) {
-        tern_panic("D3D12Error", "the device was removed during %s: %s", what, reason);
+    unsigned long code = d3d12_removal_code(target);
+    if (code != 0) {
+        d3d12_report_messages(target);
+        tern_panic("D3D12Error", "the device was removed during %s: %s (0x%08lx)",
+                   what, d3d12_removal_text(code), code);
     }
 }
 
@@ -679,12 +845,13 @@ static void d3d12_fail(const char *what, long hr);
 /// Panics with the HRESULT, what it means, and - when the device is gone - the
 /// reason the driver gave, which is the only part that points at the fault.
 static void d3d12_fail_removed(TernD3D12Target *target, const char *what, long hr) {
-    const char *reason = ((unsigned long)hr & 0xFFFFFFFFul) == 0x887A0005ul
-        ? d3d12_removed_reason(target)
-        : NULL;
-    if (reason && reason[0]) {
-        tern_panic("D3D12Error", "%s: %s (0x%08lx)", what, reason,
-                   (unsigned long)hr & 0xFFFFFFFFul);
+    if (((unsigned long)hr & 0xFFFFFFFFul) == 0x887A0005ul) {
+        unsigned long code = d3d12_removal_code(target);
+        if (code != 0) {
+            d3d12_report_messages(target);
+            tern_panic("D3D12Error", "%s: %s (0x%08lx)", what,
+                       d3d12_removal_text(code), (unsigned long)hr & 0xFFFFFFFFul);
+        }
     }
     d3d12_fail(what, hr);
 }
@@ -719,12 +886,17 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     }
     memset(target, 0, sizeof *target);
 
+    if (d3d12_debug_wanted) {
+        d3d12_enable_debug_layer();
+    }
+
     long hr = driver->create_device(NULL, D3D_FEATURE_LEVEL_11_0_,
                                     &TERN_IID_ID3D12Device, &target->device);
     if (hr < 0 || !target->device) {
         d3d12_fail("Direct3D 12 is not available on this system: "
                    "D3D12CreateDevice failed", hr);
     }
+    d3d12_open_info_queue(target);
 
     D3D12_HEAP_PROPERTIES default_heap;
     memset(&default_heap, 0, sizeof default_heap);
@@ -839,6 +1011,8 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
 }
 
 static void d3d12_free_device(TernD3D12Target *target) {
+    d3d12_release(target->info_queue);
+    target->info_queue = NULL;
     for (int i = 0; i < target->program_count; i++) {
         d3d12_release(target->programs[i]);
         d3d12_release(target->signatures[i]);
@@ -1178,6 +1352,27 @@ static Value n_d3d12_draw(int argc, Value *argv) {
 
 // --- the namespace ---------------------------------------------------------
 
+static Value n_d3d12_debug(int argc, Value *argv) {
+    if (argc > 0) {
+        Value flag = argv[0];
+        if (flag.tag != T_BOOL) {
+            tern_panic("TypeError", "d3d12.debug expects true or false, not %s",
+                       tern_type_name(flag));
+        }
+        d3d12_debug_wanted = flag.as.i != 0 ? 1 : 0;
+        if (d3d12_debug_wanted) {
+            d3d12_enable_debug_layer();
+        }
+    }
+    if (d3d12_debug_problem[0]) {
+        // A machine without the layer is a fact, not an error: say so once, in
+        // the words a person can act on, and answer false.
+        fprintf(stderr, "d3d12: validation is off: %s\n", d3d12_debug_problem);
+        fflush(stderr);
+    }
+    return v_bool(d3d12_debug_on ? 1 : 0);
+}
+
 static Value n_d3d12_available(int argc, Value *argv) {
     (void)argc; (void)argv;
     return v_bool(d3d12_get_driver() != NULL);
@@ -1255,6 +1450,13 @@ static Value n_d3d12_clear(int argc, Value *argv) {
 
 static void d3d12_copy_out(TernD3D12Target *target, const char *what) {
     d3d12_reset(target);
+
+    // Reading a texture requires it to be in COPY_SOURCE, and a second read in
+    // a row has to be able to say so itself rather than trust the last call to
+    // have left it there. Transitioning to COMMON afterwards used to be the
+    // habit; it is both slower - COMMON forces the driver to give up the
+    // render-target layout - and wrong for anything that reads twice.
+    d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
     D3D12_TEXTURE_COPY_LOCATION destination;
     memset(&destination, 0, sizeof destination);
     destination.resource = target->readback;
@@ -1272,9 +1474,8 @@ static void d3d12_copy_out(TernD3D12Target *target, const char *what) {
     source.u.subresource_index = 0;
 
     ((PfnCopyTextureRegion)TERN_SLOT(target->list, 16))(
-        target->list, &destination, 0, 0, &source, NULL);
+        target->list, &destination, 0, 0, 0, &source, NULL);
 
-    d3d12_transition(target, D3D12_RESOURCE_STATE_COMMON_);
     d3d12_submit(target, what);
 }
 
