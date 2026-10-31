@@ -40,19 +40,32 @@ the same answers because the protocol is the only interface.
 
 ## Running it
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install "PySide6-Essentials==6.9.3"
+Three commands, from a clean checkout:
 
-bash tools/ide.sh                 # open the repository
-bash tools/ide.sh examples        # open a directory
-bash tools/ide.sh --screenshot /tmp/studio.png   # render once, headless
+```bash
+bash tools/setup-toolchain.sh                     # .NET runtime + Roslyn, once
+python3 -m venv .venv && .venv/bin/pip install "PySide6-Essentials==6.9.3"
+bash tools/ide.sh                                 # open this repository
+```
+
+With a .NET SDK already installed the first line is unnecessary: `tools/build.py`
+uses whatever `dotnet` it finds in the toolchain, and `dotnet build` produces the
+same three assemblies.
+
+Then:
+
+```bash
+bash tools/ide.sh examples                        # open a directory
+bash tools/ide.sh --theme light                   # Darcula is the default
+bash tools/ide.sh --screenshot /tmp/studio.png    # render once, headless
 ```
 
 `tools/ide.sh` finds a Python with PySide6 (`.venv`, then `/tmp/qtenv`, then
-`python3`), builds `build/TERN.Ide.dll` if it is missing, and sets `DOTNET_ROOT`
-so the server can start. `--theme light|darcula` and `--size 1440x900` are
-passed through to the app.
+`python3`), builds the runner, syntax server and debugger if any of them is
+missing — Run and Debug are part of the IDE, so they are built together on a
+first launch rather than failing later — and sets `DOTNET_ROOT` so the servers
+can start. `--theme light|darcula` and `--size 1440x900` are passed through to
+the app.
 
 There is no display in this sandbox, so Studio runs on Qt's **offscreen**
 platform (`--screenshot` selects it) — it renders and behaves normally, it just

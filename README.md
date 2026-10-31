@@ -307,8 +307,9 @@ process that does all of it.
 ![TERN Studio running the triage example](docs/ide/img/run.png)
 
 ```bash
+bash tools/setup-toolchain.sh          # .NET runtime + Roslyn, once
 python3 -m venv .venv && .venv/bin/pip install "PySide6-Essentials==6.9.3"
-bash tools/ide.sh
+bash tools/ide.sh                      # builds what is missing, then opens this repo
 ```
 
 It has live diagnostics, completion, hover documentation, go-to-definition,

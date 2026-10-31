@@ -36,7 +36,7 @@ if [[ -z "$PYTHON" ]]; then
 TERN Studio needs PySide6:
 
     python3 -m venv .venv
-    .venv/bin/pip install PySide6-Essentials
+    .venv/bin/pip install "PySide6-Essentials==6.9.3"
 
 Then run this script again.
 EOF
@@ -58,9 +58,15 @@ fi
 
 export DOTNET_ROOT="${TERN_TOOLCHAIN_DIR:-/tmp/tern-toolchain}/dotnet"
 
-if [[ ! -f build/TERN.Ide.dll ]]; then
-  echo "building the syntax server..." >&2
-  tools/build.py --ide >&2 || exit 1
+# Run and Debug are part of the IDE, so all three assemblies are built together
+# on a first launch rather than failing later with "run tools/build.py".
+missing=0
+for assembly in TERN.Runner.dll TERN.Ide.dll TERN.Debug.dll; do
+  [[ -f "build/$assembly" ]] || missing=1
+done
+if [[ $missing -eq 1 ]]; then
+  echo "building the runner, syntax server and debugger..." >&2
+  tools/build.py --all >&2 || exit 1
 fi
 
 # The project directory is the one argument that is not a flag or a flag's
