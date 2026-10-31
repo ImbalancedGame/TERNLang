@@ -601,6 +601,35 @@ namespace TERN.Builtins
             public uint StrideInBytes;
         }
 
+        /// <summary>
+        /// D3D12_VIEWPORT: where the rasteriser is allowed to draw.
+        /// </summary>
+        /// <remarks>
+        /// Direct3D 12 has no default viewport. Until one is set the viewport
+        /// list is empty and every triangle is discarded, while a clear - which
+        /// does not consult it - still fills the target. A window showing the
+        /// clear colour and nothing else is what that looks like.
+        /// </remarks>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Viewport
+        {
+            public float TopLeftX;
+            public float TopLeftY;
+            public float Width;
+            public float Height;
+            public float MinDepth;
+            public float MaxDepth;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Rect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct CpuDescriptorHandle
         {
@@ -657,7 +686,7 @@ namespace TERN.Builtins
         /// stamp the two look identical, and a fix that worked looks like one
         /// that did not. Keep it equal to <c>TERN_D3D12_BUILD</c>.
         /// </summary>
-        private const string Build = "2026-10-31.7";
+        private const string Build = "2026-10-31.8";
 
         /// <summary>
         /// Why the driver removed the device, in the words the native backend
@@ -947,6 +976,8 @@ namespace TERN.Builtins
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetPipelineStateFn(IntPtr self, IntPtr pipeline);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void IASetPrimitiveTopologyFn(IntPtr self, int topology);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetVertexBuffersFn(IntPtr self, uint slot, uint count, ref VertexBufferView view);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetViewportsFn(IntPtr self, uint count, ref Viewport viewport);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetScissorRectsFn(IntPtr self, uint count, ref Rect rect);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void DrawInstancedFn(IntPtr self, uint vertices, uint instances, uint startVertex, uint startInstance);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate ulong GetBufferSizeFn(IntPtr self);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate IntPtr GetBufferPointerFn(IntPtr self);
@@ -1630,6 +1661,16 @@ namespace TERN.Builtins
 
                 var handle = _rtv;
                 Slot<OMSetRenderTargetsFn>(_list, 46)(_list, 1, ref handle, 0, IntPtr.Zero);
+
+                // The state that decides whether anything is drawn at all.
+                var viewport = new Viewport
+                {
+                    TopLeftX = 0, TopLeftY = 0, Width = Width, Height = Height, MinDepth = 0, MaxDepth = 1,
+                };
+                var scissor = new Rect { Left = 0, Top = 0, Right = Width, Bottom = Height };
+                Slot<SetViewportsFn>(_list, 21)(_list, 1, ref viewport);
+                Slot<SetScissorRectsFn>(_list, 22)(_list, 1, ref scissor);
+
                 Slot<SetGraphicsRootSignatureFn>(_list, 30)(_list, _signatures[program - 1]);
                 Slot<SetPipelineStateFn>(_list, 25)(_list, _pipelines[program - 1]);
                 Slot<IASetPrimitiveTopologyFn>(_list, 20)(_list, TopologyTriangleList);

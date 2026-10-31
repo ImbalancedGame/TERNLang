@@ -31,6 +31,9 @@ FIELDS = {
     "render_target_formats": "RTVFormats",
     "description": "pDescription",
     "description_bytes": "DescriptionByteLength",
+    # tagRECT, which D3D12_RECT is a typedef of, spells its members in lower
+    # case: RECT has left/top/right/bottom, not Left/Top/Right/Bottom.
+    "bottom": "bottom",
 }
 
 # Unions are named after their member in the SDK, and the member differs per type.

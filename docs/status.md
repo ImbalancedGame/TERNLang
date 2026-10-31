@@ -200,6 +200,36 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **The window opened, showed the clear colour, and no cube.** Direct3D 12 has
+  no default viewport: until `RSSetViewports` is called the viewport list is
+  empty and the rasteriser discards every triangle, while
+  `ClearRenderTargetView` - which never consults it - still fills the target.
+  TERN set a root signature, a pipeline state, a topology and a vertex buffer,
+  and then drew, never once saying where it was allowed to draw. Both back ends
+  now set a viewport covering the target and a matching scissor rect in
+  `d3d12.draw`, and the layouts are checked against `d3d12.h`
+  (`D3D12_VIEWPORT` 24 bytes with `MaxDepth` at 20, `D3D12_RECT` 16 bytes with
+  `bottom` at 12 - the SDK's `tagRECT` spells its members in lower case).
+* **Why no test noticed: the mock drew a flat colour.** `DrawInstanced` in the
+  mock painted the whole target with the first vertex's colour, whatever state
+  the list was in, so a renderer that rasterised nothing still produced a
+  picture and still passed every comparison. The mock now interpolates the
+  triangle the way the examples' pass-through shader would, into a real pixel
+  buffer that the copy-out reads, and a draw with no viewport, no scissor rect
+  or no vertex buffer prints `DRAW WITHOUT VIEWPORT` and fails the suite.
+  Proved by removing the two calls from each back end in turn: the suite goes
+  red with that exact line.
+* **The native window was upside down.** The interpreter blitted bottom-row-first
+  pixels and flipped them once for a top-down DIB; the native backend flipped
+  again on data that was already top-first. A cube is nearly symmetric, so a
+  screenshot would not have said so - the frame checksums did, the moment the
+  mock started drawing something that was not a flat colour. Both back ends now
+  hand the window the same layout `d3d12.pixels()` returns.
+* **A silent test.** The PNG assertion in `tools/test-d3d12.sh` was a bare
+  `python3` block: when it failed, the message appeared on the terminal and the
+  script still exited 0, so the suite reported success. It is guarded now, and
+  the assertion checks what a rasteriser must produce rather than one exact
+  colour.
 * **A saved PNG reported `0 bytes` on Windows while the file was fine.** The
   writer wrote the picture and the size was asked for from the wrong half of
   `struct stat`. mingw changes `off_t`, `st_size` and the entry point `stat()`
