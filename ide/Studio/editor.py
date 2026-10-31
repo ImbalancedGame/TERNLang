@@ -6,6 +6,7 @@ documentation, and the multi-caret-free but keyboard-complete editing a
 scripting IDE needs.
 """
 
+import os
 import re
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
@@ -986,7 +987,7 @@ class EditorArea(QWidget):
         self.find_bar.hide()
         layout.addWidget(self.find_bar)
 
-        self.set_breadcrumbs([path.rsplit("/", 1)[-1]])
+        self.set_breadcrumbs([os.path.basename(path)])
 
     def set_breadcrumbs(self, parts):
         self.breadcrumbs.setText("  ›  ".join(parts))

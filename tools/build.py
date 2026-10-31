@@ -27,7 +27,19 @@ if not (WORK / ".ready").exists():
 
 os.environ["DOTNET_ROOT"] = str(DOTNET)
 
-import clr_loader  # noqa: E402
+# pythonnet lives in the toolchain's own virtualenv, not on whatever PATH the
+# caller has. Rather than making everyone remember which interpreter to use,
+# this script re-runs itself under that one when it was started with another.
+try:
+    import clr_loader  # noqa: E402
+except ImportError:
+    _venv_python = WORK / "venv" / "bin" / "python"
+    if not _venv_python.exists():
+        sys.exit("pythonnet missing: run tools/setup-toolchain.sh, or build with "
+                 f"{_venv_python}")
+    os.execv(str(_venv_python), [str(_venv_python), *sys.argv])
+
+import clr_loader  # noqa: E402,F811
 from pythonnet import set_runtime  # noqa: E402
 
 runtime = clr_loader.get_coreclr(

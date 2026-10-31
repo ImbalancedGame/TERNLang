@@ -16,7 +16,10 @@ behaves.
 import os
 import re
 import shutil
+import subprocess
 import time
+
+WINDOWS = os.name == "nt"
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
@@ -199,40 +202,51 @@ class TerminalPanel(QWidget):
     # ------------------------------------------------------------- lifecycle
 
     def start(self):
-        shell = shutil.which("bash") or shutil.which("sh") or "/bin/sh"
+        shell, arguments = self._shell()
+        self._is_cmd = os.path.basename(shell).lower().startswith("cmd")
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("TERM", "xterm-256color")
         environment.insert("CLICOLOR", "1")
-        environment.insert("TMPDIR", os.environ.get("TMPDIR", "/tmp"))
-        # A prompt that never appears, so output is only what commands print.
-        environment.insert("PS1", "")
-        environment.insert("PS2", "")
+        if not WINDOWS:
+            environment.insert("TMPDIR", os.environ.get("TMPDIR", "/tmp"))
+            # A prompt that never appears, so output is only what commands print.
+            environment.insert("PS1", "")
+            environment.insert("PS2", "")
         self.process.setProcessEnvironment(environment)
         self.process.setWorkingDirectory(self.cwd)
-        # Its own session and process group, so Ctrl+C can be delivered to the
-        # shell and its children alone. Without this the shell shares the
-        # IDE's group and SIGINT would kill the IDE too.
-        try:
-            self.process.setChildProcessModifier(os.setsid)
-        except (AttributeError, TypeError):
-            pass
-        # In its own session, so a signal sent to "the shell and its
-        # children" cannot reach the IDE as well. `setsid` is part of util-linux
-        # and present wherever this runs; without it, signals go to the shell
-        # process alone rather than to a group.
-        self._group = bool(shutil.which("setsid"))
+
+        # In its own session, so a signal sent to "the shell and its children"
+        # cannot reach the IDE as well. `setsid` is util-linux; on Windows there
+        # is no such thing and Ctrl+C restarts the shell instead (see interrupt).
+        self._group = (not WINDOWS) and bool(shutil.which("setsid"))
         if self._group:
-            self.process.start("setsid", [shell] + (["--norc", "--noprofile"] if shell.endswith("bash") else []))
+            self.process.start("setsid", [shell, *arguments])
         else:
-            self.process.start(shell, ["--norc", "--noprofile"] if shell.endswith("bash") else [])
+            self.process.start(shell, arguments)
 
         if not self.process.waitForStarted(5000):
             self.write(f"could not start {shell}: {self.process.errorString()}\n", error=True)
             return False
 
-        self.write(f"sh: {shell} in {self.cwd}\n", info=True)
+        self.write(f"sh: {os.path.basename(shell)} in {self.cwd}\n", info=True)
         self._update_prompt()
         return True
+
+    def _shell(self):
+        """The shell to run, and its arguments.
+
+        bash where there is one — Git Bash and WSL both provide it on Windows,
+        and it is the only shell this panel's command dialect is written for.
+        Failing that, `cmd.exe`, whose dialect differs in exactly two places:
+        `%ERRORLEVEL%` and `%CD%` instead of `$?` and `$PWD`, and `echo` instead
+        of `printf` for the marker.
+        """
+        bash = shutil.which("bash")
+        if bash:
+            return bash, ["--norc", "--noprofile"]
+        if WINDOWS:
+            return os.environ.get("COMSPEC", "cmd.exe"), ["/Q", "/K"]
+        return shutil.which("sh") or "/bin/sh", []
 
     def stop(self):
         self._stopped_at = time.monotonic()
@@ -261,6 +275,16 @@ class TerminalPanel(QWidget):
             return
 
         pid = self.process.processId()
+        if pid and WINDOWS:
+            # No SIGINT to send to a process group here. `taskkill /T` ends the
+            # shell and whatever it started, which is the only way to abandon a
+            # long command without leaving an orphan behind.
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True)
+            self.process.waitForFinished(1500)
+            self.restart()
+            return
+
         if pid:
             self._signal(pid, 2)                    # SIGINT
             if self.process.waitForFinished(400):
@@ -341,10 +365,7 @@ class TerminalPanel(QWidget):
         # The command, then a marker line carrying its status and the new
         # working directory. `printf` rather than `echo` so nothing is quoted
         # wrongly, and `;` rather than `&&` so a failure still reports.
-        script = (f"{command}\n"
-                  f"__tern_status=$?\n"
-                  f"printf '{MARKER}%s{MARKER}%s{MARKER}\\n' \"$__tern_status\" \"$PWD\"\n")
-        self.process.write(script.encode("utf-8"))
+        self.process.write(self._command_script(command).encode("utf-8"))
 
     # ----------------------------------------------------------------- output
 
@@ -355,6 +376,22 @@ class TerminalPanel(QWidget):
         "bash: no job control in this shell",
         "bash: tcsetattr: Inappropriate ioctl",
     )
+
+    def _command_script(self, command):
+        """A command, then a marker line carrying its status and directory.
+
+        Two dialects. bash: `$?` and `$PWD` after the command, with `printf`
+        so nothing is quoted wrongly and `;`-style reporting so a failure still
+        arrives. cmd.exe has no `printf` and no such variables — `%ERRORLEVEL%`
+        and `%CD%` are expanded when the line is read, which is after the
+        command has run, so the same trick works with `echo`.
+        """
+        if self._is_cmd:
+            return (f"{command}\r\n"
+                    f"echo {MARKER}%ERRORLEVEL%{MARKER}%CD%{MARKER}\r\n")
+        return (f"{command}\n"
+                f"__tern_status=$?\n"
+                f"printf '{MARKER}%s{MARKER}%s{MARKER}\\n' \"$__tern_status\" \"$PWD\"\n")
 
     def _read(self):
         data = bytes(self.process.readAllStandardOutput()).decode("utf-8", "replace")

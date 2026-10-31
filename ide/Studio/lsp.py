@@ -17,6 +17,8 @@ import os
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
+from .paths import normalise_uri_path, path_for, uri_for  # noqa: F401  (re-exported)
+
 
 class LanguageServer(QObject):
     """Owns the server process and the request/response correlation."""
@@ -52,14 +54,14 @@ class LanguageServer(QObject):
         # resolution is happier with the two-argument form.
         self.process.setWorkingDirectory(self._cwd)
 
-        # The server runs on the bundled runtime, which needs DOTNET_ROOT the
-        # way tools/tern sets it. Inheriting the shell's environment is not
-        # enough when the IDE is started from a desktop launcher.
+        # A bundled runtime needs DOTNET_ROOT the way tools/tern sets it, and a
+        # desktop launcher does not inherit the shell's. A system SDK must not
+        # be given one: it would look for its host in the wrong place.
         environment = QProcessEnvironment.systemEnvironment()
-        if not environment.contains("DOTNET_ROOT"):
-            import os as _os
-            root = _os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain")
-            environment.insert("DOTNET_ROOT", _os.path.join(root, "dotnet"))
+        from . import runtime as _runtime
+        install = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        for name, value in _runtime.environment(install, program).items():
+            environment.insert(name, value)
         self.process.setProcessEnvironment(environment)
         self.process.start(program, arguments)
 
@@ -276,13 +278,3 @@ class LanguageServer(QObject):
             "textDocument": {"uri": uri},
             "options": {"tabSize": 4, "insertSpaces": True},
         }, callback)
-
-
-def uri_for(path):
-    return "file://" + os.path.abspath(path).replace("\\", "/")
-
-
-def path_for(uri):
-    if uri.startswith("file://"):
-        return uri[len("file://"):]
-    return uri

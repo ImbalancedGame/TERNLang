@@ -20,8 +20,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("DOTNET_ROOT", os.path.join(
-    os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain"), "dotnet"))
+sys.path.insert(0, ROOT)
+from ide.Studio.runtime import environment as _runtime_environment  # noqa: E402
+
+for _name, _value in _runtime_environment(ROOT).items():
+    os.environ.setdefault(_name, _value)
 
 
 class Checks:
@@ -443,6 +446,43 @@ def main():
     terminal.cwd = ROOT
     terminal.restart()
     pump(app, 500)
+
+    # ------------------------------------------------------- Windows paths
+    # Nothing here needs Windows: these are the pure functions the IDE uses for
+    # file URIs, and getting them wrong is a bug that only shows up on somebody
+    # else's machine.
+    from ide.Studio.paths import normalise_uri_path, path_for
+
+    checks.check("a Windows path becomes a URI path",
+                 normalise_uri_path("C:\\Users\\thoma\\a.tern") == "/C:/Users/thoma/a.tern",
+                 normalise_uri_path("C:\\Users\\thoma\\a.tern"))
+    checks.check("a POSIX path is left as it is",
+                 normalise_uri_path("/home/user/a.tern") == "/home/user/a.tern",
+                 normalise_uri_path("/home/user/a.tern"))
+    checks.check("a Windows file URI comes back as a drive path",
+                 path_for("file:///C:/Users/thoma/a.tern") == "C:/Users/thoma/a.tern",
+                 path_for("file:///C:/Users/thoma/a.tern"))
+    checks.check("a POSIX file URI keeps its leading slash",
+                 path_for("file:///home/user/a.tern") == "/home/user/a.tern",
+                 path_for("file:///home/user/a.tern"))
+    checks.check("a bare path is its own URI path",
+                 path_for("file://server/share/a.tern") == "server/share/a.tern",
+                 path_for("file://server/share/a.tern"))
+
+    # The runtime resolver: the bundled launcher is preferred, and DOTNET_ROOT
+    # is only set for it, never for a system SDK.
+    from ide.Studio import runtime
+
+    bundled = runtime.command(ROOT, "TERN.Ide")
+    checks.check("the syntax server is found where the build put it",
+                 bundled is not None and bundled[1].endswith("TERN.Ide.dll"),
+                 str(bundled))
+    checks.check("the bundled runtime gets DOTNET_ROOT",
+                 "DOTNET_ROOT" in runtime.environment(ROOT, bundled[0]) if bundled else False,
+                 str(runtime.environment(ROOT, bundled[0]) if bundled else None))
+    checks.check("a system dotnet does not",
+                 runtime.environment(ROOT, "/usr/bin/dotnet") == {},
+                 str(runtime.environment(ROOT, "/usr/bin/dotnet")))
 
     # ------------------------------------------------------ find in path
     window.show_find_in_path("classify")

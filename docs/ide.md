@@ -40,19 +40,61 @@ the same answers because the protocol is the only interface.
 
 ## Running it
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install "PySide6-Essentials==6.9.3"
+Three commands, from a clean checkout:
 
-bash tools/ide.sh                 # open the repository
-bash tools/ide.sh examples        # open a directory
-bash tools/ide.sh --screenshot /tmp/studio.png   # render once, headless
+```bash
+bash tools/setup-toolchain.sh                     # .NET runtime + Roslyn, once
+python3 -m venv .venv && .venv/bin/pip install "PySide6-Essentials==6.9.3"
+bash tools/ide.sh                                 # open this repository
 ```
 
-`tools/ide.sh` finds a Python with PySide6 (`.venv`, then `/tmp/qtenv`, then
-`python3`), builds `build/TERN.Ide.dll` if it is missing, and sets `DOTNET_ROOT`
-so the server can start. `--theme light|darcula` and `--size 1440x900` are
-passed through to the app.
+**On Windows** the same three steps, in cmd:
+
+```bat
+dotnet build                                  :: needs the .NET 8 SDK
+python -m venv .venv
+.venv\Scripts\pip install "PySide6-Essentials==6.9.3"
+tools\ide.cmd
+```
+
+The venv layout is the one thing that differs: `bin/` on Unix, `Scripts\` on
+Windows, and `pip` there is `pip.exe`. `tools\ide.cmd` runs the same
+`tools/studio.py` as `tools/ide.sh`, so there is one launcher to reason about.
+With the SDK present the toolchain bootstraps itself — `dotnet build` writes the
+three assemblies into `build/`, and `tools/studio.py` finds them there.
+
+Then:
+
+```bash
+bash tools/ide.sh examples                        # open a directory
+bash tools/ide.sh --theme light                   # Darcula is the default
+bash tools/ide.sh --screenshot /tmp/studio.png    # render once, headless
+```
+
+`tools/studio.py` finds a Python with PySide6 (this one, then `.venv` or `venv`
+with either layout, then `/tmp/qtenv`, then `python3`), builds the runner,
+syntax server and debugger if any is missing — Run and Debug are part of the
+IDE, so they are built together on a first launch rather than failing later —
+and sets `DOTNET_ROOT` only when the runtime is the bundled one, since a system
+`dotnet` must not be pointed at it. `--theme light|darcula` and
+`--size 1440x900` are passed through to the app.
+
+### What differs between platforms
+
+| | Linux / macOS | Windows |
+| --- | --- | --- |
+| virtualenv | `.venv/bin/python` | `.venv\Scripts\python.exe` |
+| launcher | `tools/ide.sh` | `tools\ide.cmd` |
+| build | `tools/build.py` (Roslyn bootstrap) | `dotnet build` with the .NET 8 SDK |
+| runtime | `build/dotnet` | `dotnet` on `PATH` |
+| terminal shell | `bash` | `bash` if installed (Git Bash, WSL), else `cmd.exe` |
+| Ctrl+C in the terminal | SIGINT to the shell's group, then a new shell | `taskkill /T`, then a new shell |
+
+File paths and URIs are the other place this can go wrong, quietly: a Windows
+path becomes `file:///C:/Users/...` — three slashes, because a URI's path always
+starts with `/` — and comes back as `C:/Users/...`. `ide/Studio/paths.py` does
+that, and the UI suite checks the Windows cases on Linux, where a mistake would
+otherwise only appear on somebody else's machine.
 
 There is no display in this sandbox, so Studio runs on Qt's **offscreen**
 platform (`--screenshot` selects it) — it renders and behaves normally, it just
