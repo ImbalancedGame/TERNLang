@@ -14,7 +14,7 @@ caveats below.
 | Area | State | Verified by |
 | --- | --- | --- |
 | Language, interpreter | complete | 35 golden runs, `tools/test.sh` |
-| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (33), `native/parity.py` (43 programs) |
+| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (33), `native/parity.py` (44 programs) |
 | `math` `json` `os` `fs` `text` `lists` `time` `random` | complete, both back ends | golden tests, parity |
 | `net` (TCP, framing, tokens, frame ceiling, UDP, raw mode) | complete, both back ends | `tests/26_net.tern`, `tests/35_raw_bytes.tern`, `tools/test-tls.sh` |
 | `http` / `https` | complete, both back ends | `tests/28_http.tern`, `tools/test-tls.sh` |
@@ -151,17 +151,14 @@ Ordered by what would bite a user first.
    `examples/d3d12_diagnose.tern` is the one to run: it makes each call in turn
    and prints what each did, so the failure names itself, and it reports the
    binding revision that produced it.
-3. **The window blits, it does not present.** `d3d12.window` opens a real
-   Win32 window and `d3d12.present` puts the frame in it, so
-   `examples/rotating_cube.tern` shows a turning cube rather than describing
-   one. But each frame is read back from the GPU and copied with
-   `StretchDIBits`, which is a frame of latency and a bandwidth cost that a
-   DXGI swap chain does not have. A swap chain is the next step: `Present` on
-   an `IDXGISwapChain3` fed by the same render target, which also means
-   handling the present-state transitions that go with it. The window layer is
-   also Windows only — `user32`, `gdi32` and `kernel32` are loaded at run time
-   from a Linux build and answer `nil` there, so a Linux window needs an X11 or
-   Wayland surface and the same blit, and neither exists.
+3. **The window layer is Windows only.** `d3d12.window` opens a real Win32
+   window and `d3d12.present` puts the frame in it, through a flip-model swap
+   chain where one can be made. `user32`, `gdi32`, `kernel32` and `dxgi` are
+   loaded at run time, so a Linux build answers `nil` and a Linux window needs
+   an X11 or Wayland surface — neither exists. The swap chain path also has no
+   `ResizeBuffers`: a resized window is stretched by DXGI rather than
+   re-created, and a device reset is not handled beyond falling back to the
+   blit. Both are Windows-only to test and are the next two items there.
 4. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
    `sftp` and `gl` answer `UnsupportedError` in a Windows binary; the language,
    `math`, `time`, `json`, `os`, `fs`, `text`, `lists` and `d3d12` are there.
@@ -251,6 +248,30 @@ SSH is what the servers actually offer).
   screenshot would not have said so - the frame checksums did, the moment the
   mock started drawing something that was not a flat colour. Both back ends now
   hand the window the same layout `d3d12.pixels()` returns.
+* **`!=` meant `==` in a compiled binary.** The fused compare the compiler
+  emits for two locals took the equality answer for the "not equal" instruction,
+  so `if (a != b)` branched as though `a == b` - and only when the operands were
+  not integers, because integers take a fast path that was right. `==` was right,
+  printing `a != b` was right, and the interpreter was right; the one thing that
+  was wrong was the branch a compiled program actually took, which is the thing
+  a test has to look at. Found by a diagnostic program that counted colours with
+  a string key and compared it against a stored string, and caught by
+  `tests/03_control.tern` now.
+* **The window blitted instead of presenting.** `d3d12.present` read the frame
+  back to system memory, converted it and handed it to `StretchDIBits`: a copy
+  of the whole picture, a channel swap and a frame of latency, every frame, for
+  a picture the GPU had just made. It now goes through an `IDXGISwapChain1`
+  made with `IDXGIFactory2::CreateSwapChainForHwnd` (two `FLIP_DISCARD`
+  buffers), copies the render target into the next back buffer on the GPU in
+  the same command list, moves it to `PRESENT` and calls `Present(1, 0)`, which
+  also paces the loop on the vertical blank. The blit is still there and is
+  still what a machine without `IDXGIFactory2` gets — Windows 7, or a mock told
+  to refuse one with `TERN_DXGI_NO_FACTORY2=1`. The mock follows the GPU copy
+  into the back buffer and checksums it, and the suite compares those checksums
+  against the blit's: the two ways of showing a frame have to produce the same
+  pixels, or the new one is a different picture rather than the same one
+  sooner. The swap chain's own state is tracked per buffer — a barrier naming a
+  state the buffer is not in is what removes a device.
 * **A silent test.** The PNG assertion in `tools/test-d3d12.sh` was a bare
   `python3` block: when it failed, the message appeared on the terminal and the
   script still exited 0, so the suite reported success. It is guarded now, and
@@ -346,8 +367,10 @@ SSH is what the servers actually offer).
   layer at all — no `user32`, no presentation surface, no message loop — so a
   cube that turned in a window could not be written, only described as the next
   step. Both back ends have one now: `d3d12.window(width, height, title)` opens
-  a real Win32 window, `d3d12.present(window, device)` blits the rendered frame
-  into it and pumps its messages, and `d3d12.closeWindow(window)` closes it.
+  a real Win32 window, `d3d12.present(window, device)` puts the rendered frame
+  in it through a flip-model swap chain (or a blit where there is no DXGI
+  factory to make one) and pumps its messages, and
+  `d3d12.closeWindow(window)` closes it.
   The example runs the window by default on Windows and falls back to PNG
   frames and text where there is no `user32`, so nothing about it needs a
   display to run. It is tested headless: `tools/d3d12/mock_user32.c` fakes

@@ -32,3 +32,20 @@ println(label);
 let nested = if true { if false { 1 } else { 2 } } else { 3 };
 println(nested);
 println(if n == 0 { "zero" } else { "nonzero" });
+
+// `!=` has to mean "not equal", including inside a condition and including for
+// values that are not integers. The compiled backend once branched as though a
+// non-integer `!=` were `==`; numbers took an integer fast path, so only a
+// string in a condition showed it.
+fn same_text(a, b) {
+    if (a != b) { return "different"; }
+    return "same";
+}
+fn equal_text(a, b) {
+    if (a == b) { return "equal"; }
+    return "unequal";
+}
+println(same_text("hel" + "lo", "hello"));
+println(same_text("help", "hello"));
+println(equal_text("hel" + "lo", "hello"));
+println(equal_text("help", "hello"));

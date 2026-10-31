@@ -960,13 +960,16 @@ FUNCTIONS = {
                    ("device", "int", "A device handle whose target has been drawn to.")],
         "returns": ("bool", "`false` once the window has been closed."),
         "errors": [("D3D12Error", "There is no open window or device with that handle, or the "
-                                  "readback buffer cannot be mapped.")],
-        "remarks": "Copies the target back, blits it into the window, processes the window's "
-                   "messages and paces the frame at about 60 per second. Escape or the close "
-                   "button ends the loop that calls it. This is not a DXGI swap chain: a frame "
-                   "round-trips through the readback buffer, which is slower than presenting "
-                   "properly but needs no presentation surface. `present` is also the call that "
-                   "keeps the window responsive, so a loop that stops calling it stops for good.",
+                                  "blit's readback buffer cannot be mapped.")],
+        "remarks": "Presents through a flip-model DXGI swap chain when the machine has one: "
+                   "the frame is copied into a back buffer on the GPU and handed to the "
+                   "compositor, and `Present` waits for the vertical blank, which is what paces "
+                   "the loop. A machine without `IDXGIFactory2` - Windows 7, or a test run that "
+                   "refuses one - falls back to reading the target back and blitting it with "
+                   "`StretchDIBits`: slower, and the same picture. Escape or the close button "
+                   "ends the loop that calls it, and a closed window takes no more frames. "
+                   "`present` is also the call that keeps the window responsive, so a loop that "
+                   "stops calling it stops for good.",
         "example": [
             "let window = d3d12.window(640, 480, \"cube\");",
             "while (d3d12.present(window, target)) {",

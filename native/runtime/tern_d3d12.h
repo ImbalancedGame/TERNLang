@@ -38,7 +38,7 @@
 // built before the fix that caused it: the two are indistinguishable without a
 // stamp, and the fix looked like it had failed. Bump it whenever the D3D12 or
 // window code changes what a failure means.
-#define TERN_D3D12_BUILD "2026-10-31.8"
+#define TERN_D3D12_BUILD "2026-10-31.9"
 
 // --- the structures, with the offsets the SDK headers give them -------------
 
@@ -100,6 +100,11 @@ static const TernGuid TERN_IID_ID3D12InfoQueue = {
 static const TernGuid TERN_IID_IDXGIFactory1 = {
     0x770aae78u, 0xf26f, 0x4dba, { 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87 }
 };
+// IDXGIFactory2 is where CreateSwapChainForHwnd lives; it arrived in Windows 8,
+// which is why the swap chain is attempted rather than assumed.
+static const TernGuid TERN_IID_IDXGIFactory2 = {
+    0x50c83a1cu, 0xe072u, 0x4c48u, { 0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0 }
+};
 
 #define D3D12_HEAP_TYPE_DEFAULT_ 1
 #define D3D12_HEAP_TYPE_READBACK_ 3
@@ -109,6 +114,14 @@ static const TernGuid TERN_IID_IDXGIFactory1 = {
 #define D3D12_RESOURCE_STATE_COMMON_ 0
 #define D3D12_RESOURCE_STATE_RENDER_TARGET_ 4
 #define D3D12_RESOURCE_STATE_COPY_DEST_ 1024
+// A back buffer is created in PRESENT and must be back in it for Present. The
+// number is the same as COMMON's, which is why it is spelled out separately:
+// they mean different things and only one of them is legal at Present.
+#define D3D12_RESOURCE_STATE_PRESENT_ 0
+#define DXGI_USAGE_RENDER_TARGET_OUTPUT_ 0x20u
+#define DXGI_SCALING_STRETCH_ 0
+#define DXGI_SWAP_EFFECT_FLIP_DISCARD_ 4
+#define DXGI_ALPHA_MODE_IGNORE_ 3
 #define D3D12_RESOURCE_STATE_COPY_SOURCE_ 2048
 #define DXGI_FORMAT_R8G8B8A8_UNORM_ 28
 #define D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX_ 0
@@ -478,6 +491,11 @@ typedef long (*PfnD3D12CreateDevice)(void *, int, const TernGuid *, void **);
 typedef long (*PfnD3D12GetDebugInterface)(const TernGuid *, void **);
 typedef long (*PfnInfoQueueMessage)(void *, unsigned long long, D3D12_MESSAGE *, size_t *);
 typedef long (*PfnCreateDXGIFactory1)(const TernGuid *, void **);
+typedef long (*PfnQueryInterface)(void *, const TernGuid *, void **);
+typedef long (*PfnCreateSwapChainForHwnd)(void *, void *, void *, const void *,
+                                          const void *, void *, void **);
+typedef long (*PfnGetBuffer)(void *, unsigned, const TernGuid *, void **);
+typedef long (*PfnPresent)(void *, unsigned, unsigned);
 typedef void (*PfnGetDesc1)(void *, void *);
 
 // --- the loaded library ----------------------------------------------------
@@ -572,6 +590,55 @@ typedef struct {
 } TernD3D12Target;
 
 static TernD3D12Target d3d12_targets[D3D12_MAX_DEVICES];
+
+// --- the swap chain --------------------------------------------------------
+//
+// Reading a finished frame back to the CPU and blitting it into a device
+// context costs a copy through system memory, a map, a channel swap and a frame
+// of latency. A flip-model swap chain hands the GPU's own image to the
+// compositor instead: the frame is copied from the render target into the back
+// buffer on the GPU, in the same command list, and presented. Nothing is read
+// back and nothing is converted.
+//
+// The copy stays rather than rendering straight into the back buffer, because
+// `clear`, `draw`, `pixels` and `save` all share one render target whose
+// identity they name; moving it into the swap chain means it changes per frame
+// underneath them. One GPU-to-GPU copy per frame costs a fraction of the CPU
+// round trip it replaces, and it is the part a person feels.
+
+#define TERN_SWAP_BUFFER_COUNT 2
+
+typedef struct {
+    unsigned width;
+    unsigned height;
+    int format;
+    int stereo;
+    struct { unsigned count, quality; } sample;
+    unsigned buffer_usage;
+    unsigned buffer_count;
+    int scaling;
+    int swap_effect;
+    int alpha_mode;
+    unsigned flags;
+} DXGI_SWAP_CHAIN_DESC1;   // 48 bytes, as dxgi1_2.h lays it out
+
+typedef struct {
+    void *chain;                                       // IDXGISwapChain1
+    void *buffers[TERN_SWAP_BUFFER_COUNT];             // ID3D12Resource
+    unsigned states[TERN_SWAP_BUFFER_COUNT];           // what each buffer is really in
+    unsigned frame;
+    unsigned width;
+    unsigned height;
+    int ready;
+    int failed;      // no swap chain on this machine; use the blit from now on
+    int told;        // the fallback has been explained once
+} TernSwapChain;
+
+static TernSwapChain d3d12_swaps[TERN_MAX_WINDOWS];
+
+_Static_assert(sizeof(DXGI_SWAP_CHAIN_DESC1) == 48, "swap chain desc size");
+_Static_assert(offsetof(DXGI_SWAP_CHAIN_DESC1, sample) == 16, "swap chain sample offset");
+_Static_assert(offsetof(DXGI_SWAP_CHAIN_DESC1, swap_effect) == 36, "swap chain effect offset");
 
 static void d3d12_release(void *object) {
     if (!object) {
@@ -1644,6 +1711,120 @@ static Value n_d3d12_window(int argc, Value *argv) {
     return v_int(tern_window_handle(window));
 }
 
+/// Releases everything a swap chain holds. Safe on a chain that was never made.
+static void d3d12_swap_chain_close(TernSwapChain *swap) {
+    for (unsigned i = 0; i < TERN_SWAP_BUFFER_COUNT; i++) {
+        d3d12_release(swap->buffers[i]);
+    }
+    d3d12_release(swap->chain);
+    memset(swap, 0, sizeof *swap);
+}
+
+/// Creates the swap chain for `window`, sized to the target. Returns 1 on
+/// success; on any failure the caller falls back to the blit and does not try
+/// again, because a machine without IDXGIFactory2 does not grow one.
+static int d3d12_swap_chain_open(TernSwapChain *swap, TernD3D12Target *target,
+                                 TernWindow *window) {
+    TernD3D12Driver *driver = d3d12_get_driver();
+    if (!driver || !driver->create_factory) {
+        swap->failed = 1;
+        return 0;
+    }
+
+    void *factory = NULL;
+    if (driver->create_factory(&TERN_IID_IDXGIFactory1, &factory) < 0 || !factory) {
+        swap->failed = 1;
+        return 0;
+    }
+    // CreateDXGIFactory1 answers with a factory1 on every Windows that has
+    // DXGI; CreateSwapChainForHwnd arrived with factory2 in Windows 8.
+    void *factory2 = NULL;
+    long hr = ((PfnQueryInterface)TERN_SLOT(factory, 0))(factory, &TERN_IID_IDXGIFactory2, &factory2);
+    d3d12_release(factory);
+    if (hr < 0 || !factory2) {
+        swap->failed = 1;
+        return 0;
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 desc;
+    memset(&desc, 0, sizeof desc);
+    desc.width = (unsigned)target->width;
+    desc.height = (unsigned)target->height;
+    desc.format = DXGI_FORMAT_R8G8B8A8_UNORM_;
+    desc.sample.count = 1;
+    desc.buffer_usage = DXGI_USAGE_RENDER_TARGET_OUTPUT_;
+    desc.buffer_count = TERN_SWAP_BUFFER_COUNT;
+    desc.scaling = DXGI_SCALING_STRETCH_;
+    desc.swap_effect = DXGI_SWAP_EFFECT_FLIP_DISCARD_;
+    desc.alpha_mode = DXGI_ALPHA_MODE_IGNORE_;
+
+    void *chain = NULL;
+    hr = ((PfnCreateSwapChainForHwnd)TERN_SLOT(factory2, 15))(
+        factory2, target->queue, window->hwnd, &desc, NULL, NULL, &chain);
+    d3d12_release(factory2);
+    if (hr < 0 || !chain) {
+        swap->failed = 1;
+        return 0;
+    }
+
+    swap->chain = chain;
+    swap->width = (unsigned)target->width;
+    swap->height = (unsigned)target->height;
+    swap->frame = 0;
+    for (unsigned i = 0; i < TERN_SWAP_BUFFER_COUNT; i++) {
+        void *buffer = NULL;
+        hr = ((PfnGetBuffer)TERN_SLOT(chain, 9))(chain, i, &TERN_IID_ID3D12Resource, &buffer);
+        if (hr < 0 || !buffer) {
+            d3d12_swap_chain_close(swap);
+            swap->failed = 1;
+            return 0;
+        }
+        swap->buffers[i] = buffer;
+        swap->states[i] = D3D12_RESOURCE_STATE_PRESENT_;
+    }
+    swap->ready = 1;
+    return 1;
+}
+
+/// Copies the target into the current back buffer and presents it. The copy and
+/// the two barriers are recorded in one list, so the GPU sees a single job.
+static int d3d12_swap_show(TernSwapChain *swap, TernD3D12Target *target) {
+    unsigned frame = swap->frame;
+    void *buffer = swap->buffers[frame];
+
+    d3d12_reset(target);
+    d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
+    d3d12_barrier(target, buffer, swap->states[frame], D3D12_RESOURCE_STATE_COPY_DEST_);
+    swap->states[frame] = D3D12_RESOURCE_STATE_COPY_DEST_;
+
+    D3D12_TEXTURE_COPY_LOCATION destination;
+    memset(&destination, 0, sizeof destination);
+    destination.resource = buffer;
+    destination.type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX_;
+    destination.u.subresource_index = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION source;
+    memset(&source, 0, sizeof source);
+    source.resource = target->target;
+    source.type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX_;
+    source.u.subresource_index = 0;
+
+    ((PfnCopyTextureRegion)TERN_SLOT(target->list, 16))(
+        target->list, &destination, 0, 0, 0, &source, NULL);
+    d3d12_barrier(target, buffer, D3D12_RESOURCE_STATE_COPY_DEST_, D3D12_RESOURCE_STATE_PRESENT_);
+    swap->states[frame] = D3D12_RESOURCE_STATE_PRESENT_;
+    d3d12_submit(target, "d3d12.present");
+
+    // Present waits for the vertical blank at interval 1, which is also what
+    // paces the loop: the blit path needed a sleep to avoid spinning a core.
+    long hr = ((PfnPresent)TERN_SLOT(swap->chain, 8))(swap->chain, 1, 0);
+    if (hr < 0) {
+        return 0;
+    }
+    swap->frame = (frame + 1) % TERN_SWAP_BUFFER_COUNT;
+    return 1;
+}
+
 static Value n_d3d12_present(int argc, Value *argv) {
     Value handle_value = argv[0];
     if (handle_value.tag != T_INT) {
@@ -1654,7 +1835,37 @@ static Value n_d3d12_present(int argc, Value *argv) {
         tern_panic("D3D12Error", "no open window with handle %lld",
                    (long long)handle_value.as.i);
     }
+    // A closed window takes no more frames. Without this the swap chain path
+    // would keep presenting after the window was gone - the blit path said so
+    // for itself, and only that path was checked.
+    if (!window->open) {
+        return v_bool(0);
+    }
     TernD3D12Target *target = d3d12_slot_arg(arg(argc, argv, 1));
+
+    // The swap chain first: it is the path that puts the frame on screen
+    // without a trip through system memory. The blit below stays as the answer
+    // for a machine that has no IDXGIFactory2, which is Windows 7 and anything
+    // pretending to be it - including the mock when it is asked not to have one.
+    TernSwapChain *swap = &d3d12_swaps[(int)handle_value.as.i - 1];
+    if (swap->ready &&
+            (swap->width != (unsigned)target->width || swap->height != (unsigned)target->height)) {
+        d3d12_swap_chain_close(swap);
+    }
+    if (!swap->failed && (swap->ready || d3d12_swap_chain_open(swap, target, window))) {
+        if (d3d12_swap_show(swap, target)) {
+            tern_window_pump(window);
+            return v_bool(window->open ? 1 : 0);
+        }
+        d3d12_swap_chain_close(swap);
+        swap->failed = 1;
+    }
+    if (swap->failed && !swap->told) {
+        // Say it once, in the words that explain what is slower, then stop.
+        swap->told = 1;
+        fprintf(stderr, "d3d12: no flip-model swap chain here; presenting through a blit\n");
+        fflush(stderr);
+    }
 
     d3d12_copy_out(target, "d3d12.present");
 
@@ -1698,6 +1909,9 @@ static Value n_d3d12_close_window(int argc, Value *argv) {
     }
     TernWindow *window = tern_window_at((int)handle_value.as.i);
     if (window) {
+        // The swap chain holds the window's handle and the queue the frames were
+        // presented on, so it goes before the window does.
+        d3d12_swap_chain_close(&d3d12_swaps[(int)handle_value.as.i - 1]);
         tern_window_close(window);
     }
     return v_nil();

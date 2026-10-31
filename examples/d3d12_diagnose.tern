@@ -60,6 +60,38 @@ fn triangle() {
     ];
 }
 
+/// What the frame actually contains.
+///
+/// A GPU that draws nothing still answers with a full buffer of the clear
+/// colour, so "pixels after draw: 1228800 bytes" says only that the copy
+/// worked. Counting the colours and the pixels that differ from the background
+/// is what tells a picture apart from an empty page: a triangle interpolates its
+/// three corner colours, so a working draw answers thousands of colours and a
+/// quarter of the frame covered. The first pixel is taken as the background
+/// because the triangle never reaches the bottom-left corner.
+fn frame_report(pixels) {
+    // Integer keys, not strings: a colour is three bytes, so it packs into one
+    // number and there is nothing to compare element by element.
+    let colours = {};
+    let background = nil;
+    let changed = 0;
+    let index = 0;
+    while (index + 3 < len(pixels)) {
+        let red = pixels[index];
+        let green = pixels[index + 1];
+        let blue = pixels[index + 2];
+        let key = red * 65536 + green * 256 + blue;
+        colours[key] = true;
+        if (background == nil) {
+            background = key;
+        } else if (key != background) {
+            changed += 1;
+        }
+        index += 4;
+    }
+    return str(len(keys(colours))) + " colours, " + str(changed) + " pixels off the background";
+}
+
 /// Runs one call, prints either its result or its error, and says whether it
 /// worked. Bodies return something printable, so `ok` is spelled out rather
 /// than inferred from nil.
@@ -136,7 +168,10 @@ fn main() {
             return "ok";
         });
         step("pixels after draw", fn() {
-            return str(len(d3d12.pixels(target))) + " bytes";
+            let pixels = d3d12.pixels(target);
+            // The frame is read back twice here on purpose: the byte count
+            // proves the copy, the report proves the draw.
+            return str(len(pixels)) + " bytes, " + frame_report(pixels);
         });
     }
 

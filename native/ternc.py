@@ -702,7 +702,12 @@ class Generator:
             line("{ Value x = %s, y = %s; int take;" % (self.loc(a, captured), self.loc(b, captured)))
             line("  if (x.tag == T_INT && y.tag == T_INT) take = x.as.i %s y.as.i;" % test)
             if op in ("JumpEqLocalLocal", "JumpNeLocalLocal"):
-                line("  else take = tern_equal(x, y) %s 0;" % ("==" if test == "==" else "!="))
+                # `take` is the truth of the test, so Ne has to invert the
+                # answer: emitting tern_equal() for both made `a != b` branch as
+                # though they were equal whenever they were not integers, and
+                # only in the compiled backend - the interpreter was right, which
+                # is why nothing compared the two for a string.
+                line("  else take = tern_equal(x, y) %s 0;" % ("!=" if test == "==" else "=="))
             else:
                 line("  else take = tern_compare(x, y).as.i %s 0;" % test)
             line("  if (!take) goto L%d; }" % c)

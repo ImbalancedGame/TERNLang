@@ -16,6 +16,7 @@
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>
+#include <dlfcn.h>   // the frame counter lives in the window mock; see report_frame
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1109,10 +1110,38 @@ static void list_copy_region(void *self, const CopyLocation *destination, unsign
     }
     MockResource *buffer = (MockResource *)destination->resource;
     MockResource *texture = (MockResource *)source->resource;
-    if (!buffer || !texture || !buffer->memory) {
+    if (!buffer || !texture) {
         return;
     }
-    if (!texture->pixels) {
+    // D3D12_TEXTURE_COPY_TYPE: 0 is a subresource, 1 is a placed footprint. A
+    // copy into the readback names the destination by footprint; a copy into a
+    // swap chain's back buffer names both ends by subresource and moves the
+    // pixels across. The second one is what the window now shows, so the mock
+    // moves them and Present checksums the result.
+    if (destination->type == 0 && source->type == 0) {
+        if (!buffer->pixels || !texture->pixels) {
+            fprintf(stderr, "mock_d3d12: COPY ARGUMENT MISMATCH: a texture copy to or from a "
+                            "resource with no pixels\n");
+            mock_state_mismatches++;
+            return;
+        }
+        unsigned rows = buffer->height < texture->height ? buffer->height : texture->height;
+        unsigned columns = buffer->width < texture->width ? buffer->width : texture->width;
+        for (unsigned row = 0; row < rows; row++) {
+            memcpy(buffer->pixels + (size_t)row * buffer->width * 4,
+                   texture->pixels + (size_t)row * texture->width * 4,
+                   (size_t)columns * 4);
+        }
+        return;
+    }
+    if (destination->type != 1 || source->type != 0) {
+        fprintf(stderr, "mock_d3d12: COPY ARGUMENT MISMATCH: CopyTextureRegion destination type "
+                        "%d source type %d is neither texture to texture nor texture to "
+                        "readback\n", destination->type, source->type);
+        mock_state_mismatches++;
+        return;
+    }
+    if (!buffer->memory || !texture->pixels) {
         return;
     }
     unsigned pitch = destination->u.placed.footprint.pitch;
@@ -1167,12 +1196,244 @@ static void adapter_get_desc1(void *self, void *description) {
 }
 
 static long factory_is_current(void *self) { (void)self; return 1; }
+static long factory_query(void *self, const Guid *iid, void **out);
 
 static void *factory_vtbl[14] = {
-    [0] = (void *)mock_query, [1] = (void *)mock_addref, [2] = (void *)mock_release,
+    [0] = (void *)factory_query, [1] = (void *)mock_addref, [2] = (void *)mock_release,
     [12] = (void *)factory_enum_adapters1,
     [13] = (void *)factory_is_current,
 };
+
+// --- IDXGIFactory2 and the swap chain --------------------------------------
+//
+// The blit path - read the frame back, convert it, StretchDIBits it - is what
+// this mock used to see, and it is what a flip-model swap chain replaces: the
+// frame is copied from the render target into a back buffer on the GPU and
+// handed to the compositor. The mock follows the copy through to the buffer and
+// checksums what Present is given, so the picture the window shows is still
+// checked rather than assumed.
+
+static const Guid IID_IDXGIFactory2_ = {
+    0x50c83a1c, 0xe072, 0x4c48, { 0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0 }
+};
+static const Guid IID_IDXGISwapChain1_ = {
+    0x790a45f7, 0x0d42, 0x4876, { 0x98, 0x3a, 0x0a, 0x55, 0xcf, 0xe6, 0xf4, 0xaa }
+};
+
+typedef struct {
+    void **vtbl;
+} MockFactory2;
+
+typedef struct {
+    void **vtbl;
+    MockResource *buffers[2];
+    unsigned width, height;
+    unsigned index;
+    unsigned presented;
+} MockSwapChain;
+
+static void *swap_chain_vtbl[30];
+static void *factory2_vtbl[26];
+static MockFactory2 mock_factory2;
+static int mock_factory2_refused;
+
+// The window mock owns the frame count - it is what closes the window after
+// TERN_WINDOW_FRAMES and what prints the checksum a test compares. A present
+// through the swap chain has to count as a frame just as a blit does, so this
+// mock finds that function in the already-loaded window library and calls it.
+// The alternative - a second counter in here - would let the cube loop for ever
+// under the mock, because nothing would ever close the window.
+static void (*mock_frame_reporter)(int, int, uint32_t);
+static int mock_frame_reporter_looked;
+
+static void report_frame(unsigned width, unsigned height, uint32_t checksum) {
+    if (!mock_frame_reporter_looked) {
+        mock_frame_reporter_looked = 1;
+        const char *path = getenv("TERN_USER32_LIBRARY");
+        if (path && path[0]) {
+            // RTLD_NOLOAD: the runtime has already opened it, and this must not
+            // become a second copy with a second frame count.
+            void *library = dlopen(path, RTLD_NOW | RTLD_NOLOAD);
+            if (library) {
+                mock_frame_reporter = (void (*)(int, int, uint32_t))
+                    dlsym(library, "mock_window_frame");
+            }
+        }
+    }
+
+    if (mock_frame_reporter) {
+        mock_frame_reporter((int)width, (int)height, checksum);
+        return;
+    }
+
+    fprintf(stderr, "mock_dxgi: present %ux%u checksum 0x%08x\n", width, height, checksum);
+    fflush(stderr);
+}
+
+static MockResource *swap_buffer_new(unsigned width, unsigned height) {
+    MockResource *buffer = (MockResource *)calloc(1, sizeof(MockResource));
+    if (!buffer) {
+        return NULL;
+    }
+    buffer->vtbl = resource_vtbl;
+    buffer->kind = 0;
+    buffer->width = width;
+    buffer->height = height;
+    buffer->size = (unsigned long long)width * height * 4;
+    buffer->pixels = (unsigned char *)calloc((size_t)width * height * 4, 1);
+    buffer->state = 0;   // D3D12_RESOURCE_STATE_PRESENT
+    return buffer;
+}
+
+static long swap_query(void *self, const Guid *iid, void **out) {
+    if (!out) {
+        return E_INVALIDARG_;
+    }
+    if (iid && (memcmp(iid, &IID_IDXGISwapChain1_, sizeof(Guid)) == 0 ||
+                memcmp(iid, &IID_IUnknown_, sizeof(Guid)) == 0)) {
+        *out = self;
+        return 0;
+    }
+    *out = NULL;
+    return E_NOINTERFACE_;
+}
+
+static long swap_get_buffer(void *self, unsigned index, const Guid *iid, void **out) {
+    MockSwapChain *chain = (MockSwapChain *)self;
+    if (!out) {
+        return E_INVALIDARG_;
+    }
+    if (index >= 2 || !chain->buffers[index]) {
+        fprintf(stderr, "mock_dxgi: GetBuffer(%u) but the swap chain has 2 buffers\n", index);
+        *out = NULL;
+        return E_INVALIDARG_;
+    }
+    if (iid && memcmp(iid, &IID_IUnknown_, sizeof(Guid)) != 0 &&
+            memcmp(iid, &IID_ID3D12Resource_, sizeof(Guid)) != 0) {
+        *out = NULL;
+        return E_NOINTERFACE_;
+    }
+    *out = chain->buffers[index];
+    return 0;
+}
+
+/// Present checks what a real swap chain would show. The checksum is taken in
+/// the blit path's order - BGRA, first row at the top - so the two ways of
+/// getting a frame on screen can be compared byte for byte.
+static long swap_present(void *self, unsigned sync_interval, unsigned flags) {
+    MockSwapChain *chain = (MockSwapChain *)self;
+    MockResource *buffer = chain->buffers[chain->index];
+    (void)sync_interval;
+    (void)flags;
+    if (!buffer || !buffer->pixels) {
+        fprintf(stderr, "mock_dxgi: PRESENT WITHOUT A BACK BUFFER\n");
+        return -1;
+    }
+    if (buffer->state != 0) {
+        fprintf(stderr, "mock_dxgi: PRESENT WITH WRONG STATE: buffer %u is in %u, present needs 0\n",
+                chain->index, buffer->state);
+        mock_state_mismatches++;
+        return -1;
+    }
+    uint32_t hash = 2166136261u;
+    size_t total = (size_t)chain->width * chain->height * 4;
+    for (size_t at = 0; at < total; at += 4) {
+        hash ^= buffer->pixels[at + 2];
+        hash *= 16777619u;
+        hash ^= buffer->pixels[at + 1];
+        hash *= 16777619u;
+        hash ^= buffer->pixels[at + 0];
+        hash *= 16777619u;
+        hash ^= 255u;
+        hash *= 16777619u;
+    }
+    chain->presented++;
+    chain->index = (chain->index + 1) % 2;
+    report_frame(chain->width, chain->height, hash);
+    return 0;
+}
+
+static long factory2_create_swap_chain(void *self, void *device, void *hwnd, const void *desc,
+                                       const void *fullscreen, const void *restrict_to_output,
+                                       void **chain_out) {
+    (void)self; (void)device; (void)fullscreen; (void)restrict_to_output;
+    if (!desc || !hwnd || !chain_out) {
+        fprintf(stderr, "mock_dxgi: CreateSwapChainForHwnd with a missing argument\n");
+        return E_INVALIDARG_;
+    }
+    // DXGI_SWAP_CHAIN_DESC1, in order: width, height, format, stereo,
+    // sample count, sample quality, usage, buffer count, scaling, effect,
+    // alpha mode, flags.
+    const unsigned *numbers = (const unsigned *)desc;
+    unsigned width = numbers[0];
+    unsigned height = numbers[1];
+    unsigned format = numbers[2];
+    unsigned stereo = numbers[3];
+    unsigned usage = numbers[6];
+    unsigned buffer_count = numbers[7];
+    unsigned scaling = numbers[8];
+    unsigned effect = numbers[9];
+    unsigned alpha = numbers[10];
+    if (stereo != 0 || usage != 0x20) {
+        fprintf(stderr, "mock_dxgi: the swap chain is stereo %u usage %#x, expected 0 and 0x20\n",
+                stereo, usage);
+        return E_INVALIDARG_;
+    }
+    if (format != 28) {   // DXGI_FORMAT_R8G8B8A8_UNORM
+        fprintf(stderr, "mock_dxgi: the swap chain is format %u, expected 28 (R8G8B8A8_UNORM)\n",
+                format);
+        return E_INVALIDARG_;
+    }
+    if (buffer_count != 2) {
+        fprintf(stderr, "mock_dxgi: the swap chain has %u buffers, expected 2\n", buffer_count);
+        return E_INVALIDARG_;
+    }
+    if (effect != 4) {   // DXGI_SWAP_EFFECT_FLIP_DISCARD
+        fprintf(stderr, "mock_dxgi: the swap chain effect is %u, expected 4 (FLIP_DISCARD)\n",
+                effect);
+        return E_INVALIDARG_;
+    }
+    if (scaling != 0 || alpha != 3) {
+        fprintf(stderr, "mock_dxgi: unexpected scaling %u alpha %u\n", scaling, alpha);
+        return E_INVALIDARG_;
+    }
+    MockSwapChain *chain = (MockSwapChain *)calloc(1, sizeof(MockSwapChain));
+    if (!chain) {
+        return -1;
+    }
+    chain->vtbl = swap_chain_vtbl;
+    chain->width = width;
+    chain->height = height;
+    fprintf(stderr, "mock_dxgi: swap chain %ux%u, %u buffers, flip discard\n",
+            width, height, buffer_count);
+    fflush(stderr);
+    for (unsigned i = 0; i < 2; i++) {
+        chain->buffers[i] = swap_buffer_new(width, height);
+    }
+    *chain_out = chain;
+    return 0;
+}
+
+static long factory_query(void *self, const Guid *iid, void **out) {
+    if (!out) {
+        return E_INVALIDARG_;
+    }
+    if (iid && memcmp(iid, &IID_IDXGIFactory2_, sizeof(Guid)) == 0) {
+        const char *refuse = getenv("TERN_DXGI_NO_FACTORY2");
+        if (refuse && refuse[0] && strcmp(refuse, "0") != 0) {
+            mock_factory2_refused = 1;
+            *out = NULL;
+            return E_NOINTERFACE_;
+        }
+        *out = &mock_factory2;
+        return 0;
+    }
+    if (iid && memcmp(iid, &IID_IDXGIFactory1_, sizeof(Guid)) == 0) {
+        *out = self;
+        return 0;
+    }
+    return mock_query(self, iid, out);
+}
 
 // The exported entry points.
 
@@ -1192,6 +1453,19 @@ long D3D12CreateDevice(void *adapter, int feature_level, const Guid *iid, void *
 
 long CreateDXGIFactory1(const Guid *iid, void **factory) {
     CHECK_IID("CreateDXGIFactory1", IID_IDXGIFactory1_);
+    // Written on every call rather than in a constructor: the mock is a shared
+    // library, and this keeps the tables' contents next to the functions they
+    // name.
+    swap_chain_vtbl[0] = (void *)swap_query;
+    swap_chain_vtbl[1] = (void *)mock_addref;
+    swap_chain_vtbl[2] = (void *)mock_release;
+    swap_chain_vtbl[8] = (void *)swap_present;
+    swap_chain_vtbl[9] = (void *)swap_get_buffer;
+    factory2_vtbl[0] = (void *)mock_query;
+    factory2_vtbl[1] = (void *)mock_addref;
+    factory2_vtbl[2] = (void *)mock_release;
+    factory2_vtbl[15] = (void *)factory2_create_swap_chain;
+    mock_factory2.vtbl = factory2_vtbl;
     *factory = mock_new(factory_vtbl);
     return 0;
 }

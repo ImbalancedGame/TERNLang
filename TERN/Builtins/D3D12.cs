@@ -63,6 +63,16 @@ namespace TERN.Builtins
         private const int LogicOpNoop = 4;
         private const int VertexFloats = 7;
 
+        // The swap chain. A back buffer is created in PRESENT, must be moved to
+        // COPY_DEST to receive the frame, and must be back in PRESENT before it
+        // is shown - Present fails otherwise.
+        private const int StatePresent = 0;
+        private const int SwapChainBuffers = 2;
+        private const uint UsageRenderTargetOutput = 0x20;
+        private const int ScalingStretch = 0;
+        private const int SwapEffectFlipDiscard = 4;
+        private const int AlphaModeIgnore = 3;
+
         public static void Install(TernEngine engine)
         {
             var map = new TernMap();
@@ -207,6 +217,22 @@ namespace TERN.Builtins
             {
                 var window = windows.Get(vm, a[0]);
                 var target = targets.Get(vm, a[1]);
+
+                // A closed window takes no more frames: the blit path always
+                // said so, and the swap chain path has to agree with it.
+                if (window.Closed)
+                {
+                    return Value.Bool(false);
+                }
+
+                // The swap chain first: it hands the frame to the compositor
+                // without a trip through system memory or a channel swap. The
+                // blit below is what a machine without IDXGIFactory2 gets.
+                if (target.TryPresent(vm, window.Handle))
+                {
+                    return Value.Bool(window.PumpMessages());
+                }
+
                 var pixels = target.ReadPixels(vm, "d3d12.present");
                 return Value.Bool(window.Present(pixels, target.Width, target.Height));
             }, "Shows the target in the window: d3d12.present(window, device); false once it is closed.");
@@ -440,6 +466,27 @@ namespace TERN.Builtins
         {
             public ulong Offset;
             public SubresourceFootprint Footprint;
+        }
+
+        /// <summary>
+        /// DXGI_SWAP_CHAIN_DESC1: 48 bytes, in the order dxgi1_2.h lays it out.
+        /// The native runtime asserts the same offsets, and
+        /// tools/d3d12/gen_layout_check.py checks them against the SDK.
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SwapChainDesc1
+        {
+            public uint Width;
+            public uint Height;
+            public int Format;
+            public int Stereo;
+            public SampleDesc Sample;
+            public uint BufferUsage;
+            public uint BufferCount;
+            public int Scaling;
+            public int SwapEffect;
+            public int AlphaMode;
+            public uint Flags;
         }
 
         [StructLayout(LayoutKind.Explicit)]
@@ -686,7 +733,7 @@ namespace TERN.Builtins
         /// stamp the two look identical, and a fix that worked looks like one
         /// that did not. Keep it equal to <c>TERN_D3D12_BUILD</c>.
         /// </summary>
-        private const string Build = "2026-10-31.8";
+        private const string Build = "2026-10-31.9";
 
         /// <summary>
         /// Why the driver removed the device, in the words the native backend
@@ -941,6 +988,11 @@ namespace TERN.Builtins
         private static readonly Guid IidFactory1 =
             Guid.Of(0x770aae78, 0xf26f, 0x4dba, 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87);
 
+        // IDXGIFactory2 is where CreateSwapChainForHwnd lives; it arrived with
+        // Windows 8, which is why a machine without it falls back to a blit.
+        private static readonly Guid IidFactory2 =
+            Guid.Of(0x50c83a1c, 0xe072, 0x4c48, 0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0);
+
         // ---------------------------------------------------------------------- vtables
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long CreateCommandQueueFn(IntPtr self, IntPtr desc, IntPtr iid, out IntPtr queue);
@@ -965,6 +1017,13 @@ namespace TERN.Builtins
         // read the source location as a Z coordinate and the next slot as the
         // source. The native runtime had the same omission in its own typedef.
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void CopyTextureRegionFn(IntPtr self, ref TextureCopyLocation destination, uint x, uint y, uint z, ref TextureCopyLocation source, IntPtr box);
+
+        // DXGI. QueryInterface (declared with the debug layer's below) is slot 0
+        // of every COM interface, and it is how IDXGIFactory1 becomes the
+        // IDXGIFactory2 that can make a swap chain.
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long CreateSwapChainForHwndFn(IntPtr self, IntPtr device, IntPtr window, ref SwapChainDesc1 desc, IntPtr fullscreen, IntPtr restrict, out IntPtr chain);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long GetBufferFn(IntPtr self, uint index, IntPtr iid, out IntPtr surface);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long PresentFn(IntPtr self, uint syncInterval, uint flags);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void ExecuteCommandListsFn(IntPtr self, uint count, IntPtr lists);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long FenceSignalFn(IntPtr self, IntPtr fence, ulong value);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long MapFn(IntPtr self, uint subresource, ref Range range, out IntPtr data);
@@ -1260,6 +1319,28 @@ namespace TERN.Builtins
                 }
             }
 
+            /// <summary>
+            /// An IDXGIFactory1, or <see cref="IntPtr.Zero"/> when this machine
+            /// has no DXGI. The caller releases it.
+            /// </summary>
+            public IntPtr CreateFactory()
+            {
+                if (_createFactory is null)
+                {
+                    return IntPtr.Zero;
+                }
+
+                var iid = IidFactory1.Allocate();
+                try
+                {
+                    return _createFactory(iid, out var factory) < 0 ? IntPtr.Zero : factory;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(iid);
+                }
+            }
+
             public int Pid => 0;
         }
 
@@ -1284,6 +1365,15 @@ namespace TERN.Builtins
             private readonly List<IntPtr> _pipelines = new();
             private readonly List<IntPtr> _signatures = new();
             private IntPtr _vertexBuffer;
+
+            // The swap chain, if this target has been shown in a window. It is
+            // created once and kept until the target or the window goes away.
+            private IntPtr _swap;
+            private readonly IntPtr[] _swapBuffers = new IntPtr[SwapChainBuffers];
+            private readonly uint[] _swapStates = new uint[SwapChainBuffers];
+            private IntPtr _swapWindow;
+            private int _swapFrame;
+            private bool _swapFailed;
 
             public int ProgramCount => _pipelines.Count;
 
@@ -1770,6 +1860,203 @@ namespace TERN.Builtins
                 Slot<ResourceBarrierFn>(_list, 26)(_list, 1, ref barrier);
             }
 
+            // ----------------------------------------------------------------- the swap chain
+
+            /// <summary>
+            /// Copies the frame into the swap chain's next back buffer and
+            /// presents it. Answers false when this machine cannot present that
+            /// way, so the caller can fall back to the blit - which is slower,
+            /// but is what a machine without IDXGIFactory2 has.
+            /// </summary>
+            public bool TryPresent(VM vm, IntPtr window)
+            {
+                if (_swapFailed)
+                {
+                    return false;
+                }
+
+                if (_swap != IntPtr.Zero && _swapWindow != window)
+                {
+                    DisposeSwap();
+                }
+
+                if (_swap == IntPtr.Zero && !OpenSwapChain(window))
+                {
+                    _swapFailed = true;
+                    return false;
+                }
+
+                if (!ShowSwapChain(vm))
+                {
+                    DisposeSwap();
+                    _swapFailed = true;
+                    return false;
+                }
+
+                return true;
+            }
+
+            private bool OpenSwapChain(IntPtr window)
+            {
+                var driver = Driver.Load();
+                if (driver is null)
+                {
+                    return false;
+                }
+
+                var factory = driver.CreateFactory();
+                if (factory == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                var factory2 = IntPtr.Zero;
+                var iid = IidFactory2.Allocate();
+                try
+                {
+                    if (Slot<QueryInterfaceFn>(factory, 0)(factory, iid, out factory2) < 0)
+                    {
+                        factory2 = IntPtr.Zero;
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(iid);
+                    Release(factory);
+                }
+
+                if (factory2 == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                var desc = new SwapChainDesc1
+                {
+                    Width = (uint)Width,
+                    Height = (uint)Height,
+                    Format = FormatRgba8,
+                    Stereo = 0,
+                    Sample = new SampleDesc { Count = 1, Quality = 0 },
+                    BufferUsage = UsageRenderTargetOutput,
+                    BufferCount = SwapChainBuffers,
+                    Scaling = ScalingStretch,
+                    SwapEffect = SwapEffectFlipDiscard,
+                    AlphaMode = AlphaModeIgnore,
+                    Flags = 0,
+                };
+
+                var chain = IntPtr.Zero;
+                long hr;
+                try
+                {
+                    hr = Slot<CreateSwapChainForHwndFn>(factory2, 15)(
+                        factory2, _queue, window, ref desc, IntPtr.Zero, IntPtr.Zero, out chain);
+                }
+                finally
+                {
+                    Release(factory2);
+                }
+
+                if (hr < 0 || chain == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                // The back buffers are taken before the chain is adopted, so a
+                // failure here leaves nothing half-open for the next frame.
+                var buffers = new IntPtr[SwapChainBuffers];
+                var resourceIid = IidResource.Allocate();
+                try
+                {
+                    for (var i = 0; i < SwapChainBuffers; i++)
+                    {
+                        if (Slot<GetBufferFn>(chain, 9)(chain, (uint)i, resourceIid, out buffers[i]) < 0 ||
+                            buffers[i] == IntPtr.Zero)
+                        {
+                            foreach (var taken in buffers)
+                            {
+                                Release(taken);
+                            }
+
+                            Release(chain);
+                            return false;
+                        }
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(resourceIid);
+                }
+
+                for (var i = 0; i < SwapChainBuffers; i++)
+                {
+                    _swapBuffers[i] = buffers[i];
+                    // A back buffer is created in the present state and must go
+                    // back to it before Present. Tracking it here is what stops
+                    // a barrier naming a state the buffer is not in.
+                    _swapStates[i] = StatePresent;
+                }
+
+                _swap = chain;
+                _swapWindow = window;
+                _swapFrame = 0;
+                return true;
+            }
+
+            private bool ShowSwapChain(VM vm)
+            {
+                var frame = _swapFrame;
+                var buffer = _swapBuffers[frame];
+
+                Reset();
+                Transition(StateCopySource);
+                Barrier(buffer, _swapStates[frame], StateCopyDest);
+                _swapStates[frame] = StateCopyDest;
+
+                var destination = new TextureCopyLocation
+                {
+                    Resource = buffer,
+                    Type = CopyTypeSubresource,
+                    SubresourceIndex = 0,
+                };
+                var source = new TextureCopyLocation
+                {
+                    Resource = _texture,
+                    Type = CopyTypeSubresource,
+                    SubresourceIndex = 0,
+                };
+
+                Slot<CopyTextureRegionFn>(_list, 16)(
+                    _list, ref destination, 0, 0, 0, ref source, IntPtr.Zero);
+
+                Barrier(buffer, StateCopyDest, StatePresent);
+                _swapStates[frame] = StatePresent;
+                Submit(vm, "d3d12.present");
+
+                if (Slot<PresentFn>(_swap, 8)(_swap, 1, 0) < 0)
+                {
+                    return false;
+                }
+
+                _swapFrame = (frame + 1) % SwapChainBuffers;
+                return true;
+            }
+
+            private void DisposeSwap()
+            {
+                for (var i = 0; i < SwapChainBuffers; i++)
+                {
+                    Release(_swapBuffers[i]);
+                    _swapBuffers[i] = IntPtr.Zero;
+                    _swapStates[i] = StatePresent;
+                }
+
+                Release(_swap);
+                _swap = IntPtr.Zero;
+                _swapWindow = IntPtr.Zero;
+                _swapFrame = 0;
+            }
+
             private void Submit(VM vm, string what)
             {
                 Slot<CloseListFn>(_list, 9)(_list);
@@ -1920,6 +2207,10 @@ namespace TERN.Builtins
 
             public void Dispose()
             {
+                // The swap chain holds back buffers, so it goes before the
+                // device it was made on.
+                DisposeSwap();
+
                 foreach (var pipeline in _pipelines)
                 {
                     Release(pipeline);
