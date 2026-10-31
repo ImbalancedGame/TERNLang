@@ -503,6 +503,43 @@ static void list_draw_instanced(void *self, unsigned vertices, unsigned instance
                 "bound for slot 0\n");
         return;
     }
+    // Optional: everything the examples draw is a solid, wound anticlockwise as
+    // seen from outside, so a triangle whose projected winding is the other way
+    // is a face pointing away from the camera. Without a depth buffer such a
+    // face can paint over a front one, and a cube looks broken for part of the
+    // turn. Opt-in, because the API itself allows two-sided geometry.
+    const char *check = getenv("TERN_D3D12_CHECK_WINDING");
+    if (check && check[0] && check[0] != '0') {
+        MockResource *buffer = resource_from_address(list->vertex_address);
+        if (buffer && buffer->memory && list->stride >= 12) {
+            unsigned floats = list->stride / 4;
+            const float *data = (const float *)buffer->memory;
+            unsigned back = 0;
+            unsigned seen = 0;
+            for (unsigned base = 0; base + 3 <= vertices; base += 3) {
+                const float *a = data + (size_t)(base + 0) * floats;
+                const float *b = data + (size_t)(base + 1) * floats;
+                const float *c = data + (size_t)(base + 2) * floats;
+                double area = ((double)b[0] - a[0]) * ((double)c[1] - a[1]) -
+                              ((double)b[1] - a[1]) * ((double)c[0] - a[0]);
+                if (area > -1e-9 && area < 1e-9) {
+                    continue;
+                }
+                seen++;
+                if (area < 0.0) {
+                    back++;
+                }
+            }
+            if (back) {
+                mock_state_mismatches++;
+                fprintf(stderr,
+                        "mock_d3d12: BACK-FACING TRIANGLE: %u of %u triangles face away from the "
+                        "camera; with no depth buffer a back face paints over a front one\n",
+                        back, seen);
+            }
+        }
+    }
+
     list->drew = 1;
 }
 

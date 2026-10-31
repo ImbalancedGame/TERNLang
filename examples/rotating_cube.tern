@@ -118,6 +118,7 @@ fn project(v, camera, focal) {
 /// needed - sorted far to near, which is what a painter needs.
 fn triangles(yaw, pitch, camera, focal) {
     let out = [];
+    let eye = V3(0.0, 0.0, camera);
 
     for face in cube() {
         let a = turn(face.corners[0], yaw, pitch);
@@ -128,6 +129,19 @@ fn triangles(yaw, pitch, camera, focal) {
         // One normal for the whole face: the faces are flat, so every pixel of
         // one gets the same light and the same colour.
         let normal = vunit(vcross(vsub(b, a), vsub(d, a)));
+
+        // Back-face culling, and not as an optimisation. The solid is convex and
+        // opaque, so a face whose normal points away from the camera is hidden
+        // completely by the faces in front of it - but only if it is drawn
+        // first. Neither renderer here has a depth buffer (the vertex format is
+        // position and colour, no depth), so the order the triangles arrive in
+        // *is* the order they paint, and sorting a cube by average depth is not
+        // a valid painter's order: at some angles a back face's average lands
+        // nearer than a front face's, it paints over it, and the cube looks
+        // broken for a few frames of the turn. Dropping the back faces makes the
+        // order irrelevant, which is the only way to be sure of it.
+        if (vdot(normal, vsub(eye, a)) <= 0.0) { continue; }
+
         let lit = math.max(0, vdot(normal, LIGHT));
         let colour = vscale(face.colour, 0.22 + 0.78 * lit);
 
@@ -140,9 +154,10 @@ fn triangles(yaw, pitch, camera, focal) {
         out.push(Tri(pa, pc, pd, colour, lit));
     }
 
-    // Neither renderer has a depth buffer, so the far triangles have to go in
-    // first and the near ones over them. Average depth is enough for a convex
-    // solid; anything more complicated would want a real z-buffer.
+    // The culling above leaves nothing that can hide anything else on a convex
+    // solid. The sort stays for a scene that is not convex, where two visible
+    // triangles can still overlap: far first, near over them, by average depth.
+    // A real z-buffer is the general answer and is not there yet.
     return out.sort(fn(left, right) =>
         (right.a.depth + right.b.depth + right.c.depth) -
         (left.a.depth + left.b.depth + left.c.depth));
