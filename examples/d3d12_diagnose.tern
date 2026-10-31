@@ -1,0 +1,148 @@
+// Exercises the Direct3D 12 path one call at a time and prints what each call
+// did, so a failure names the call that caused it instead of the call after it.
+//
+// This exists because of a real report: `the readback buffer could not be
+// mapped (0x887A0005)` in `save_frame`, which is three calls after the barrier
+// that removed the device and two seconds after the frame that lied. The stack
+// trace cannot tell you which call broke the GPU; this can.
+//
+//   tern run examples/d3d12_diagnose.tern
+//   python native\ternc.py examples\d3d12_diagnose.tern -o build\d3d12_diagnose.exe
+//
+// Every line is either a value or the error the call raised. The first error is
+// the one to read: everything after it is usually a consequence.
+//
+// It is also the quickest answer to "am I running the build I think I am": the
+// `binding` line is the revision of the Direct3D 12 binding, and a binary built
+// before a fix reports the revision it was built with.
+
+import "std:d3d12";
+import "std:fs";
+import "std:os";
+
+fn vertex_shader() {
+    return [
+        "struct Vertex {",
+        "    float3 position : POSITION;",
+        "    float4 colour : COLOR;",
+        "};",
+        "struct Pixel {",
+        "    float4 position : SV_Position;",
+        "    float4 colour : COLOR;",
+        "};",
+        "Pixel main(Vertex input) {",
+        "    Pixel output;",
+        "    output.position = float4(input.position, 1.0);",
+        "    output.colour = input.colour;",
+        "    return output;",
+        "}",
+    ].join("\n");
+}
+
+fn pixel_shader() {
+    return [
+        "struct Pixel {",
+        "    float4 position : SV_Position;",
+        "    float4 colour : COLOR;",
+        "};",
+        "float4 main(Pixel input) : SV_Target {",
+        "    return input.colour;",
+        "}",
+    ].join("\n");
+}
+
+/// One triangle, six floats per vertex: x, y, r, g, b, a.
+fn triangle() {
+    return [
+        -0.5, -0.5, 1, 0, 0, 1,
+         0.5, -0.5, 0, 1, 0, 1,
+         0.0,  0.5, 0, 0, 1, 1,
+    ];
+}
+
+/// Runs one call, prints either its result or its error, and says whether it
+/// worked. Bodies return something printable, so `ok` is spelled out rather
+/// than inferred from nil.
+fn step(name, body) {
+    try {
+        println(name + ": " + str(body()));
+        return true;
+    } catch (error) {
+        println(name + ": " + str(error));
+        return false;
+    }
+}
+
+fn main() {
+    println("d3d12 diagnose");
+
+    let info = nil;
+    if (!step("info", fn() { return d3d12.info(); })) {
+        println("the library will not load; nothing else can run.");
+        return;
+    }
+
+    // The map is printed above; this is the same data, one fact per line.
+    try {
+        info = d3d12.info();
+        println("binding: " + info["build"]);
+        println("adapter: " + info["name"]);
+    } catch (error) {
+        println("binding: " + str(error));
+    }
+
+    let target = nil;
+    if (!step("create 640x480", fn() {
+        target = d3d12.create(640, 480);
+        return "handle " + str(target);
+    })) {
+        println("no render target, so the rest of the checks have nothing to draw into.");
+        return;
+    }
+
+    if (!step("clear", fn() {
+        d3d12.clear(target, 0.1, 0.2, 0.3, 1);
+        return "ok";
+    })) {
+        println("the device is gone after a clear; the rest would only repeat that.");
+        return;
+    }
+
+    step("pixels", fn() { return str(len(d3d12.pixels(target))) + " bytes"; });
+
+    let program = nil;
+    step("pipeline", fn() {
+        program = d3d12.pipeline(target, vertex_shader(), pixel_shader());
+        return "handle " + str(program);
+    });
+
+    if (program != nil) {
+        step("draw", fn() {
+            d3d12.draw(target, program, triangle());
+            return "ok";
+        });
+        step("pixels after draw", fn() {
+            return str(len(d3d12.pixels(target))) + " bytes";
+        });
+    }
+
+    // The step the original report failed in. A PNG here proves the whole path:
+    // draw, copy to the readback buffer, map, and the file writer.
+    let path = os.env("TERN_D3D12_PNG", "d3d12_diagnose.png");
+    step("save", fn() {
+        d3d12.save(target, path);
+        if (!fs.exists(path)) {
+            return "ok, but " + path + " is not there";
+        }
+        return "ok, " + str(fs.size(path)) + " bytes in " + path;
+    });
+
+    step("close", fn() {
+        d3d12.close(target);
+        return "ok";
+    });
+
+    println("done");
+}
+
+main();

@@ -46,7 +46,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `closeWindow` | `closeWindow(arg)` | Closes a window and forgets its handle. |
 | `create` | `create(arg, arg)` | Creates an offscreen device and render target, returning a handle. |
 | `draw` | `draw(arg, arg, arg)` | Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. |
-| `info` | `info()` | Describes the adapter: {name, nodes}. |
+| `info` | `info()` | Describes the adapter: {name, nodes, build}. |
 | `pipeline` | `pipeline(arg, arg, arg)` | Compiles HLSL and builds a pipeline: d3d12.pipeline(handle, vertex, pixel). |
 | `pixels` | `pixels(arg)` | Reads the target back as RGBA bytes, bottom row first, like gl.pixels. |
 | `present` | `present(arg, arg)` | Shows the target in the window: d3d12.present(window, device); false once it is closed. |

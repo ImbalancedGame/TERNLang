@@ -821,8 +821,9 @@ FUNCTIONS = {
         "see": ["d3d12.info"],
     },
     "d3d12.info": {
-        "summary": "Describes the adapter.",
-        "returns": ("map", "`name` and `nodes`."),
+        "summary": "Describes the adapter and the binding.",
+        "returns": ("map", "`name`, `nodes` and `build`; `build` is the revision of the "
+                          "Direct3D 12 binding, which a failure report should quote."),
         "errors": [("D3D12Error", "The library is not available.")],
         "example": ['println(d3d12.info()["name"]);'],
         "see": ["d3d12.available"],
