@@ -531,6 +531,13 @@ fn main() {
             println("the window could not be opened: " + str(error));
         }
         window_refused = window_only;
+        // Nothing else says why the text below appeared. On a machine with
+        // Direct3D 12 but no window the program looks like it is only an ASCII
+        // renderer, which is exactly what a person reading the output reported.
+        if (d3d12.available() && !frames_given) {
+            println("the window did not open: Direct3D 12 is here but the window layer is not.");
+            println("the cube below is drawn as text, and the frames are written as PNGs.");
+        }
         if (window_refused) {
             println("no window on this machine; the frames below are the same cube.");
         }
