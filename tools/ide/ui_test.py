@@ -68,7 +68,7 @@ def main():
     verbose = "-v" in sys.argv or "--verbose" in sys.argv
     shots = "--shots" in sys.argv
 
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QProcess, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QTextCursor
@@ -256,6 +256,44 @@ def main():
     checks.check("the program's own output appears", len(output.strip()) > 0, output[:200])
     if shots:
         window.grab().save(os.path.join(ROOT, "build", "ide", "run.png"))
+
+    # Ctrl+C in the Run window has to stop the program. It used to do nothing:
+    # the output is a read-only text view, which swallows it. Driven through a
+    # real key event on the widget, because calling stop_run() directly would
+    # test the thing that already worked.
+    spin = os.path.join(tempfile.mkdtemp(prefix="tern-spin-"), "spin.tern")
+    with open(spin, "w", encoding="utf-8") as handle:
+        handle.write("let total = 0\nfor n in 1..1000000000 {\n    total = total + n\n}\nprintln(total)\n")
+    window.open_file(spin)
+    pump(app, 600)
+    window.run_current()
+    pump(app, 1500)
+    checks.check("a long program is still running",
+                 window.run_process is not None and
+                 window.run_process.state() != QProcess.NotRunning,
+                 str(window.run_process.state() if window.run_process else None))
+    checks.check("the Stop button is available while it runs",
+                 window.console.stop_button.isEnabled(),
+                 str(window.console.stop_button.isEnabled()))
+    QTest.keyClick(window.console.output, Qt.Key_C, Qt.ControlModifier)
+    pump(app, 1200)
+    checks.check("Ctrl+C in the Run window stops it", window.run_process is None,
+                 str(window.run_process))
+    checks.check("and the window says it stopped", "stopped" in window.console.status.text(),
+                 window.console.status.text())
+    checks.check("the Stop button goes back to disabled",
+                 not window.console.stop_button.isEnabled())
+
+    # Copy still wins when there is a selection: that is the other Ctrl+C.
+    window.console.output.setPlainText("some output to copy")
+    cursor = window.console.output.textCursor()
+    cursor.select(cursor.SelectionType.Document)
+    window.console.output.setTextCursor(cursor)
+    checks.check("a selection is left for Ctrl+C to copy",
+                 window.console.output.textCursor().hasSelection())
+    window.console.output.moveCursor(cursor.MoveOperation.End)
+    window.tabs_widget.setCurrentWidget(window.tabs[editor.path])
+    pump(app, 150)
 
     # ------------------------------------------------------------ theme
     window.set_theme("light")
@@ -520,6 +558,29 @@ def main():
     checks.check("Up again walks further back", terminal.input.text() == "echo first-one",
                  terminal.input.text())
     terminal.input.clear()
+
+    # Ctrl+C from the output, not the prompt box. Clicking into the scrollback
+    # to read a command is normal, and the keyboard follows the click; the
+    # filter used to be installed on the prompt only, so from there Ctrl+C did
+    # nothing at all.
+    terminal.clear()
+    terminal.input.setText("sleep 30")
+    terminal.submit()
+    pump(app, 700)
+    running_before = terminal.process.state() != QProcess.NotRunning
+    checks.check("a long terminal command is running", running_before,
+                 str(terminal.process.state()))
+    terminal.output.setFocus()
+    QTest.keyClick(terminal.output, Qt.Key_C, Qt.ControlModifier)
+    pump(app, 1500)
+    checks.check("Ctrl+C in the terminal output interrupts the command",
+                 "^C" in terminal.output.toPlainText(), repr(terminal.output.toPlainText()[-120:]))
+    terminal.input.setText("echo after-ctrl-c")
+    terminal.submit()
+    pump(app, 1200)
+    checks.check("the shell still works after Ctrl+C",
+                 "after-ctrl-c" in terminal.output.toPlainText(),
+                 terminal.output.toPlainText()[-120:])
 
     # Ctrl+L clears the view, as in a shell.
     QTest.keyClick(terminal.input, Qt.Key_L, Qt.ControlModifier)

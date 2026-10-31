@@ -199,7 +199,16 @@ E:\Repo\TERNLang> wordcount.exe notes.txt
 ```
 
 The compiler is discovered, not assumed: `--cc` first, then `TERN_CC`, then
-`cc`/`gcc`/`clang` on the PATH, then `zig cc`. The runtime is GCC C —
+`cc`/`gcc`/`clang` on the PATH, then the usual places a compiler is installed
+without being on the PATH, then `zig cc`.
+
+That third step exists because of MSYS2. `pacman -S mingw-w64-ucrt-x86_64-gcc`
+installs the compiler to `C:\msys64\ucrt64\bin` and adds **nothing** to your
+PATH — only the MSYS shell gets that. ternc looks in `ucrt64`, `clang64`,
+`mingw64` and `mingw32` under `C:\msys64`, `D:\msys64`, `%ProgramFiles%\msys64`
+and `%MSYS2_ROOT%`, plus the usual MinGW, Scoop and Chocolatey directories, and
+puts the compiler's own directory on PATH when it builds so the DLLs beside it
+resolve. If it still finds nothing it prints the list of places it looked. The runtime is GCC C —
 `__builtin_add_overflow`, `__builtin_unwind_init`, `__attribute__` throughout
 `tern_rt.c` — so **MSVC cannot compile it**, and `cl` is rejected with that
 explanation rather than four hundred syntax errors. On Windows the zero-friction

@@ -163,11 +163,12 @@ nothing the code imports is on the exclusion list.
 | Go to Symbol in File | Ctrl+F12 | filter the open file's declarations and jump |
 | Default keymap | Help menu | every shortcut in effect, in one list |
 | Run | F5 | runs the current file on the interpreter and streams output to the Run window |
+| Stop | Ctrl+C, Ctrl+F2 | ends the running program (or a compile) and takes the whole process tree with it |
 | Compile | Ctrl+F5 | builds and runs it through the native backend |
 | Reformat | Ctrl+Alt+L | the server's formatter, 4-space indent |
 | Themes | View → Theme | Darcula, IntelliJ Light, Eclipse, Visual Studio Dark and Carbon — applied to the editor *and* every tool window, because they all read one palette |
 | Tool windows | View | Project, Structure, Run, Problems, Terminal, Debug, Commit, Find |
-| Terminal | Alt+F12 | a real shell (`bash`) in a dock, with colours, history, Ctrl+C and Ctrl+L |
+| Terminal | Alt+F12 | a real shell in a dock — `bash`, or `cmd.exe` on Windows — with colours, history, Ctrl+C and Ctrl+L |
 | Debugging | Debug window, gutter | breakpoints (with conditions), watches, stepping, call stack, locals, evaluate |
 | Version control | Commit window | git status, stage, commit and a coloured diff view |
 | Remembers state | settings | last project, theme, size, open files |
@@ -197,6 +198,25 @@ means crisp at any scaling factor, and nothing binary is committed.
 Everything else is derived: hover and pressed colours are computed from the
 palette by `theme.blend()`, so a theme is a table of about twenty colours and no
 per-widget hand-tuning.
+
+### Stopping things
+
+Ctrl+C ends whatever is running, from wherever the cursor is: the Run window's
+output, the terminal's scrollback, the terminal's prompt, or the Stop button
+beside them. The terminal sends SIGINT to the shell's process group on Unix and
+`taskkill /T` on Windows; the Run window kills the process tree the same way,
+and a compile in progress counts as a run.
+
+Getting there needed two fixes worth naming, because neither was visible from a
+test that called the handler directly:
+
+* the console and terminal filters were installed on the *prompt box* only, so
+  Ctrl+C did nothing once you clicked into the output — which is exactly where
+  you click to read what a stuck program printed;
+* `Ctrl+C` was also a window-level shortcut for **Copy**, and a window shortcut
+  is delivered before the focused widget ever sees the key. The clipboard
+  actions have no shortcut now; the widgets handle their own keys, and the menu
+  items act on whatever has focus.
 
 ### The terminal
 
@@ -396,7 +416,7 @@ Both halves are covered, and both are part of `tools/test.sh`:
 ```bash
 bash tools/test-ide.sh                                   # 39 assertions, protocol only
 python3 tools/debug_test.py                              # 41 checks, debugger only
-LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 119 checks, real window
+LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 128 checks, real window
 .venv/bin/python tools/test_package.py                   # 12 checks, packaging
 ```
 

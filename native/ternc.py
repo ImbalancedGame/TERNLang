@@ -967,6 +967,70 @@ GCC_COMPATIBLE = ("cc", "gcc", "clang")
 MSVC_NAMES = {"cl", "cl.exe"}
 
 
+def msys2_roots():
+    r"""Where MSYS2 might be installed, in the order worth trying.
+
+    `pacman -S mingw-w64-ucrt-x86_64-gcc` puts the compiler in
+    `C:\msys64\ucrt64\bin` and does not add it to PATH — the MSYS2 installer
+    only does that for the MSYS shell. Running a compiler by absolute path is
+    fine; requiring the user to edit their PATH first is not.
+    """
+    roots = []
+    for variable in ("MSYS2_ROOT", "MSYS2_PATH", "MSYS2_HOME"):
+        value = os.environ.get(variable)
+        if value:
+            roots.append(value)
+    for drive in ("C:", "D:", "E:"):
+        for folder in ("msys64", "msys2", "tools\\msys64"):
+            roots.append(os.path.join(drive + os.sep, folder))
+    program_files = os.environ.get("ProgramFiles", "")
+    if program_files:
+        roots.append(os.path.join(program_files, "msys64"))
+    return [root for root in roots if root and os.path.isdir(root)]
+
+
+def search_directories():
+    r"""Directories to look in for a compiler when `PATH` has none.
+
+    The order is deliberate: an MSYS2 environment directory first, because the
+    compiler there needs the DLLs beside it and that only works when Windows
+    resolves them from the executable's own directory — which it does for both
+    an absolute path and a PATH entry.
+    """
+    directories = []
+    for root in msys2_roots():
+        for environment in ("ucrt64", "clang64", "mingw64", "clangarm64", "mingw32"):
+            directories.append(os.path.join(root, environment, "bin"))
+        directories.append(os.path.join(root, "bin"))
+
+    if os.name == "nt":
+        home = os.environ.get("USERPROFILE", "")
+        local = os.environ.get("LOCALAPPDATA", "")
+        program_files = os.environ.get("ProgramFiles", "")
+        for folder in (
+            os.path.join(home, "scoop", "apps", "gcc", "current", "bin") if home else "",
+            os.path.join(local, "Microsoft", "WinGet", "Links") if local else "",
+            r"C:\mingw64\bin", r"C:\mingw32\bin", r"C:\TDM-GCC-64\bin",
+            os.path.join(program_files, "mingw-w64", "bin") if program_files else "",
+            r"C:\ProgramData\chocolatey\bin",
+        ):
+            if folder:
+                directories.append(folder)
+    return [directory for directory in directories if os.path.isdir(directory)]
+
+
+def _compiler_in(directory):
+    """`gcc.exe` or `clang.exe` in `directory`, or None."""
+    if not os.path.isdir(directory):
+        return None
+    for name in ("gcc", "clang", "cc"):
+        for suffix in (".exe", "") if os.name == "nt" else ("",):
+            candidate = os.path.join(directory, name + suffix)
+            if os.path.exists(candidate):
+                return candidate
+    return None
+
+
 def find_cc(requested):
     """The C compiler to build with, as an argv prefix, or None.
 
@@ -983,10 +1047,59 @@ def find_cc(requested):
         found = shutil.which(name)
         if found:
             return [found]
+    # Not on PATH. MSYS2 in particular installs without touching it.
+    for directory in search_directories():
+        found = _compiler_in(directory)
+        if found:
+            return [found]
     zig = find_zig()
     if zig:
         return [zig, "cc"]
     return None
+
+
+def compiler_environment(compiler):
+    """The environment a compiler needs: its own directory first on PATH.
+
+    An MSYS2 compiler loads `libwinpthread-1.dll` and friends from beside
+    itself, which Windows will not find from an absolute path alone once gcc
+    re-executes its own `cc1`. Putting the directory on PATH makes that work
+    without the user having to export anything.
+    """
+    environment_variables = os.environ.copy()
+    if not compiler:
+        return environment_variables
+    program = compiler[0]
+    if not os.path.sep in program:
+        return environment_variables
+    directory = os.path.dirname(program)
+    if not directory:
+        return environment_variables
+    existing = environment_variables.get("PATH", "")
+    if directory.lower() not in existing.lower():
+        environment_variables["PATH"] = directory + os.pathsep + existing
+    return environment_variables
+
+
+def searched_places():
+    """A list of what `find_cc` looked at, for when it found nothing.
+
+    "No C compiler found" after somebody has just installed one is the least
+    helpful sentence in the world. This says which directories were checked, so
+    the answer is either "it is in one of these and the name is different" or
+    "MSYS2 is somewhere else".
+    """
+    lines = ["\n  Looked for cc, gcc and clang on PATH, and in:\n"]
+    directories = search_directories()
+    if directories:
+        for directory in directories[:12]:
+            lines.append(f"    {directory}\n")
+    else:
+        lines.append("    (no MSYS2 installation found at C:\\msys64, D:\\msys64 "
+                     "or %ProgramFiles%\\msys64)\n")
+    if find_zig():
+        lines.append(f"    and found Zig at {find_zig()}, but it did not answer\n")
+    return "".join(lines)
 
 
 def compiler_hint():
@@ -1067,11 +1180,12 @@ def main(argv):
                 return 1
             command = [zig, "cc", "-target", "x86_64-windows-gnu", "-O2", "-I", RUNTIME]
             command += args.cflags.split() + [c_path, "-o", args.output]
+            compiler = [zig]
         else:
             compiler = find_cc(args.cc)
             if compiler is None:
                 sys.stderr.write(
-                    "ternc: no C compiler found.\n" + compiler_hint())
+                    "ternc: no C compiler found.\n" + searched_places() + compiler_hint())
                 return 1
             if os.path.basename(compiler[0]).lower() in MSVC_NAMES:
                 sys.stderr.write(
@@ -1083,7 +1197,7 @@ def main(argv):
             command += [c_path, "-o", args.output]
             if os.name != "nt":
                 command.append("-lm")
-        result = subprocess.run(command)
+        result = subprocess.run(command, env=compiler_environment(compiler))
         if result.returncode != 0:
             return result.returncode
         if args.keep_c:

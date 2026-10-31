@@ -26,7 +26,7 @@ caveats below.
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
-| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (119) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (128) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
@@ -36,7 +36,7 @@ in all of them:
 
 ```
 ./tools/test.sh                                       41 passed
-python3 tools/test_runner.py                          15 passed
+python3 tools/test_runner.py                          19 passed
 python3 tools/test_package.py                         12 passed
 python3 native/run_tests.py                           32 passed
 python3 native/parity.py                              42 compared, 0 differing
@@ -118,8 +118,12 @@ what `tools/tern run` reports.
 
 Ordered by what would bite a user first.
 
-1. **The native backend has not been built on a Windows machine.** The pieces
-   that made it impossible there are fixed and tested as far as Linux allows —
+1. **The native backend has not been built on a Windows machine.** The compiler
+   search now covers an MSYS2 install that is not on PATH, which was the first
+   real answer to "I installed gcc and it still says none found", but the
+   Windows discovery itself is only simulated here — `tools/test_runner.py`
+   points `MSYS2_ROOT` at a fake tree. The pieces that made it impossible on
+   that platform are fixed and tested as far as Linux allows —
    the CLI is started as `dotnet build/TERN.Runner.dll` instead of the bash
    `tools/tern` that raised `WinError 193`, the C compiler is discovered rather
    than assumed (`zig cc` when nothing else is present), and `-o app` gains

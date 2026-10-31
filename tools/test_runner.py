@@ -131,6 +131,44 @@ def main(argv):
                      runner_c_module().find_cc("my-cc --sysroot=/x")[:1] == ["my-cc"],
                      repr(runner_c_module().find_cc("my-cc --sysroot=/x")))
 
+    # An MSYS2 install is not on PATH. `pacman -S mingw-w64-ucrt-x86_64-gcc`
+    # puts gcc in ucrt64\bin and never touches the environment, so a search
+    # that only looks at PATH is a search that fails on a machine where the
+    # compiler is installed.
+    fake_root = tempfile.mkdtemp(prefix="tern-msys2-")
+    fake_bin = os.path.join(fake_root, "ucrt64", "bin")
+    os.makedirs(fake_bin)
+    fake_gcc = os.path.join(fake_bin, "gcc" + (".exe" if os.name == "nt" else ""))
+    with open(fake_gcc, "w") as handle:
+        handle.write("")
+    os.chmod(fake_gcc, 0o755)
+
+    saved_root = os.environ.get("MSYS2_ROOT")
+    saved_path = os.environ.get("PATH", "")
+    try:
+        os.environ["MSYS2_ROOT"] = fake_root
+        os.environ["PATH"] = tempfile.mkdtemp(prefix="tern-empty-path-")
+        os.environ.pop("TERN_CC", None)
+        module = runner_c_module()
+        found = module.find_cc(None)
+        checks.check("a compiler off PATH is found in an MSYS2 root",
+                     found is not None and os.path.dirname(found[0]) == fake_bin,
+                     repr(found))
+        checks.check("the MSYS2 environment directory is searched",
+                     fake_bin in module.search_directories(), str(module.search_directories()[:4]))
+        environment_variables = module.compiler_environment(found)
+        checks.check("the compiler's own directory is put on PATH",
+                     environment_variables["PATH"].split(os.pathsep)[0] == fake_bin,
+                     environment_variables["PATH"][:80])
+        checks.check("and the failure message lists where it looked",
+                     fake_bin in module.searched_places(), module.searched_places()[:120])
+    finally:
+        if saved_root is None:
+            os.environ.pop("MSYS2_ROOT", None)
+        else:
+            os.environ["MSYS2_ROOT"] = saved_root
+        os.environ["PATH"] = saved_path
+
     # The end-to-end case from the bug report: a .tern file compiled straight
     # to a binary, which is the path that raised WinError 193.
     sample = os.path.join(ROOT, "examples", "wordcount.tern")

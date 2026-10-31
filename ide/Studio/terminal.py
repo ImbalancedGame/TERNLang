@@ -172,6 +172,10 @@ class TerminalPanel(QWidget):
         self.output.setReadOnly(True)
         self.output.setFont(monospace(11))
         self.output.setLineWrapMode(QPlainTextEdit.NoWrap)
+        # The output takes Ctrl+C too: clicking into the scrollback to read a
+        # command's output is normal, and from there Ctrl+C has to reach the
+        # running command, not just a read-only text view.
+        self.output.installEventFilter(self)
         layout.addWidget(self.output, 1)
 
         prompt_row = QWidget()
@@ -314,12 +318,22 @@ class TerminalPanel(QWidget):
     def eventFilter(self, watched, event):
         from PySide6.QtCore import QEvent
 
-        if watched is self.input and event.type() == QEvent.KeyPress:
+        if watched is self.output and event.type() == QEvent.KeyPress:
+            # Copy still wins when something is selected: that is the other
+            # thing Ctrl+C does in a text view.
+            if (event.key() == Qt.Key_C and event.modifiers() & Qt.ControlModifier
+                    and not self.output.textCursor().hasSelection()):
+                self.interrupt()
+                return True
+            return super().eventFilter(watched, event)
+
+        # `input` is created after `output`, and events reach the filter during
+        # layout, so this cannot assume it is there yet.
+        if watched is getattr(self, "input", None) and event.type() == QEvent.KeyPress:
             key = event.key()
             modifiers = event.modifiers()
 
             if key == Qt.Key_C and modifiers & Qt.ControlModifier:
-                self.write("^C\n", info=True)
                 self.interrupt()
                 return True
             if key == Qt.Key_L and modifiers & Qt.ControlModifier:
