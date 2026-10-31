@@ -48,6 +48,7 @@ namespace TERN.Runtime
         {
             public TernClosure? Closure;
             public TernModule? Module;
+            public FunctionProto? Proto;
             public Instr[] Code = Array.Empty<Instr>();
             public Value[] Constants = Array.Empty<Value>();
             public DivMagic[] Divisions = Array.Empty<DivMagic>();
@@ -147,6 +148,67 @@ namespace TERN.Runtime
         }
 
         /// <summary>Runs a module body once.</summary>
+        /// <summary>
+        /// Called once per invocation of a TERN function when a debugger is
+        /// attached, which is how breakpoints are installed for code that has
+        /// not run yet. Null — the normal case — costs one predictable branch
+        /// per call and nothing per instruction.
+        /// </summary>
+        public Action<FunctionProto>? OnFunctionEnter { get; set; }
+
+        /// <summary>Set by a debugger hook to leave the function immediately.</summary>
+        public bool AbortRequested { get; set; }
+
+        /// <summary>
+        /// Runs when an <see cref="Op.Break"/> instruction is reached. The handler
+        /// returns the index the VM should execute next: the same index to run the
+        /// instruction the breakpoint replaced, or the next one to skip it. The
+        /// handler runs on the interpreter thread and may block, which is how a
+        /// debugger stops a program.
+        /// </summary>
+        public Func<FunctionProto, int, int>? OnBreak { get; set; }
+
+        /// <summary>How many frames are active, innermost last.</summary>
+        public int FrameCount => _frameCount;
+
+        /// <summary>The prototype and instruction index of a frame, for a call stack.</summary>
+        public (FunctionProto? Proto, int Ip) FrameAt(int index)
+        {
+            if (index < 0 || index >= _frameCount)
+            {
+                return (null, 0);
+            }
+
+            var frame = _frames[index];
+            return (frame.Proto, frame.Ip);
+        }
+
+        /// <summary>The value a frame holds in a slot, by frame index.</summary>
+        public Value LocalAt(int frameIndex, int slot)
+        {
+            if (frameIndex < 0 || frameIndex >= _frameCount)
+            {
+                return Value.Nil;
+            }
+
+            var slotIndex = _frames[frameIndex].LocalsBase + slot;
+            return slotIndex >= 0 && slotIndex < _localsTop ? _locals[slotIndex] : Value.Nil;
+        }
+
+        /// <summary>Reads a local by slot, for a debugger looking at a frame.</summary>
+        public Value ReadLocal(int slot) => slot >= 0 && slot < _localsTop ? _locals[slot] : Value.Nil;
+
+        /// <summary>Reads a frame's function name; null when it is a module body.</summary>
+        public string? FrameName(int index)
+        {
+            if (index < 0 || index >= _frameCount)
+            {
+                return null;
+            }
+
+            return _frames[index].Proto?.Name ?? _frames[index].Closure?.Proto.Name;
+        }
+
         public Value ExecuteModule(TernModule module)
         {
             if (!_executedModules.Contains(module))
@@ -238,6 +300,19 @@ namespace TERN.Runtime
 
                     switch (instruction.Op)
                     {
+                        case Op.Break:
+                        {
+                            // Placed by a debugger in place of one instruction. The
+                            // handler decides what runs next; by default that is the
+                            // instruction after this one, so an orphan breakpoint
+                            // behaves as a no-op.
+                            var handler = OnBreak;
+                            if (handler is not null && frame.Proto is not null)
+                            {
+                                ip = handler(frame.Proto, ip - 1);
+                            }
+                            break;
+                        }
                         case Op.Nop:
                             break;
 
@@ -1336,6 +1411,17 @@ namespace TERN.Runtime
                                 throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
                             }
 
+                            if (AbortRequested)
+                            {
+                                AbortRequested = false;
+                                frame.Ip = ip;
+                                var stop = Value.Nil;
+                                if (ReturnFrame(stop, frameFloor))
+                                {
+                                    return stop;
+                                }
+                            }
+
                             goto nextFrame;
                         }
 
@@ -1771,6 +1857,7 @@ namespace TERN.Runtime
 
             frame.Closure = closure;
             frame.Module = closure.Module;
+            frame.Proto = proto;
             frame.Code = proto.Instructions;
             frame.Constants = proto.Constants;
             frame.Divisions = proto.Divisions;
@@ -1816,6 +1903,14 @@ namespace TERN.Runtime
         private void EnterClosure(TernClosure closure, int argc, int argsBase, int resultSlot)
         {
             var proto = closure.Proto;
+
+            // A debugger installs its breakpoints here, which is what lets it
+            // catch code that had not been compiled when it attached.
+            var hook = OnFunctionEnter;
+            if (hook is not null)
+            {
+                hook(proto);
+            }
 
             // Fast path: exactly the declared number of arguments.
             if (argc == proto.ParamCount && !proto.HasRest)

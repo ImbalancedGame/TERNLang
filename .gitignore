@@ -11,6 +11,13 @@ out/
 .d3d12_probe.png
 .gl_probe.png
 
+# Python bytecode from the Studio front end and its tools
+__pycache__/
+*.pyc
+
+# the local virtualenv tools/ide.sh offers to create
+.venv/
+
 # editor / OS noise
 .vs/
 .idea/

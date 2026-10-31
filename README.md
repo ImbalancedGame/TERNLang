@@ -298,6 +298,43 @@ mark-sweep collector whose roots are the registered global/constant arrays plus
 a conservative scan of the C stack, so generated code does not describe its
 frames: programs that allocate in a loop stay flat instead of growing.
 
+## The IDE
+
+`TERN Studio` is a desktop IDE for the language, built the way Rider is: a
+window that does no analysis of its own, and a language server in a separate
+process that does all of it.
+
+![TERN Studio running the triage example](docs/ide/img/run.png)
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install "PySide6-Essentials==6.9.3"
+bash tools/ide.sh
+```
+
+It has live diagnostics, completion, hover documentation, go-to-definition,
+find usages, rename, a structure view, a run/compile window with streaming
+output, a terminal that is a real shell, a debugger with breakpoints (which can
+carry conditions), watches, stepping, a call stack and locals, a git commit
+window with coloured diffs, project and problems tool windows, two themes and a
+full keymap. See
+[`docs/ide.md`](docs/ide.md) for what is there, and for the short list of what
+is not.
+
+The server half is a plain LSP 3.17 server over stdio (`build/TERN.Ide.dll`), so
+any editor with LSP support can use it, not just Studio:
+
+```bash
+tools/tern-ls          # speaks LSP on stdin/stdout
+```
+
+The debugger is a third process (`build/TERN.Debug.dll`) that drives the VM
+directly: a breakpoint rewrites one instruction into an opcode that parks the
+program until the IDE says to continue, and a conditioned breakpoint is judged
+by the debugger with the VM parked. Debugging the interpreter costs the
+interpreter nothing — the benchmarks run at the same speed through the
+debugger's binary as through `tern`, measured in
+[`bench/compare/debug_overhead.py`](bench/compare/debug_overhead.py).
+
 ## Repository layout
 
 ```
@@ -309,12 +346,15 @@ TERN/               the language: lexer, parser, compiler, bytecode, VM, builtin
   TernEngine.cs     embeddable engine: modules, compilation, sandboxing
   Diagnostics.cs    diagnostics and TernError
 TernRunner/         the `tern` CLI (run / check / repl / disasm / version)
+ide/Server/         the language server (TERN.Ide.dll), LSP over stdio
+ide/Studio/         TERN Studio, the PySide6 desktop IDE
 tools/              build.py, tern launcher, test.sh, bench.sh, gen-docs.sh,
                     setup-toolchain.sh
 tests/              golden-output test suite (NN_name.tern + NN_name.out)
 examples/           runnable sample scripts
 bench/              micro benchmarks
 native/             AOT backend: bytecode -> C -> ELF (ternc.py, runtime/, tests)
+docs/ide.md         TERN Studio: the IDE and its syntax server
 docs/language.md    the language reference
 docs/stdlib.md      generated builtin reference (`tools/gen-docs.sh`)
 ```
