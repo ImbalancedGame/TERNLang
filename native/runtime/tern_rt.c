@@ -9450,6 +9450,12 @@ static Value namespace_map(const char *ns) {
                 make_native_arity("size", n_d3d12_size, 1, 1));
         map_set(map, str_from_cstr("close"),
                 make_native_arity("close", n_d3d12_close, 1, 1));
+        map_set(map, str_from_cstr("window"),
+                make_native_arity("window", n_d3d12_window, 3, 3));
+        map_set(map, str_from_cstr("present"),
+                make_native_arity("present", n_d3d12_present, 2, 2));
+        map_set(map, str_from_cstr("closeWindow"),
+                make_native_arity("closeWindow", n_d3d12_close_window, 1, 1));
         return v_obj((Obj *)map);
     }
 

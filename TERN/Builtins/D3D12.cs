@@ -67,6 +67,7 @@ namespace TERN.Builtins
         {
             var map = new TernMap();
             var targets = new Targets();
+            var windows = new D3D12Windows();
 
             Add(map, "available", 0, 0, (vm, a) => Value.Bool(Driver.Load() is not null),
                 "True when d3d12.dll could be loaded (or TERN_D3D12_LIBRARY points at one).");
@@ -158,6 +159,35 @@ namespace TERN.Builtins
                 targets.Remove(vm, a[0]);
                 return Value.Nil;
             }, "Releases the device and everything it owns.");
+
+            Add(map, "window", 3, 3, (vm, a) =>
+            {
+                var width = Dimension(vm, a[0], "width");
+                var height = Dimension(vm, a[1], "height");
+                if (a[2].Kind != ValueKind.Str)
+                {
+                    throw vm.Error("TypeError", $"title must be a string, got {vm.TypeName(a[2])}");
+                }
+
+                // nil, not an error: a machine with no window layer can still
+                // use everything else in this module.
+                var window = D3D12Window.Create(width, height, a[2].AsString());
+                return window is null ? Value.Nil : new Value(windows.Add(vm, window));
+            }, "Opens a window to show frames in: d3d12.window(width, height, title), or nil.");
+
+            Add(map, "present", 2, 2, (vm, a) =>
+            {
+                var window = windows.Get(vm, a[0]);
+                var target = targets.Get(vm, a[1]);
+                var pixels = target.ReadPixels(vm);
+                return Value.Bool(window.Present(pixels, target.Width, target.Height));
+            }, "Shows the target in the window: d3d12.present(window, device); false once it is closed.");
+
+            Add(map, "closeWindow", 1, 1, (vm, a) =>
+            {
+                windows.Remove(vm, a[0]);
+                return Value.Nil;
+            }, "Closes a window and forgets its handle.");
 
             engine.RegisterValue("d3d12", Value.Of(map));
             engine.RegisterStdModule(new StdModule

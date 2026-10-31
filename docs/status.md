@@ -22,15 +22,15 @@ caveats below.
 | `sftp` (OpenSSH client) | complete, both back ends | `tests/30_sftp.tern` |
 | `fs` streaming (`open`/`readChunk`/`readAt`/`seek`) | complete, both back ends | `tests/31_fs_stream.tern` |
 | `gl` (libEGL, OpenGL 3.3 core) | complete against a mock driver | `tools/test-gl.sh` |
-| `d3d12` (device, target, HLSL, PSO, draw) | complete against a mock driver | `tools/test-d3d12.sh` |
+| `d3d12` (device, target, HLSL, PSO, draw, window) | complete against a mock driver | `tools/test-d3d12.sh` |
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
-| MSDN-style reference | 281 pages, generated | `tools/gen-reference.py --check` |
+| MSDN-style reference | 284 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
 | TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (133) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
-| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (58) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (63) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
@@ -41,7 +41,7 @@ python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
 python3 native/run_tests.py                           33 passed
 python3 native/parity.py                              43 compared, 0 differing
-python3 tools/test_examples.py                        58 passed
+python3 tools/test_examples.py                        63 passed
 python3 tools/test_namespaces.py                      23 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
@@ -49,7 +49,7 @@ bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
 bash tools/test-ide.sh                                39 passed
 python3 tools/debug_test.py                           41 passed
-python3 tools/gen-reference.py --check                281 pages up to date
+python3 tools/gen-reference.py --check                284 pages up to date
 ```
 
 ## Benchmarks
@@ -148,13 +148,17 @@ Ordered by what would bite a user first.
    with a GPU are the thorough ones. The structure mirror is already checked
    against the real `d3d12.h` by the Windows build
    (`tools/d3d12/gen_layout_check.py`).
-3. **Neither renderer has a window.** Both draw into an offscreen target and
-   read it back, which is why `examples/rotating_cube.tern` writes PNGs instead
-   of showing them. Everything below presentation is real — geometry,
-   projection, shading, draw calls, readback — but a window needs a swap chain
-   (or a blitted DIB) and a message loop in each backend, and neither exists
-   yet. On Windows a `d3d12` window is the natural next step; on Linux it means
-   an X11 or Wayland surface for EGL.
+3. **The window blits, it does not present.** `d3d12.window` opens a real
+   Win32 window and `d3d12.present` puts the frame in it, so
+   `examples/rotating_cube.tern` shows a turning cube rather than describing
+   one. But each frame is read back from the GPU and copied with
+   `StretchDIBits`, which is a frame of latency and a bandwidth cost that a
+   DXGI swap chain does not have. A swap chain is the next step: `Present` on
+   an `IDXGISwapChain3` fed by the same render target, which also means
+   handling the present-state transitions that go with it. The window layer is
+   also Windows only — `user32`, `gdi32` and `kernel32` are loaded at run time
+   from a Linux build and answer `nil` there, so a Linux window needs an X11 or
+   Wayland surface and the same blit, and neither exists.
 4. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
    `sftp` and `gl` answer `UnsupportedError` in a Windows binary; the language,
    `math`, `time`, `json`, `os`, `fs`, `text`, `lists` and `d3d12` are there.
@@ -193,6 +197,23 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **`examples/rotating_cube.tern` was ASCII art, not a rendering.** That was a
+  fair description: the only thing it could do with a GPU was write PNGs into a
+  folder, and the thing on screen was a text rasteriser. There was no window
+  layer at all — no `user32`, no presentation surface, no message loop — so a
+  cube that turned in a window could not be written, only described as the next
+  step. Both back ends have one now: `d3d12.window(width, height, title)` opens
+  a real Win32 window, `d3d12.present(window, device)` blits the rendered frame
+  into it and pumps its messages, and `d3d12.closeWindow(window)` closes it.
+  The example runs the window by default on Windows and falls back to PNG
+  frames and text where there is no `user32`, so nothing about it needs a
+  display to run. It is tested headless: `tools/d3d12/mock_user32.c` fakes
+  `user32`, `gdi32` and `kernel32`, and `tools/test-d3d12.sh` opens a window,
+  presents frames in both back ends, compares the checksums of the pixels that
+  reached the window, and checks that the window closes itself the way a person
+  closing it would. The structures the window uses (`WNDCLASSEXW`, `MSG`,
+  `BITMAPINFOHEADER`, `BITMAPINFO`, `RECT`) are checked against the real
+  `windows.h` by the Windows build (`tools/d3d12/gen_window_layout_check.py`).
 * **Every Direct3D 12 barrier named the wrong "before" state.** `clear` moved
   the target to `COPY_SOURCE` for the readback and left it there; `draw` then
   told the driver the resource was in `COMMON` and moved it to

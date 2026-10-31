@@ -47,6 +47,22 @@ println(kind(fn() { d3d12.draw(target, pipeline, "nope"); }));
 println(kind(fn() { d3d12.draw(target, pipeline, [1, 2]); }));
 println(kind(fn() { d3d12.draw(target, pipeline, [1, 2, 3, 4, 5, "x"]); }));
 
+// -------------------------------------------------------------- the window
+// On Windows this opens a real window and shows the frame in it. Everywhere
+// else - and in any run that has not opted in - it answers nil, and the rest of
+// the module still works, which is the point of nil rather than an error.
+let window = d3d12.window(3, 2, "tern probe");
+println("window:", window == nil ? "unavailable" : "open");
+if (window != nil) {
+    // The mock closes the window after TERN_WINDOW_FRAMES frames, the way a
+    // person closing it would, so the loop below ends on its own.
+    println("present:", d3d12.present(window, target));
+    println("present:", d3d12.present(window, target));
+    println("present:", d3d12.present(window, target));
+    d3d12.closeWindow(window);
+    println(kind(fn() { d3d12.present(window, target); }));
+}
+
 let png = os.env("TERN_D3D12_PNG", ".d3d12_probe.png");
 d3d12.save(target, png);
 println("png written:", fs.size(png) > 0, fs.readBytes(png)[0..4]);

@@ -17,7 +17,13 @@
 #define TERN_D3D12_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
+
+// The window layer: Win32 loaded at run time, so a frame can be shown on screen
+// instead of only written to a PNG. Optional - without it d3d12.window() answers
+// nil and everything else still works.
+#include "tern_window.h"
 
 #define D3D12_MAX_DEVICES 4
 #define D3D12_MAX_PROGRAMS 32
@@ -1312,6 +1318,81 @@ static Value n_d3d12_close(int argc, Value *argv) {
     (void)argc;
     TernD3D12Target *target = d3d12_slot_arg(argv[0]);
     d3d12_free_device(target);
+    return v_nil();
+}
+
+// --- windows ---------------------------------------------------------------
+
+static Value n_d3d12_window(int argc, Value *argv) {
+    int width = d3d12_dimension_arg(argv[0], "width");
+    int height = d3d12_dimension_arg(arg(argc, argv, 1), "height");
+    Value title_value = arg(argc, argv, 2);
+    if (!v_is_str(title_value)) {
+        tern_panic("TypeError", "title must be a string, not %s", tern_type_name(title_value));
+    }
+    const char *title = ((Str *)title_value.as.o)->chars;
+
+    // nil rather than an error: a machine with no window layer (Linux, a
+    // service, a test run) can still use everything else in this module.
+    TernWindow *window = tern_window_open(width, height, title);
+    if (!window) {
+        return v_nil();
+    }
+    return v_int(tern_window_handle(window));
+}
+
+static Value n_d3d12_present(int argc, Value *argv) {
+    Value handle_value = argv[0];
+    if (handle_value.tag != T_INT) {
+        tern_panic("TypeError", "expected a window handle, not %s", tern_type_name(handle_value));
+    }
+    TernWindow *window = tern_window_at((int)handle_value.as.i);
+    if (!window) {
+        tern_panic("D3D12Error", "no open window with handle %lld",
+                   (long long)handle_value.as.i);
+    }
+    TernD3D12Target *target = d3d12_slot_arg(arg(argc, argv, 1));
+
+    d3d12_copy_out(target);
+
+    D3D12_RANGE range;
+    range.begin = 0;
+    range.end = 0;
+    void *data = NULL;
+    long hr = ((PfnMap)TERN_SLOT(target->readback, 8))(target->readback, 0, &range, &data);
+    if (hr < 0 || !data) {
+        d3d12_fail_removed(target, "the readback buffer could not be mapped", hr);
+    }
+
+    // tern_window_present wants rows top-first with no padding between them;
+    // the readback has a row pitch and its rows are the other way up, so copy
+    // through a scratch buffer only when the pitch does not already match.
+    size_t row_bytes = (size_t)target->width * 4;
+    unsigned char *tight = (unsigned char *)malloc(row_bytes * (size_t)target->height);
+    if (!tight) {
+        tern_panic("D3D12Error", "cannot show a frame: out of memory");
+    }
+    for (int y = 0; y < target->height; y++) {
+        memcpy(tight + (size_t)y * row_bytes,
+               (const unsigned char *)data + (size_t)y * target->row_pitch, row_bytes);
+    }
+    ((PfnUnmap)TERN_SLOT(target->readback, 9))(target->readback, 0, &range);
+
+    int open = tern_window_present(window, tight, target->width, target->height);
+    free(tight);
+    return v_bool(open ? 1 : 0);
+}
+
+static Value n_d3d12_close_window(int argc, Value *argv) {
+    (void)argc;
+    Value handle_value = argv[0];
+    if (handle_value.tag != T_INT) {
+        tern_panic("TypeError", "expected a window handle, not %s", tern_type_name(handle_value));
+    }
+    TernWindow *window = tern_window_at((int)handle_value.as.i);
+    if (window) {
+        tern_window_close(window);
+    }
     return v_nil();
 }
 

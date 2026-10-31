@@ -20,13 +20,16 @@ input is `POSITION` (`float3`) followed by `COLOR` (`float4`).
 | [`available`](available.md) | 0..0 | True when the Direct3D 12 library could be loaded. |
 | [`clear`](clear.md) | 5..5 | Clears the render target. |
 | [`close`](close.md) | 1..1 | Releases the device and everything it owns. |
+| [`closeWindow`](closeWindow.md) | 1..1 | Closes a window. |
 | [`create`](create.md) | 2..2 | Creates a device and an offscreen render target. |
 | [`draw`](draw.md) | 3..3 | Draws triangles. |
 | [`info`](info.md) | 0..0 | Describes the adapter. |
 | [`pipeline`](pipeline.md) | 3..3 | Compiles HLSL and builds a pipeline state. |
 | [`pixels`](pixels.md) | 1..1 | Reads the target back as RGBA bytes. |
+| [`present`](present.md) | 2..2 | Shows the target in the window. |
 | [`save`](save.md) | 2..2 | Saves the target as a PNG. |
 | [`size`](size.md) | 1..1 | The size of a device's target. |
+| [`window`](window.md) | 3..3 | Opens a window to show frames in. |
 
 ## Example
 

@@ -43,13 +43,16 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `available` | `available()` | True when d3d12.dll could be loaded (or TERN_D3D12_LIBRARY points at one). |
 | `clear` | `clear(arg, arg, arg, arg, arg)` | Clears the render target: d3d12.clear(handle, r, g, b, a), each 0..1. |
 | `close` | `close(arg)` | Releases the device and everything it owns. |
+| `closeWindow` | `closeWindow(arg)` | Closes a window and forgets its handle. |
 | `create` | `create(arg, arg)` | Creates an offscreen device and render target, returning a handle. |
 | `draw` | `draw(arg, arg, arg)` | Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. |
 | `info` | `info()` | Describes the adapter: {name, nodes}. |
 | `pipeline` | `pipeline(arg, arg, arg)` | Compiles HLSL and builds a pipeline: d3d12.pipeline(handle, vertex, pixel). |
 | `pixels` | `pixels(arg)` | Reads the target back as RGBA bytes, bottom row first, like gl.pixels. |
+| `present` | `present(arg, arg)` | Shows the target in the window: d3d12.present(window, device); false once it is closed. |
 | `save` | `save(arg, arg)` | Saves the target as a PNG: d3d12.save(handle, path). |
 | `size` | `size(arg)` | The [width, height] of a device. |
+| `window` | `window(arg, arg, arg)` | Opens a window to show frames in: d3d12.window(width, height, title), or nil. |
 
 ## `fs`
 

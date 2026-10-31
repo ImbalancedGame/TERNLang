@@ -1,32 +1,39 @@
-// A rotating cube, drawn two ways.
+// A rotating cube, drawn three ways.
 //
-// 1. As text. A small software rasteriser with a depth buffer draws the cube
-//    into characters, so it turns in any terminal - no GPU, no driver, no
-//    display, and it works identically in the interpreter and in a compiled
-//    binary.
+// 1. In a window. The cube is rendered by Direct3D 12 and shown in a real Win32
+//    window, turning until you close it (or press Escape). This is what running
+//    the example does on Windows.
 // 2. As PNG files. The same triangles go through std:d3d12 (Direct3D 12, the
 //    preferred renderer) or std:gl (OpenGL 3.3 through EGL), whichever this
 //    machine can load, and every frame is read back and written out.
+// 3. As text. A small software rasteriser with a depth buffer draws the cube
+//    into characters, so it turns in any terminal - no GPU, no driver, no
+//    display, and it works identically in the interpreter and in a compiled
+//    binary.
 //
-// There is no window. The runtime renders offscreen: a render target and a
-// readback buffer, no swap chain, so a frame ends up in a file rather than on
-// screen. A real window needs a presentation surface and a message loop, which
-// the runtime does not have yet. Everything above that last step - the
-// geometry, the rotation, the projection, the shading, the triangle order and
-// the draw calls - is what a windowed version would run unchanged.
+// The window shows the Direct3D 12 render target: each frame is read back and
+// blitted into the window, which is not how a shipping game presents (that is a
+// DXGI swap chain, and it is the next step in docs/status.md). What it does do
+// is put the picture on screen, which a PNG in a folder does not.
 //
-//   tern run examples/rotating_cube.tern
-//   tern run examples/rotating_cube.tern --ascii
-//   tern run examples/rotating_cube.tern --frames 24 --out frames
+//   tern run examples/rotating_cube.tern                    # window, or PNGs
+//   tern run examples/rotating_cube.tern --frames 24        # PNGs
+//   tern run examples/rotating_cube.tern --ascii            # text only
+//   tern run examples/rotating_cube.tern --seconds 5        # window, 5 seconds
 //   tern run examples/rotating_cube.tern --ascii --size 100x50
 //
-// Both renderers are driven from the same triangle list on purpose: when the
-// text cube looks right, the maths feeding the GPU is right too.
+// Where there is no window layer (Linux, a headless machine, a test run) it
+// falls back to the PNG frames and the text, so nothing about it needs a
+// display to be used - only to be watched.
+//
+// All three renderers are driven from the same triangle list on purpose: when
+// the text cube looks right, the maths feeding the GPU is right too.
 
 import "std:d3d12";
 import "std:gl";
 import "std:fs";
 import "std:os";
+import "std:time";
 
 // ---------------------------------------------------------------- 3D vectors
 //
@@ -376,16 +383,68 @@ fn close_surface(surface) {
 fn usage() {
     println("usage: tern run examples/rotating_cube.tern [options]");
     println("");
+    println("  --window          open a window and animate until it is closed (the default)");
+    println("  --seconds N       stop the window after N seconds");
     println("  --ascii           only draw the cube as text");
-    println("  --frames N        how many PNG frames to write (default 12)");
+    println("  --frames N        write N PNG frames instead of opening a window (default 12)");
     println("  --out DIR         where to put them (default cube_frames)");
     println("  --size WIDTHxHEIGHT  text grid (default 72x36)");
     println("  --help            this text");
 }
 
+// ------------------------------------------------------------- the window
+//
+// Each frame: draw, then show. d3d12.present() processes the window's messages
+// while it is at it, so the window keeps responding, and answers false once it
+// has been closed - which is what ends the loop, with no other clock needed.
+// --seconds is for the impatient and for a script that should not wait for a
+// person.
+//
+// Returns nil when there is no window on this machine, so the caller can fall
+// through to the PNG frames. Returning nil rather than throwing is deliberate:
+// "no display" is not a failure of a program whose remaining jobs need none.
+
+fn run_window(seconds) {
+    let target = d3d12.create(640, 480);
+    let program = d3d12.pipeline(target, hlsl_vertex(), hlsl_pixel());
+    let surface = Surface("d3d12", target, program);
+
+    // Drawn before the window exists, so the first thing on screen is a cube
+    // rather than a white rectangle.
+    paint(surface, frame_at(0));
+    let window = d3d12.window(640, 480, "TERNLang - rotating cube (Escape closes)");
+    if (window == nil) {
+        d3d12.close(target);
+        return nil;
+    }
+    println("showing the cube in a window - close it, or press Escape.");
+
+    let started = time.millis();
+    let angle = 0.0;
+    let running = true;
+    while (running) {
+        running = d3d12.present(window, target);
+        if (!running) { break; }
+        if (seconds > 0 && time.millis() - started >= seconds * 1000) { break; }
+        angle += 1.5;
+        if (angle >= 360) { angle = 0; }
+        paint(surface, frame_at(angle));
+    }
+
+    // Closed from the outside, or out of time: either way the window goes away
+    // and the device with it.
+    d3d12.closeWindow(window);
+    d3d12.close(target);
+    println("window closed.");
+    return true;
+}
+
 fn main() {
     let arguments = os.args();
     let text_only = false;
+    let window_only = false;
+    let seconds = 0;
+    let frames_given = false;
     // Twelve is a half turn in 30-degree steps: enough to see the cube move,
     // and at 640x480 about 14 MB of PNG, because the writer stores pixels
     // rather than compressing them.
@@ -399,9 +458,15 @@ fn main() {
         let argument = arguments[index];
         if (argument == "--ascii") {
             text_only = true;
+        } else if (argument == "--window") {
+            window_only = true;
+        } else if (argument == "--seconds" && index + 1 < len(arguments)) {
+            index += 1;
+            seconds = int(arguments[index]);
         } else if (argument == "--frames" && index + 1 < len(arguments)) {
             index += 1;
             frames = int(arguments[index]);
+            frames_given = true;
         } else if (argument == "--out" && index + 1 < len(arguments)) {
             index += 1;
             out = arguments[index];
@@ -421,6 +486,27 @@ fn main() {
         index += 1;
     }
 
+    // A window first, because a turning cube belongs on a screen rather than in
+    // a terminal: on Windows that is the whole run, and `main` never gets past
+    // it. --frames and --ascii are explicit requests for the other two ways,
+    // and a machine with no window layer falls through to both of them.
+    // --window asks for a window and nothing else, so a machine without one gets
+    // the text frames and an explanation rather than twelve PNGs nobody asked
+    // for. Without the flag, the PNG frames below are still written, which is
+    // what the example did before there was a window at all.
+    let window_refused = false;
+    if (!text_only && !frames_given) {
+        try {
+            if (d3d12.available() && run_window(seconds) != nil) { return; }
+        } catch (error) {
+            println("the window could not be opened: " + str(error));
+        }
+        window_refused = window_only;
+        if (window_refused) {
+            println("no window on this machine; the frames below are the same cube.");
+        }
+    }
+
     // Four views a quarter turn apart: enough to see the cube turn, few enough
     // to read in a terminal. The cube has four-fold symmetry around y, so this
     // is a full cycle of everything the shading shows.
@@ -428,7 +514,7 @@ fn main() {
         show_frame(degrees, width, height);
     }
 
-    if (text_only) { return; }
+    if (text_only || window_refused) { return; }
 
     let notes = [];
     let surface = open_surface(640, 480, notes);

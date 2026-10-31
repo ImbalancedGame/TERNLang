@@ -122,7 +122,7 @@ The examples are meant to be read:
 | `examples/http_server.tern` | An HTTP/1.1 server on `std:net`: routing, query decoding, JSON, request logging |
 | `examples/rcon.tern` | A Source RCON client: login, commands with spaces, an interactive prompt |
 | `examples/sftp_deploy.tern` | A dry-run-first deploy over `std:sftp` (the OpenSSH client, no library) |
-| `examples/rotating_cube.tern` | 3D maths and a text rasteriser, plus PNG frames through `d3d12` or `gl` |
+| `examples/rotating_cube.tern` | a rotating cube in a real window through `d3d12`, plus PNG frames and a text rasteriser |
 | `examples/inventory.tern`, `triage.tern`, `wordcount.tern`, `fizzbuzz.tern` | Structs, pattern matching, files and arguments |
 
 `python3 tools/test_examples.py` runs the first four against mock servers and a

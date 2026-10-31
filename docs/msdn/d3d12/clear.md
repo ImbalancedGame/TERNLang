@@ -24,7 +24,7 @@ d3d12.clear(device, red, green, blue, alpha)
 
 ## Remarks
 
-Records a barrier to the render target state, a clear, and a barrier back to copy source; the call returns once the GPU has finished.
+Records a barrier from whatever state the target is in to the render target state, a clear, and a barrier back to copy source; the call returns once the GPU has finished.
 
 ## Errors
 

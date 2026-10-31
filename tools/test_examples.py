@@ -454,6 +454,17 @@ def test_graphics(checks):
     checks.check("--help explains the options", "--ascii" in help_run.stdout
                  and "--frames" in help_run.stdout, help_run.stdout[:200])
 
+    # A machine with no window layer gets the frames instead of a failure, and
+    # says so when a window was what was asked for. This is the path a Linux
+    # user, a headless build agent and this test all take.
+    windowed = subprocess.run(CLI + [example, "--window", "--size", "40x20"],
+                              cwd=ROOT, capture_output=True, text=True, env=environment)
+    checks.check("asking for a window without one still finishes", windowed.returncode == 0
+                 and "Traceback" not in (windowed.stdout + windowed.stderr),
+                 (windowed.stderr or windowed.stdout)[-400:])
+    checks.check("and it says where the window went",
+                 "no window on this machine" in windowed.stdout, windowed.stdout[-300:])
+
     binary = os.path.join(work, "cube")
     native = subprocess.run([PYTHON, os.path.join(ROOT, "native", "ternc.py"), example,
                              "-o", binary], cwd=ROOT, capture_output=True, text=True, timeout=900)
