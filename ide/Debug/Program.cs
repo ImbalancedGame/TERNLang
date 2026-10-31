@@ -35,6 +35,9 @@ namespace TERN.Debug
     {
         public string File = string.Empty;
         public int Line;
+
+        /// <summary>Only stop when this expression is truthy; empty is always.</summary>
+        public string Condition = string.Empty;
     }
 
     internal sealed class Program
@@ -261,6 +264,9 @@ namespace TERN.Debug
                     {
                         File = _program,
                         Line = entry.GetProperty("line").GetInt32(),
+                        Condition = entry.TryGetProperty("condition", out var condition)
+                            ? condition.GetString() ?? string.Empty
+                            : string.Empty,
                     });
                 }
             }
@@ -350,6 +356,9 @@ namespace TERN.Debug
                     {
                         File = _program,
                         Line = entry.GetProperty("line").GetInt32(),
+                        Condition = entry.TryGetProperty("condition", out var condition)
+                            ? condition.GetString() ?? string.Empty
+                            : string.Empty,
                     });
                 }
             }
@@ -360,6 +369,166 @@ namespace TERN.Debug
             {
                 PluginBreakpointsIn(_module.Entry, null);
             }
+        }
+
+        /// <summary>
+        /// Whether a stop at this line should actually stop.
+        ///
+        /// A conditioned breakpoint evaluates its expression at the stop, with
+        /// the VM parked, and carries on silently when it is false. A
+        /// condition that will not evaluate (a typo, a name not in scope) stops
+        /// anyway: hiding the stop would make a broken condition look like a
+        /// program that never reaches the line.
+        /// </summary>
+        private bool ShouldStop(int line)
+        {
+            var conditioned = false;
+            foreach (var breakpoint in _breakpoints)
+            {
+                if (breakpoint.Line != line)
+                {
+                    continue;
+                }
+
+                if (breakpoint.Condition.Length == 0)
+                {
+                    return true;                // an unconditional breakpoint wins
+                }
+
+                conditioned = true;
+                var verdict = IsTruthy(breakpoint.Condition);
+                if (verdict is null || verdict.Value)
+                {
+                    return true;
+                }
+            }
+
+            // No breakpoint here, or every one of them said no.
+            return !conditioned;
+        }
+
+        /// <summary>
+        /// The condition language, deliberately small: a name, `!name`, or a
+        /// comparison of a name with a literal or another name.
+        ///
+        ///     total > 3        n == "start"        ready
+        ///     total >= 0       name != "x"         !found
+        ///
+        /// Anything else falls through to `null`, which the caller treats as
+        /// "stop anyway": a condition the debugger cannot read is shown by
+        /// stopping, never by silence.
+        /// </summary>
+        private bool? IsTruthy(string expression)
+        {
+            var text = expression.Trim();
+            if (text.Length == 0)
+            {
+                return true;
+            }
+
+            if (text.StartsWith("!"))
+            {
+                var inner = Lookup(text[1..].Trim());
+                return inner is null ? null : !inner.Value.Truthy;
+            }
+
+            // Two-character operators first, so `<=` is not read as `<`.
+            foreach (var (op, compare) in new (string, Func<int, bool>)[]
+                     {
+                         ("==", c => c == 0),
+                         ("!=", c => c != 0),
+                         ("<=", c => c <= 0),
+                         (">=", c => c >= 0),
+                         ("<", c => c < 0),
+                         (">", c => c > 0),
+                     })
+            {
+                var at = text.IndexOf(op, StringComparison.Ordinal);
+                if (at <= 0)
+                {
+                    continue;
+                }
+
+                var left = Lookup(text[..at].Trim());
+                if (left is null)
+                {
+                    return null;
+                }
+
+                var right = Operand(text[(at + op.Length)..].Trim());
+                if (right is null)
+                {
+                    return null;
+                }
+
+                var order = Compare(left.Value, right.Value);
+                return order is null ? null : compare(order.Value);
+            }
+
+            var bare = Lookup(text);
+            return bare?.Truthy;
+        }
+
+        /// <summary>The right-hand side: a variable, or a literal.</summary>
+        private Value? Operand(string text)
+        {
+            if (text.Length == 0)
+            {
+                return null;
+            }
+
+            if (text is "true")
+            {
+                return Value.True;
+            }
+
+            if (text is "false")
+            {
+                return Value.False;
+            }
+
+            if (text is "nil" or "null")
+            {
+                return Value.Nil;
+            }
+
+            if (text.Length >= 2 && ((text[0] == '"' && text[^1] == '"')
+                                     || (text[0] == '\'' && text[^1] == '\'')))
+            {
+                return Value.Str(text[1..^1]);
+            }
+
+            if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer))
+            {
+                return new Value(integer);
+            }
+
+            if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+            {
+                return new Value(number);
+            }
+
+            return Lookup(text);
+        }
+
+        /// <summary>
+        /// Three-way comparison, or null when the two values cannot be ordered.
+        /// Numbers against numbers, strings against strings; anything else can
+        /// only be tested for equality, which is by value.
+        /// </summary>
+        private static int? Compare(Value left, Value right)
+        {
+            if (left.IsNumber && right.IsNumber)
+            {
+                return left.AsDouble().CompareTo(right.AsDouble());
+            }
+
+            if (left.Kind == ValueKind.Str && right.Kind == ValueKind.Str)
+            {
+                return string.CompareOrdinal(left.AsString(), right.AsString());
+            }
+
+            return left.Equals(right) ? 0 : 1;
         }
 
         private bool WantsLine(int line)
@@ -622,6 +791,27 @@ namespace TERN.Debug
                 return index;
             }
 
+            if (isBreakpoint && !isStep && !ShouldStop(line))
+            {
+                // The condition said no. Carry on without telling the client,
+                // but restore the instruction and leave the breakpoint armed so
+                // the next time round the loop is judged again.
+                lock (_gate)
+                {
+                    RestorePatched();
+                    if (_breakpoints.Count > 0)
+                    {
+                        PluginBreakpointsIn(proto, null, proto, index);
+                        if (WantsLine(line))
+                        {
+                            ArmTrampoline(proto, index + 1, index);
+                        }
+                    }
+                }
+
+                return index;
+            }
+
             lock (_gate)
             {
                 // Put the original back so the VM can execute it on resume.
@@ -867,6 +1057,18 @@ namespace TERN.Debug
                 return string.Empty;
             }
 
+            var value = Lookup(expression);
+            return value is null ? $"'{expression.Trim()}' is not in scope" : Describe(value.Value);
+        }
+
+        /// <summary>A local in the innermost frame, or a named global.</summary>
+        private Value? Lookup(string expression)
+        {
+            if (_vm is null || string.IsNullOrWhiteSpace(expression))
+            {
+                return null;
+            }
+
             var frameIndex = _vm.FrameCount - 1;
             var (proto, _) = _vm.FrameAt(frameIndex);
             var name = expression.Trim();
@@ -877,7 +1079,7 @@ namespace TERN.Debug
                 {
                     if (string.Equals(proto.LocalNames[slot], name, StringComparison.Ordinal))
                     {
-                        return Describe(_vm.LocalAt(frameIndex, slot));
+                        return _vm.LocalAt(frameIndex, slot);
                     }
                 }
             }
@@ -888,12 +1090,12 @@ namespace TERN.Debug
                 {
                     if (string.Equals(pair.Key, name, StringComparison.Ordinal))
                     {
-                        return Describe(pair.Value);
+                        return pair.Value;
                     }
                 }
             }
 
-            return $"'{name}' is not in scope";
+            return null;
         }
 
         /// <summary>Long values are cut, so one map cannot fill the panel.</summary>

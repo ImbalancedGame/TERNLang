@@ -192,6 +192,57 @@ println("total is ${total}");
                  str(exited))
     checks.check("the looping program shuts the debugger down", client.close() == 0)
 
+    # ------------------------------------------------- conditional breakpoints
+    # `total == 6` is true on exactly one iteration of 1..6, so it stops once
+    # and then runs on to the end.
+    client = DebugClient()
+    client.launch(loop_program, breakpoints=[{"line": 3, "condition": "total == 6"}])
+    stopped = client.wait_for_event("stopped")
+    variables = client.request("variables").get("variables") or []
+    by_name = {variable["name"]: variable for variable in variables}
+    checks.check("a conditional breakpoint stops when its condition holds",
+                 stopped is not None and stopped.get("line") == 3, str(stopped))
+    checks.check("it stopped on the right iteration", by_name.get("total", {}).get("value") == "6",
+                 str(by_name.get("total")))
+
+    client.request("continue")
+    exited = client.wait_for_event("exited")
+    checks.check("a condition that goes false stops firing",
+                 exited is not None and exited.get("ok") is True, str(exited))
+    client.close()
+
+    # A condition that is never true runs straight past the line.
+    client = DebugClient()
+    client.launch(loop_program, breakpoints=[{"line": 3, "condition": "total > 100"}])
+    exited = client.wait_for_event("exited")
+    checks.check("a false condition runs straight past",
+                 exited is not None and exited.get("ok") is True, str(exited))
+    client.close()
+
+    # Conditions compare against strings and other variables too.
+    string_program = write(directory, "names.tern", """let name = "warn";
+for n in 1..4 {
+    name = n == 2 ? "error" : "warn";
+}
+println(name);
+""")
+    client = DebugClient()
+    client.launch(string_program, breakpoints=[{"line": 3, "condition": 'name == "error"'}])
+    stopped = client.wait_for_event("stopped")
+    checks.check("a string condition matches", stopped is not None and stopped.get("line") == 3,
+                 str(stopped))
+    client.request("terminate")
+    client.close()
+
+    # A condition that cannot be evaluated must not hide the stop.
+    client = DebugClient()
+    client.launch(loop_program, breakpoints=[{"line": 3, "condition": "no_such_name"}])
+    stopped = client.wait_for_event("stopped")
+    checks.check("a broken condition still stops", stopped is not None and stopped.get("line") == 3,
+                 str(stopped))
+    client.request("terminate")
+    client.close()
+
     # ------------------------------------------------------------ no stops
     client = DebugClient()
     client.launch(program)
