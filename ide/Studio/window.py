@@ -29,11 +29,11 @@ from .lsp import LanguageServer, path_for, uri_for
 from .panels import (ChangesPanel, ConsolePanel, DebugPanel, DiffPanel,
                      FindInPathPanel, ProblemsPanel, ProjectPanel,
                      SearchEverywhereDialog, StructurePanel, SymbolDialog)
-from . import runtime
+from . import icons, runtime
 from .debugger import DebugSession
 from .terminal import TerminalPanel
 from .vcs import parse_diff
-from .theme import THEMES, monospace, stylesheet
+from .theme import THEME_NAMES, THEMES, monospace, stylesheet
 
 
 class StudioWindow(QMainWindow):
@@ -64,6 +64,7 @@ class StudioWindow(QMainWindow):
         self.pending_hover = (None, None)
         self.run_process = None
         self.log_lines = []
+        self._pending_changes = {}           # path -> editor, waiting to be sent
 
         self.setWindowTitle("TERN Studio")
         self.resize(1440, 900)
@@ -79,8 +80,16 @@ class StudioWindow(QMainWindow):
         self._restore()
         self.console.write("TERN Studio\n", info=True)
         self.console.write(f"Project: {self.root}\n", info=True)
-        self.console.write("Run a file with F5, or compile it with the native backend with Ctrl+F5.\n\n",
+        self.console.write("Run a file with F5, or compile it with the native backend with Ctrl+F5.\n",
                            info=True)
+        # Say which command F5 will use. On Windows the difference between the
+        # assembly and the bash launcher is the difference between working and
+        # `WinError 193`, and nobody should have to guess which they have.
+        self.console.write("Runner: " + " ".join(self.launcher) + "\n", info=True)
+        self.runtime_missing = runtime.missing(self.install, self.launcher)
+        if self.runtime_missing:
+            self.console.write("Not ready: " + self.runtime_missing + "\n", error=True)
+        self.console.write("\n", info=True)
 
         self._start_server()
         self._start_timer()
@@ -291,13 +300,14 @@ class StudioWindow(QMainWindow):
             "project": self._action("Project", "Alt+1", lambda: self._show_dock(self.project_dock)),
             "structure": self._action("Structure", "Alt+7", lambda: self._show_dock(self.structure_dock)),
             "run_window": self._action("Run Window", "Alt+4", lambda: self._show_dock(self.console_dock)),
-            "theme_darcula": self._action("Darcula", None, lambda: self.set_theme("darcula"), checkable=True),
-            "theme_light": self._action("Light", None, lambda: self.set_theme("light"), checkable=True),
+            **{f"theme_{name}": self._action(label, None,
+                                             lambda n=name: self.set_theme(n), checkable=True)
+               for name, label in THEME_NAMES.items()},
             "docs": self._action("Standard Library Reference", None, self.open_docs),
             "about": self._action("About TERN Studio", None, self.about),
         }
-        self.actions_map["theme_darcula"].setChecked(self.theme_name == "darcula")
-        self.actions_map["theme_light"].setChecked(self.theme_name == "light")
+        for name in THEME_NAMES:
+            self.actions_map[f"theme_{name}"].setChecked(self.theme_name == name)
 
     def _build_menus(self):
         bar = self.menuBar()
@@ -348,8 +358,8 @@ class StudioWindow(QMainWindow):
         view_menu.addAction(a["commit"])
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("Theme")
-        theme_menu.addAction(a["theme_darcula"])
-        theme_menu.addAction(a["theme_light"])
+        for name, label in THEME_NAMES.items():
+            theme_menu.addAction(a[f"theme_{name}"])
 
         navigate_menu = bar.addMenu("&Navigate")
         navigate_menu.addAction(a["goto_line"])
@@ -407,30 +417,44 @@ class StudioWindow(QMainWindow):
 
         a = self.actions_map
 
+        # Icons are drawn, not typed. A glyph like "▶" or "⚙" is whatever the
+        # installed fonts decide it is, which is how the toolbar ended up with a
+        # circle where a gear should be; these are SVG files from icons.py and
+        # look the same on every machine.
         run_button = QToolButton()
-        run_button.setText("▶  Run")
+        run_button.setText("Run")
         run_button.setObjectName("runButton")
+        run_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         run_button.setToolTip("Run the current file (F5)")
         run_button.clicked.connect(self.run_current)
         bar.addWidget(run_button)
 
         debug_button = QToolButton()
         debug_button.setText("Debug")
+        debug_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         debug_button.setToolTip("Debug the current file (Shift+F9)")
         debug_button.clicked.connect(self.debug_current)
         bar.addWidget(debug_button)
 
         compile_button = QToolButton()
-        compile_button.setText("⚙  Compile")
+        compile_button.setText("Compile")
+        compile_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         compile_button.setToolTip("Compile with the native backend and run (Ctrl+F5)")
         compile_button.clicked.connect(self.compile_and_run)
         bar.addWidget(compile_button)
 
         stop_button = QToolButton()
-        stop_button.setText("■")
+        stop_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
         stop_button.setToolTip("Stop (Ctrl+F2)")
         stop_button.clicked.connect(self.stop_run)
         bar.addWidget(stop_button)
+
+        self.toolbar_icons = {
+            run_button: "play",
+            debug_button: "bug",
+            compile_button: "gear",
+            stop_button: "stop",
+        }
 
         bar.addSeparator()
 
@@ -441,11 +465,13 @@ class StudioWindow(QMainWindow):
 
         bar.addSeparator()
 
-        for name, text in (("search_everywhere", "⌕  Search Everywhere"),
-                           ("format", "≡  Reformat"),
-                           ("problems", "!  Problems")):
+        for name, text, icon in (("search_everywhere", "Search Everywhere", "search"),
+                                 ("format", "Reformat", "lines"),
+                                 ("problems", "Problems", "warning")):
             button = QToolButton()
             button.setText(text)
+            button.setIcon(icons.qicon(icon, self.theme["fg"], 16))
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             button.setToolTip(a[name].toolTip() or name)
             button.clicked.connect(a[name].trigger)
             bar.addWidget(button)
@@ -605,6 +631,7 @@ class StudioWindow(QMainWindow):
         editor.cursorMoved.connect(self._cursor_moved)
         editor.modificationChanged.connect(self._tab_changed)
         editor.completionRequested.connect(lambda offset: self._completion(editor, offset))
+        editor.contentChanged.connect(lambda e=editor: self._content_changed(e))
         editor.breakpointsChanged.connect(
             lambda _lines: self.debug_session.set_breakpoints(sorted(editor.breakpoints))
             if self.debug_session is not None and self.debug_session.running else None)
@@ -861,11 +888,40 @@ class StudioWindow(QMainWindow):
 
         self.structure_panel.set_symbols(symbols or [], offset_for_line)
 
+    # ---------------------------------------------------------- server sync
+
+    def _content_changed(self, editor):
+        """Queue a `didChange` for this file, coalescing bursts of keystrokes.
+
+        A notification per key is wasteful and makes the server re-analyse a
+        document it will see again in 80 ms. One timer, restarted on every
+        keystroke, sends the text once typing pauses — which is also the moment
+        a completion request is likely to arrive.
+        """
+        if not hasattr(self, "server") or not editor.path:
+            return
+        self._pending_changes[editor.path] = editor
+        if not hasattr(self, "_sync_timer"):
+            self._sync_timer = QTimer(self)
+            self._sync_timer.setSingleShot(True)
+            self._sync_timer.setInterval(90)
+            self._sync_timer.timeout.connect(self._flush_changes)
+        self._sync_timer.start()
+
+    def _flush_changes(self):
+        pending, self._pending_changes = self._pending_changes, {}
+        for path, editor in pending.items():
+            if path in self.tabs:
+                self.server.did_change(uri_for(path), editor.toPlainText())
+
     # ------------------------------------------------------------- completion
 
     def _completion(self, editor, offset):
         if not hasattr(self, "server"):
             return
+        # Anything typed since the last flush has to reach the server before
+        # the question about it does, or the answer describes the old text.
+        self._flush_changes()
         uri = uri_for(editor.path)
         line, character = self._position(editor, offset)
         self.server.complete(uri, line, character, lambda result: self._completion_arrived(editor, result, offset))
@@ -1541,10 +1597,13 @@ class StudioWindow(QMainWindow):
         dock.raise_()
 
     def set_theme(self, name):
+        """Switch palettes: one stylesheet, every panel re-themed in place."""
+        if name not in THEMES:
+            return
         self.theme_name = name
         self.theme = THEMES[name]
-        self.actions_map["theme_darcula"].setChecked(name == "darcula")
-        self.actions_map["theme_light"].setChecked(name == "light")
+        for other in THEME_NAMES:
+            self.actions_map[f"theme_{other}"].setChecked(other == name)
         self._apply_theme()
 
     def changeEvent(self, event):
@@ -1569,6 +1628,10 @@ class StudioWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(stylesheet(self.theme))
+
+        for button, name in getattr(self, "toolbar_icons", {}).items():
+            colour = "#ffffff" if name == "play" else self.theme["fg"]
+            button.setIcon(icons.qicon(name, colour, 16))
 
         for panel in (self.project_panel, self.structure_panel, self.problems_panel,
                       self.console, self.changes_panel, self.debug_panel,

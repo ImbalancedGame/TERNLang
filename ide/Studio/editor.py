@@ -87,22 +87,36 @@ class ErrorStrip(QWidget):
 
 
 class CompletionPopup(QListWidget):
-    """A completion list anchored under the caret, driven from the keyboard."""
+    """A completion list anchored under the caret, driven from the keyboard.
+
+    Deliberately not `Qt.Popup`. A popup window grabs the keyboard, so the next
+    character typed goes to the list instead of the editor: the list stops
+    filtering, the character is lost, and on Windows the window is deactivated
+    by the popup appearing. `Qt.ToolTip` gives a frameless always-on-top window
+    that never takes activation, so the editor keeps the keyboard and stays the
+    only place text is inserted. That is how JetBrains completion behaves and it
+    is the reason this class is not a QCompleter.
+    """
 
     accepted = Signal(str)
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowFlags(Qt.Popup)
-        self.setUniformItemSizes(True)
+        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setUniformItemSizes(True)
         self.setMouseTracking(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.itemClicked.connect(self._choose)
         self._documentation = {}
+        self._labels = []
 
     def show_items(self, items, theme, prefix):
-        self.clear()
+        """Fill the list with `items` and narrow it to what has been typed."""
         self._documentation.clear()
+        self._labels = []
+        self.clear()
         for item in items:
             label = item.get("label", "")
             detail = item.get("detail", "")
@@ -112,44 +126,84 @@ class CompletionPopup(QListWidget):
             if isinstance(documentation, dict):
                 documentation = documentation.get("value")
             self._documentation[label] = documentation
+            self._labels.append(label)
             entry.setData(Qt.UserRole, label)
             self.addItem(entry)
 
-        if self.count() == 0:
-            self.hide()
-            return
-
-        # Narrow to what has been typed, and preselect the exact match.
-        best = 0
-        for row in range(self.count()):
-            if self.item(row).data(Qt.UserRole) == prefix:
-                best = row
-                break
-
-        self.setCurrentRow(best)
         self.setStyleSheet(f"""
             QListWidget {{ background: {theme['panel']}; border: 1px solid {theme['border']};
-                           color: {theme['fg']}; outline: none; }}
-            QListWidget::item {{ padding: 3px 8px; }}
+                           color: {theme['fg']}; outline: none; padding: 3px; }}
+            QListWidget::item {{ padding: 5px 8px; border-radius: 4px; }}
             QListWidget::item:selected {{ background: {theme['accent']}; color: #ffffff; }}
         """)
-        self.resize(420, min(280, 20 * self.count() + 6))
-        self.show()
+        self.filter(prefix)
+        if self.count():
+            self.show_without_activating()
+
+    def show_without_activating(self):
+        """Show without taking focus, so typing keeps reaching the editor."""
+        was = self.isVisible()
+        super().show()
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        if not was:
+            super().show()
+
+    def filter(self, prefix):
+        """Narrow the visible rows to labels starting with `prefix`.
+
+        Done here rather than by asking the server again: the list already
+        holds every candidate, so the popup tracks the keystroke immediately
+        instead of a round-trip behind it.
+        """
+        prefix = (prefix or "").lower()
+        rows = [row for row, label in enumerate(self._labels)
+                if label.lower().startswith(prefix)]
+        if not rows:
+            # No member of this list starts with what was typed. Better to let
+            # the user keep typing than to hide the list mid-word.
+            if prefix == "":
+                self.hide()
+                return
+            rows = list(range(len(self._labels)))
+        for row in range(len(self._labels)):
+            self.item(row).setHidden(row not in rows)
+        visible = [row for row in rows]
+        if not visible:
+            self.hide()
+            return
+        self.setCurrentRow(visible[0])
+        self.resize(420, min(280, 22 * min(len(visible), 12) + 8))
+        self._visible_rows = visible
+
+    def current_label(self):
+        item = self.currentItem()
+        if item is None:
+            return None
+        if item.isHidden():
+            for row in range(self.count()):
+                if not self.item(row).isHidden():
+                    return self.item(row).data(Qt.UserRole)
+            return None
+        return item.data(Qt.UserRole)
+
+    def move_selection(self, delta):
+        """Move by whole visible rows, skipping the ones filtered out."""
+        rows = [row for row in range(self.count()) if not self.item(row).isHidden()]
+        if not rows:
+            return
+        current = self.currentRow()
+        if current not in rows:
+            self.setCurrentRow(rows[0])
+            return
+        index = (rows.index(current) + delta) % len(rows)
+        self.setCurrentRow(rows[index])
+
+    def documentation_for(self, label):
+        return self._documentation.get(label)
 
     def _choose(self, item):
         self.accepted.emit(item.data(Qt.UserRole))
         self.hide()
-
-    def move_selection(self, delta):
-        row = (self.currentRow() + delta) % max(1, self.count())
-        self.setCurrentRow(row)
-
-    def current_label(self):
-        item = self.currentItem()
-        return item.data(Qt.UserRole) if item else None
-
-    def documentation_for(self, label):
-        return self._documentation.get(label)
 
 
 class Editor(QPlainTextEdit):
@@ -157,6 +211,7 @@ class Editor(QPlainTextEdit):
 
     cursorMoved = Signal(int, int)
     modificationChanged = Signal()
+    contentChanged = Signal()      # the text differs from what the server has
     saveRequested = Signal()
     runRequested = Signal()
     debugRequested = Signal()
@@ -359,6 +414,11 @@ class Editor(QPlainTextEdit):
         self._update_margins()
         self.gutter.update()
         self.modificationChanged.emit()
+        # The language server is the only thing that understands the program,
+        # so it has to be told the text changed. Until this existed it was told
+        # once, when the file was opened, and every completion, hover and
+        # diagnostic was computed against the version on disk.
+        self.contentChanged.emit()
 
     def _match_brackets(self):
         text = self.toPlainText()
@@ -438,15 +498,36 @@ class Editor(QPlainTextEdit):
         if self._type_pair(event):
             return
 
+        if event.key() == Qt.Key_Backspace and self.popup.isVisible():
+            super().keyPressEvent(event)
+            prefix = self._prefix()
+            if prefix:
+                self.popup.filter(prefix)
+                self._place_popup()
+            else:
+                self.popup.hide()
+            return
+
         super().keyPressEvent(event)
 
-        # Autocompletion after typing, or immediately after a dot.
+        # Autocompletion: ask the server once, then narrow the list locally.
         text = event.text()
-        if text and (text.isalnum() or text in "_$."):
-            if text == ".":
-                self.request_completion()
-            else:
-                self.request_completion()
+        if not text:
+            return
+        if text.isalnum() or text in "_$.":
+            if self.popup.isVisible() and text != ".":
+                # Every candidate for this expression is already in the list,
+                # so the keystroke filters it here rather than waiting for a
+                # round-trip behind it. This is what makes typing feel instant.
+                self.popup.filter(self._prefix())
+                self._place_popup()
+                if not self.popup.isVisible():
+                    self.request_completion()
+                return
+            self.request_completion()
+        elif self.popup.isVisible() and text not in "([":
+            # A space, a comma or a closing bracket ends the expression.
+            self.popup.hide()
 
     PAIRS = {"(": ")", "[": "]", "{": "}", '"': '"', "'": "'"}
 
@@ -692,18 +773,15 @@ class Editor(QPlainTextEdit):
     # ----------------------------------------------------------- completions
 
     def set_completions(self, items, start_offset):
+        """Show `items`, narrowed to whatever has already been typed."""
         self._completion_items = items
         self._completion_start = start_offset
 
-        prefix = self._prefix()
-        matching = [item for item in items if item.get("label", "").lower().startswith(prefix.lower())]
-        if not matching:
-            matching = items
-        if not matching:
+        if not items:
             self.popup.hide()
             return
 
-        self.popup.show_items(matching, self.theme, prefix)
+        self.popup.show_items(items, self.theme, self._prefix())
         self._place_popup()
 
     def _prefix(self):

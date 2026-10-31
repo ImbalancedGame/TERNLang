@@ -1,6 +1,6 @@
 """Entry point for TERN Studio.
 
-    python3 -m ide.Studio [project-directory] [--theme darcula|light]
+    python3 -m ide.Studio [project-directory] [--theme darcula|light|eclipse|vs-dark|carbon]
                           [--screenshot out.png] [--size 1440x900]
                           [--no-settings]
 
@@ -17,7 +17,21 @@ import sys
 from PySide6.QtCore import QSettings, QTimer
 from PySide6.QtWidgets import QApplication
 
-from .theme import stylesheet, THEMES
+from .theme import apply_to, stylesheet, THEMES
+
+
+def default_project():
+    """The folder Studio opens when nothing else names one.
+
+    In a checkout that is the repository this package lives in. Frozen by
+    PyInstaller it is the folder the executable sits in, because the bundle's
+    own directory is a cache that is deleted when the application exits — and
+    "open the folder you are in" is what someone double-clicking an .exe in
+    their projects directory expects.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _take_option(argv, name, default=None):
@@ -59,11 +73,17 @@ def main(argv=None):
     if len(argv) > 1:
         raise SystemExit(f"unexpected argument(s): {' '.join(argv[1:])}")
 
-    default_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    default_root = default_project()
 
     app = QApplication(sys.argv[:1] + ["TERN Studio"])
     app.setApplicationName("TERN Studio")
     app.setOrganizationName("TERN")
+    # Fusion, not the platform style. The native Windows style draws its own
+    # beveled buttons, combo boxes and spin buttons and ignores most of what a
+    # stylesheet says about them, which is why the window looked dated next to
+    # Rider no matter which palette was selected. Fusion is the same on every
+    # platform, so the stylesheet is the whole of the appearance.
+    apply_to(app)
     app.setStyleSheet(stylesheet(THEMES[theme]))
 
     settings = QSettings() if remember and not screenshot else None

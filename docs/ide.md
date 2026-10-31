@@ -67,7 +67,7 @@ Then:
 
 ```bash
 bash tools/ide.sh examples                        # open a directory
-bash tools/ide.sh --theme light                   # Darcula is the default
+bash tools/ide.sh --theme eclipse                 # Darcula is the default
 bash tools/ide.sh --screenshot /tmp/studio.png    # render once, headless
 ```
 
@@ -78,7 +78,7 @@ and its parents as well as the repository root, so a virtualenv made after
 syntax server and debugger if any is missing — Run and Debug are part of the
 IDE, so they are built together on a first launch rather than failing later —
 and sets `DOTNET_ROOT` only when the runtime is the bundled one, since a system
-`dotnet` must not be pointed at it. `--theme light|darcula` and
+`dotnet` must not be pointed at it. `--theme darcula|light|eclipse|vs-dark|carbon` and
 `--size 1440x900` are passed through to the app.
 
 ### What differs between platforms
@@ -113,6 +113,38 @@ process with `Fatal Python error: none_dealloc`. The same code runs cleanly
 on 6.9.3, so `tools/test.sh` and the launcher prefer an interpreter that has
 it.
 
+## Packaging it
+
+`python tools/package.py` runs PyInstaller over the application and writes
+`dist/TERN Studio/` — on Windows, `TERN Studio.exe` plus everything it needs in
+the same folder. Nothing Python is needed on the machine that runs it, and there
+is no virtualenv to activate first, which is the point.
+
+```bat
+dotnet build                       :: the three .NET assemblies
+tools\ide.cmd                        :: once, to make sure it runs
+.venv\Scripts\pip install pyinstaller
+.venv\Scripts\python tools\package.py
+dist\TERN Studio\TERN Studio.exe
+```
+
+The build copies `build\*.dll` next to the executable, under a `build\`
+folder, because that is where `runtime.assembly()` looks — the assemblies are
+not embedded in the bundle. PyInstaller flattens its inputs into an archive and
+`dotnet` cannot run a managed assembly out of one; more to the point, the .NET
+runtime is not ours to ship. A machine without it opens the window and the
+editor, and the Run window says exactly what is missing instead of failing
+silently.
+
+Two flags matter: `--onefile` produces a single executable which unpacks itself
+to a temporary directory on every start (slower to launch, and the copied
+`build\` folder has to sit beside it), and `--console` keeps a console window so
+a crash has somewhere to print. The default is a folder build without a console,
+because Studio has a terminal panel of its own.
+
+Qt is pruned to the modules Studio imports; `tools/test_package.py` checks that
+nothing the code imports is on the exclusion list.
+
 ## What the IDE does
 
 | Feature | Where | Notes |
@@ -133,7 +165,7 @@ it.
 | Run | F5 | runs the current file on the interpreter and streams output to the Run window |
 | Compile | Ctrl+F5 | builds and runs it through the native backend |
 | Reformat | Ctrl+Alt+L | the server's formatter, 4-space indent |
-| Themes | View → Theme | Darcula and light, applied to editor *and* tool windows |
+| Themes | View → Theme | Darcula, IntelliJ Light, Eclipse, Visual Studio Dark and Carbon — applied to the editor *and* every tool window, because they all read one palette |
 | Tool windows | View | Project, Structure, Run, Problems, Terminal, Debug, Commit, Find |
 | Terminal | Alt+F12 | a real shell (`bash`) in a dock, with colours, history, Ctrl+C and Ctrl+L |
 | Debugging | Debug window, gutter | breakpoints (with conditions), watches, stepping, call stack, locals, evaluate |
@@ -142,6 +174,29 @@ it.
 
 Shortcuts are ordinary Qt ones, so `Ctrl+Q`, `Ctrl+S`, `Ctrl+W`, `Ctrl+Tab`
 and `Ctrl++`/`Ctrl+-` behave as expected too.
+
+### The look
+
+Two decisions account for most of it.
+
+**Fusion, not the platform style.** `main.py` sets `QApplication.setStyle("Fusion")`
+before the stylesheet. The native Windows style draws its own beveled buttons,
+combo boxes and spin buttons and ignores most of what a stylesheet says about
+them, so the window kept a 2009 chrome no matter which palette was selected —
+which is what "3D buttons" was. Fusion is identical on every platform, so the
+stylesheet is the whole of the appearance and a screenshot taken here is what a
+Windows machine shows.
+
+**Icons are drawn, not typed.** A glyph like `▶` or `⚙` is whatever the fonts on
+the machine decide it is, which is how a gear became a circle and a close button
+became a red square. `ide/Studio/icons.py` holds the shapes as SVG, writes one
+file per colour into the temporary directory and hands back a path; the
+stylesheet references that path and the toolbar gets a `QIcon` from it. Vector
+means crisp at any scaling factor, and nothing binary is committed.
+
+Everything else is derived: hover and pressed colours are computed from the
+palette by `theme.blend()`, so a theme is a table of about twenty colours and no
+per-widget hand-tuning.
 
 ### The terminal
 
@@ -341,7 +396,8 @@ Both halves are covered, and both are part of `tools/test.sh`:
 ```bash
 bash tools/test-ide.sh                                   # 39 assertions, protocol only
 python3 tools/debug_test.py                              # 41 checks, debugger only
-LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 100 checks, real window
+LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 119 checks, real window
+.venv/bin/python tools/test_package.py                   # 12 checks, packaging
 ```
 
 `tools/test-ide.sh` drives `TERN.Ide.dll` over stdio with no UI at all: framing,
@@ -374,6 +430,22 @@ hand, so they cannot drift from the code:
 LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/shots.py
 ```
 
+### What the completion suite checks
+
+The window suite types into a real editor one key at a time and asserts on what
+the popup shows, because calling `set_completions()` directly — which is what it
+used to do — proved nothing: every layer between the keystroke and the list was
+broken and the test could not tell. Typing `math.` has to yield the library's
+members rather than the keyword list, typing `sqr` has to narrow it to `sqrt`
+without another round-trip, and Tab has to insert it.
+
+That regression had a cause worth remembering: **the editor never told the
+language server that the text had changed.** `didOpen` was sent once, on open,
+and the server answered every subsequent question about the file as it had been
+on disk. Diagnostics, hover and go-to-definition were all computed against stale
+text; completion was the one where it was obvious, because the list was full of
+keywords that were not valid after a dot.
+
 ## Known limits
 
 Honest list, in the order they would annoy someone:
@@ -392,7 +464,16 @@ Honest list, in the order they would annoy someone:
 * **The formatter is conservative** — indentation and trailing whitespace, not
   a reflow. It will not re-wrap long argument lists.
 * **PySide6 is a dependency**, and a heavy one (~150 MB). The server is not: it
-  is the same self-contained .NET build everything else uses.
+  is the same self-contained .NET build everything else uses. `tools/package.py`
+  removes the need for a Python installation on the target machine, not for the
+  .NET runtime.
+* **Packaging has not been run end to end in the sandbox.** PyInstaller needs a
+  CPython built with a shared `libpython` and a C toolchain to collect against;
+  the machine this was developed on has neither, and cannot fetch one. The
+  command, the exclusions and the entry point are tested
+  (`tools/test_package.py`), and the entry point is run to a rendered window —
+  but `dist/` has never been produced here. The first Windows run is the missing
+  step.
 
 ## Doing without a screen
 

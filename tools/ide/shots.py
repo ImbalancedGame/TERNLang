@@ -36,9 +36,10 @@ def main():
     from PySide6.QtGui import QTextCursor
 
     app = QApplication(["tern-studio-shots"])
-    from ide.Studio.theme import THEMES, stylesheet
+    from ide.Studio.theme import THEMES, apply_to, stylesheet
     from ide.Studio.window import StudioWindow
 
+    apply_to(app)
     app.setStyleSheet(stylesheet(THEMES["darcula"]))
     os.makedirs(OUT, exist_ok=True)
 

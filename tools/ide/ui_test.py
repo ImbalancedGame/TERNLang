@@ -27,6 +27,13 @@ for _name, _value in _runtime_environment(ROOT).items():
     os.environ.setdefault(_name, _value)
 
 
+def _luminance(hex_colour):
+    """Relative brightness of "#rrggbb", for "is this theme actually darker"."""
+    value = hex_colour.lstrip("#")
+    red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
 class Checks:
     def __init__(self, verbose):
         self.verbose = verbose
@@ -70,9 +77,10 @@ def main():
     app = QApplication(["tern-studio-test"])
     sys.path.insert(0, ROOT)
 
-    from ide.Studio.theme import THEMES, stylesheet
+    from ide.Studio.theme import THEMES, apply_to, stylesheet
     from ide.Studio.window import StudioWindow
 
+    apply_to(app)
     app.setStyleSheet(stylesheet(THEMES["darcula"]))
 
     checks = Checks(verbose)
@@ -88,6 +96,18 @@ def main():
     checks.check("the syntax server started", "ready" in window.status_server.text().lower(),
                  window.status_server.text())
     checks.check("the project tree shows the repository", window.project_panel.tree.model() is not None)
+
+    # ----------------------------------------------------------- the runner
+    checks.check("the window knows how it runs a program",
+                 isinstance(window.launcher, list) and window.launcher,
+                 str(window.launcher))
+    checks.check("the Run window says which command it will use",
+                 any("Runner:" in line for line in window.console.output.toPlainText().splitlines()),
+                 window.console.output.toPlainText()[:200])
+    checks.check("the chosen runner can actually start",
+                 window.runtime_missing is None or "Runner:" in
+                 window.console.output.toPlainText(),
+                 str(window.runtime_missing))
     checks.check("the title bar names the IDE", window.windowTitle() == "TERN Studio")
 
     # ---------------------------------------------------------- analysis
@@ -162,6 +182,59 @@ def main():
         window.grab().save(os.path.join(ROOT, "build", "ide", "completion.png"))
         editor.popup.hide()
 
+    # Completion by typing, end to end: the keystrokes reach the editor, the
+    # editor tells the server what the document now says, and the list narrows
+    # as the word is typed. Every part of this was broken at some point - the
+    # server never saw the edit, so the list described the file on disk.
+    # A copy, not the repository's file: closing a modified tab asks to save,
+    # and with nobody there to click "Discard" the default button answers. The
+    # first version of this test wrote `let value = math.sqrt` over an example.
+    scratch = tempfile.mkdtemp(prefix="tern-typing-")
+    typed_path = os.path.join(scratch, "typing.tern")
+    with open(os.path.join(ROOT, "examples", "fizzbuzz.tern"), encoding="utf-8") as source:
+        with open(typed_path, "w", encoding="utf-8") as copy:
+            copy.write(source.read())
+    window.open_file(typed_path)
+    pump(app, 800)
+    typed = window._editor()
+    typed.setPlainText("")
+    typed.setFocus()
+    pump(app, 250)
+    for character in "let value = math.":
+        QTest.keyClick(typed, character)
+        pump(app, 30)
+    pump(app, 900)
+
+    checks.check("typing reaches the editor", typed.toPlainText() == "let value = math.",
+                 repr(typed.toPlainText()))
+    checks.check("completion opens on a dot", typed.popup.isVisible(),
+                 f"visible={typed.popup.isVisible()} rows={typed.popup.count()}")
+    labels = [typed.popup.item(row).data(Qt.UserRole)
+              for row in range(typed.popup.count()) if not typed.popup.item(row).isHidden()]
+    checks.check("the list is the library's members, not the keywords",
+                 "sqrt" in labels and "let" not in labels, str(labels[:8]))
+
+    for character in "sqr":
+        QTest.keyClick(typed, character)
+        pump(app, 80)
+    pump(app, 400)
+    remaining = [typed.popup.item(row).data(Qt.UserRole)
+                 for row in range(typed.popup.count()) if not typed.popup.item(row).isHidden()]
+    checks.check("typing narrows the list without asking the server again",
+                 remaining == ["sqrt"], str(remaining))
+    checks.check("the current row is the narrowed match",
+                 typed.popup.current_label() == "sqrt", str(typed.popup.current_label()))
+    QTest.keyClick(typed, Qt.Key_Tab)
+    pump(app, 250)
+    checks.check("Tab completes the word", typed.toPlainText() == "let value = math.sqrt",
+                 repr(typed.toPlainText()))
+    checks.check("completing closes the popup", not typed.popup.isVisible())
+
+    # Back to the file the rest of the suite works on: format_code acts on the
+    # active tab, not on a particular editor.
+    window.tabs_widget.setCurrentWidget(window.tabs[editor.path])
+    pump(app, 150)
+
     # ------------------------------------------------------------- hover
     editor.setPlainText(original)
     window.server.did_change(_uri(editor.path), original)
@@ -192,6 +265,25 @@ def main():
         window.grab().save(os.path.join(ROOT, "build", "ide", "light.png"))
     window.set_theme("darcula")
     checks.check("the dark theme applies back", window.theme_name == "darcula")
+
+    # Every palette must apply, and apply differently: a theme table that
+    # silently falls back to one look is worse than no theme menu.
+    for name in ("eclipse", "vs-dark", "carbon"):
+        window.set_theme(name)
+        checks.check(f"the {name} theme applies", window.theme_name == name)
+        checks.check(f"the {name} theme reaches the editor",
+                     window._editor().theme is THEMES[name])
+    window.set_theme("vs-dark")
+    dark_css = app.styleSheet()
+    window.set_theme("eclipse")
+    checks.check("switching themes rewrites the stylesheet", app.styleSheet() != dark_css)
+    checks.check("the theme menu has an entry per palette",
+                 all(f"theme_{name}" in window.actions_map for name in THEMES),
+                 str(sorted(n for n in window.actions_map if n.startswith("theme_"))))
+    checks.check("the carbon theme is darker than darcula",
+                 _luminance(THEMES["carbon"]["bg"]) < _luminance(THEMES["darcula"]["bg"]),
+                 f"{THEMES['carbon']['bg']} vs {THEMES['darcula']['bg']}")
+    window.set_theme("darcula")
 
     # ------------------------------------------------------------ format
     editor.setPlainText("fn f() {\nlet x = 1;\nif (x > 0) {\nreturn x;\n}\nreturn 0;\n}\n")
