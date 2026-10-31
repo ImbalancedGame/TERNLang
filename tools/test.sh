@@ -72,6 +72,30 @@ if [[ $UPDATE -eq 0 && -f "$HERE/tools/test_runner.py" ]]; then
   fi
 fi
 
+# Everything that needs PySide6 uses the same interpreter, found once.
+IDE_PYTHON=""
+if [[ $UPDATE -eq 0 ]]; then
+  for candidate in "$HERE/.venv/bin/python" "/tmp/qtenv/bin/python" python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import PySide6" 2>/dev/null; then
+      IDE_PYTHON="$candidate"; break
+    fi
+  done
+fi
+
+# Packaging: the entry point, the PyInstaller command, and what it prunes.
+if [[ $UPDATE -eq 0 && -n "$IDE_PYTHON" && -f "$HERE/tools/test_package.py" ]]; then
+  if package_output="$(cd "$HERE" && timeout 400 env QT_QPA_PLATFORM=offscreen \
+      LD_LIBRARY_PATH="$HERE/build/qt-stubs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      "$IDE_PYTHON" "$HERE/tools/test_package.py" 2>&1)"; then
+    echo "ok    package     $(tail -1 <<<"$package_output")"
+    pass=$((pass+1))
+  else
+    echo "FAIL package"
+    tail -20 <<<"$package_output" | sed 's/^/      /'
+    fail=$((fail+1)); failed_names+=("package")
+  fi
+fi
+
 # The IDE: the syntax server speaks the protocol correctly, and the window
 # drives that server. Both are skipped cleanly when their prerequisites are
 # absent, so a bare checkout can still run the language tests.
@@ -106,13 +130,7 @@ else
 fi
 
 if [[ $UPDATE -eq 0 && -f "$HERE/tools/ide/ui_test.py" ]]; then
-  ide_python=""
-  for candidate in "$HERE/.venv/bin/python" "/tmp/qtenv/bin/python" python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import PySide6" 2>/dev/null; then
-      ide_python="$candidate"; break
-    fi
-  done
-
+  ide_python="$IDE_PYTHON"
   if [[ -n "$ide_python" && -f "$HERE/build/TERN.Ide.dll" ]]; then
     [[ -d "$HERE/build/qt-stubs" ]] || "$ide_python" "$HERE/tools/ide/qt_stubs.py" >/dev/null 2>&1 || true
     if ui_output="$(cd "$HERE" && timeout 900 env QT_QPA_PLATFORM=offscreen \

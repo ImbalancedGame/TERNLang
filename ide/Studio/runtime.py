@@ -127,6 +127,28 @@ def runner(install_root):
     return ["tern"]
 
 
+def missing(install_root, argv):
+    """What stops `argv` from running, as a sentence, or None if it can run.
+
+    The IDE used to start a program it could not actually start and leave the
+    window silent about it. This is the question it asks itself first.
+    """
+    if not argv:
+        return "no runner was found"
+    program = argv[0]
+    if not (_exists(program) or shutil.which(program)):
+        return (f"`{program}` is not on PATH. Install the .NET 8 SDK "
+                f"(`winget install Microsoft.DotNet.SDK.8` on Windows).")
+    for argument in argv[1:]:
+        if argument.endswith(".dll") and not _exists(argument):
+            return (f"{argument} has not been built. Run `dotnet build` in "
+                    f"{install_root}, or `tools/build.py` where a shell is available.")
+    if os.path.basename(program).startswith("tern") and program.endswith("tern") \
+            and not WINDOWS and not os.access(program, os.X_OK):
+        return f"{program} is not executable"
+    return None
+
+
 def command(install_root, name):
     """`[dotnet, assembly]` for a server, or None when either is missing."""
     executable = dotnet(install_root)

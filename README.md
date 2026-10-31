@@ -337,10 +337,21 @@ It has live diagnostics, completion, hover documentation, go-to-definition,
 find usages, rename, a structure view, a run/compile window with streaming
 output, a terminal that is a real shell, a debugger with breakpoints (which can
 carry conditions), watches, stepping, a call stack and locals, a git commit
-window with coloured diffs, project and problems tool windows, two themes and a
-full keymap. See
-[`docs/ide.md`](docs/ide.md) for what is there, and for the short list of what
-is not.
+window with coloured diffs, project and problems tool windows, five themes
+(Darcula, IntelliJ Light, Eclipse, Visual Studio Dark and Carbon) and a full
+keymap. See [`docs/ide.md`](docs/ide.md) for what is there, and for the short
+list of what is not.
+
+For a build you can double-click instead of a virtualenv you have to activate:
+
+```bash
+pip install pyinstaller
+python tools/package.py            # dist/TERN Studio/
+```
+
+The result is a folder with an executable, the Qt it needs and the .NET
+assemblies beside it. It still wants the .NET 8 runtime — that is not ours to
+ship — but no Python and no virtualenv.
 
 The server half is a plain LSP 3.17 server over stdio (`build/TERN.Ide.dll`), so
 any editor with LSP support can use it, not just Studio:

@@ -3,6 +3,7 @@ build/
 bin/
 obj/
 out/
+dist/
 
 # toolchain bootstrap artefacts (see tools/setup-toolchain.sh)
 .toolchain/
