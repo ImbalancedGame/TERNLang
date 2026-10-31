@@ -10,6 +10,7 @@ every opcode a few statements - there is no dispatch loop at run time.
     ternc.py can also drive the whole pipeline: ternc.py app.tern -o app
 """
 import argparse
+import glob
 import json
 import os
 import shlex
@@ -947,16 +948,24 @@ def find_zig():
     found = shutil.which("zig")
     if found:
         return found
+    roots = []
     try:
         import ziglang
+        roots.append(os.path.dirname(ziglang.__file__))
     except ImportError:
-        return None
+        pass
+    # A virtualenv keeps its packages out of the system interpreter, so
+    # `pip install ziglang` inside `.venv` is invisible to `import ziglang`
+    # here. Look in the checkout's own environments before giving up.
+    roots.extend(glob.glob(os.path.join(REPO, ".venv", "lib", "python*", "site-packages", "ziglang")))
+    roots.extend(glob.glob(os.path.join(REPO, ".venv", "Lib", "site-packages", "ziglang")))
     # The wheel ships the binary as `zig`, except on Windows where it is
     # `zig.exe` — the reason `pip install ziglang` used to be no help there.
-    for name in ("zig", "zig.exe"):
-        candidate = os.path.join(os.path.dirname(ziglang.__file__), name)
-        if os.path.exists(candidate):
-            return candidate
+    for root in roots:
+        for name in ("zig", "zig.exe"):
+            candidate = os.path.join(root, name)
+            if os.path.exists(candidate):
+                return candidate
     return None
 
 

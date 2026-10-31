@@ -12,6 +12,9 @@ dist/
 .d3d12_probe.png
 .gl_probe.png
 
+# frames examples/rotating_cube.tern writes by default
+cube_frames/
+
 # Python bytecode from the Studio front end and its tools
 __pycache__/
 *.pyc

@@ -2485,12 +2485,21 @@ static Value m_gcd(int argc, Value *argv) {
     return v_int(a);
 }
 
-static double now_millis(void) {
+/// Milliseconds since the Unix epoch: what `time.millis()` and `time.now()`
+/// are documented to return, and what every date the standard library prints is
+/// derived from. It used to be the monotonic clock, which counts from boot — so
+/// a compiled program said it was 1970 and the interpreter disagreed.
+static double epoch_millis(void) {
 #ifdef _WIN32
-    return (double)GetTickCount64();
+    FILETIME file_time;
+    GetSystemTimeAsFileTime(&file_time);
+    unsigned long long ticks = ((unsigned long long)file_time.dwHighDateTime << 32)
+        | (unsigned long long)file_time.dwLowDateTime;
+    // FILETIME counts 100 ns intervals since 1601-01-01.
+    return (double)(ticks / 10000ULL) - 11644473600000.0;
 #else
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_REALTIME, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 #endif
 }
@@ -2498,7 +2507,7 @@ static double now_millis(void) {
 static Value t_millis(int argc, Value *argv) {
     (void)argc;
     (void)argv;
-    return v_int((int64_t)now_millis());
+    return v_int((int64_t)epoch_millis());
 }
 
 // `time.iso(seconds)`: Unix seconds as an ISO 8601 UTC string, matching the
@@ -2519,7 +2528,7 @@ static Value t_iso(int argc, Value *argv) {
 static Value t_now(int argc, Value *argv) {
     (void)argc;
     (void)argv;
-    return v_float(now_millis());
+    return v_float(epoch_millis() / 1000.0);
 }
 
 // --- string methods --------------------------------------------------------
@@ -3854,6 +3863,107 @@ static Value tx_pad(int argc, Value *argv) {
         buf.len = (size_t)width;
     }
     return buf_finish(&buf);
+}
+
+/// Replaces every invalid UTF-8 sequence with U+FFFD, so a partial read of a
+/// multi-byte character can never make an invalid TERN string.
+static size_t utf8_sanitise(const unsigned char *source, size_t length, unsigned char *out) {
+    size_t at = 0;
+    size_t written = 0;
+    while (at < length) {
+        // A strict check of one sequence: utf8_decode is deliberately forgiving
+        // (it is used on strings that are already valid), and forgiving is the
+        // one thing a decoder faced with a socket must not be.
+        unsigned char lead = source[at];
+        size_t size = 0;
+        if (lead < 0x80) {
+            size = 1;
+        } else if (lead >= 0xC2 && lead <= 0xDF) {
+            size = 2;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            size = 3;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            size = 4;
+        }
+
+        bool valid = size > 0 && at + size <= length;
+        for (size_t i = 1; valid && i < size; i++) {
+            if ((source[at + i] & 0xC0) != 0x80) {
+                valid = false;
+            }
+        }
+        if (valid && size == 3) {
+            unsigned char second = source[at + 1];
+            if ((lead == 0xE0 && second < 0xA0) || (lead == 0xED && second > 0x9F)) {
+                valid = false;   // overlong, or a surrogate half
+            }
+        }
+        if (valid && size == 4) {
+            unsigned char second = source[at + 1];
+            if ((lead == 0xF0 && second < 0x90) || (lead == 0xF4 && second > 0x8F)) {
+                valid = false;   // overlong, or beyond U+10FFFF
+            }
+        }
+        if (!valid) {
+            out[written++] = 0xEF;   // U+FFFD, three bytes
+            out[written++] = 0xBF;
+            out[written++] = 0xBD;
+            at += 1;
+            continue;
+        }
+        memcpy(out + written, source + at, size);
+        written += size;
+        at += size;
+    }
+    return written;
+}
+
+/// text.fromBytes(bytes[, offset[, length]]): UTF-8 bytes as text.
+static Value tx_from_bytes(int argc, Value *argv) {
+    if (!v_is_list(argv[0])) {
+        tern_panic("TypeError", "fromBytes() expects a list of bytes, not %s", tern_type_name(argv[0]));
+    }
+    List *bytes = (List *)argv[0].as.o;
+    long long offset = argc > 1 ? (long long)need_int(argv[1], "fromBytes", 1) : 0;
+    long long length = argc > 2 ? (long long)need_int(argv[2], "fromBytes", 2) : (long long)bytes->count - offset;
+    if (offset < 0 || length < 0 || offset > bytes->count || offset + length > bytes->count) {
+        tern_panic("ArgumentError", "fromBytes() range %lld..%lld is outside %d bytes",
+                   offset, offset + length, bytes->count);
+    }
+
+    size_t count = (size_t)length;
+    unsigned char *raw = (unsigned char *)malloc(count > 0 ? count : 1);
+    for (size_t i = 0; i < count; i++) {
+        Value byte = bytes->items[(int)(offset + (long long)i)];
+        if (byte.tag != T_INT || byte.as.i < 0 || byte.as.i > 255) {
+            tern_panic("TypeError", "byte %d is not an integer in 0..255",
+                       (int)(offset + (long long)i));
+        }
+        raw[i] = (unsigned char)byte.as.i;
+    }
+
+    // Every valid byte stays one byte, and an invalid one becomes three, so
+    // this is the worst case and a single allocation.
+    unsigned char *clean = (unsigned char *)malloc(count * 3 + 1);
+    size_t written = utf8_sanitise(raw, count, clean);
+    Value text = str_value((const char *)clean, written);
+    free(clean);
+    free(raw);
+    return text;
+}
+
+/// text.toBytes(text): the UTF-8 bytes of a string.
+static Value tx_to_bytes(int argc, Value *argv) {
+    (void)argc;
+    if (!v_is_str(argv[0])) {
+        tern_panic("TypeError", "toBytes() expects a string, not %s", tern_type_name(argv[0]));
+    }
+    Str *text = (Str *)argv[0].as.o;
+    List *bytes = list_new((int)text->len);
+    for (size_t i = 0; i < text->len; i++) {
+        list_push(bytes, v_int((unsigned char)text->chars[i]));
+    }
+    return v_obj((Obj *)bytes);
 }
 
 // --- random ---------------------------------------------------------------
@@ -5451,6 +5561,7 @@ static int net_fds[NET_MAX_HANDLES];
 static int net_kinds[NET_MAX_HANDLES];
 static int net_max_frames[NET_MAX_HANDLES];
 static int net_timeouts[NET_MAX_HANDLES];
+static int net_raw[NET_MAX_HANDLES];        // 1 = no hello, no framing: plain bytes
 static char *net_tokens[NET_MAX_HANDLES];
 static void *net_ssl[NET_MAX_HANDLES];      // SSL* once a connection is encrypted
 static void *net_ssl_ctx[NET_MAX_HANDLES];  // the SSL_CTX* that SSL* belongs to
@@ -5469,6 +5580,7 @@ static int net_store(int fd, int kind) {
             net_kinds[i] = kind;
             net_max_frames[i] = NET_DEFAULT_MAX_FRAME;
             net_timeouts[i] = 0;
+            net_raw[i] = 0;
             net_tokens[i] = NULL;
             return i + 1;
         }
@@ -5541,6 +5653,18 @@ static void net_write_all(int fd, const void *data, size_t length, const char *w
 
 /// Reads exactly `length` bytes into `buffer`. Returns the number of bytes read:
 /// less than `length` only at end of stream, and -1 on a socket error.
+/// One read, up to `length` bytes: whatever has arrived. net_read_raw waits for
+/// all of it, which is right for a frame header and wrong for a byte stream.
+static ssize_t net_read_some(int fd, unsigned char *buffer, size_t length) {
+    for (;;) {
+        ssize_t n = recv(fd, (char *)buffer, length, 0);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        return n;
+    }
+}
+
 static ssize_t net_read_raw(int fd, unsigned char *buffer, size_t length) {
     size_t got = 0;
     while (got < length) {
@@ -5957,6 +6081,14 @@ static ssize_t net_slot_read(int slot, unsigned char *buffer, size_t length) {
     return net_read_raw(net_fds[slot], buffer, length);
 }
 
+/// Like net_slot_read, but returns as soon as anything has arrived.
+static ssize_t net_slot_read_some(int slot, unsigned char *buffer, size_t length) {
+    if (net_ssl[slot]) {
+        return tls_read_some(net_ssl[slot], buffer, length);
+    }
+    return net_read_some(net_fds[slot], buffer, length);
+}
+
 static int net_bound_port(int fd) {
     struct sockaddr_in address;
     socklen_t length = sizeof address;
@@ -6089,10 +6221,11 @@ typedef struct NetOptions {
     const char *sni;
     bool verify;
     const char *ca;
+    bool raw;
 } NetOptions;
 
 static NetOptions net_options(Value v, const char *operation) {
-    NetOptions options = { NULL, NET_DEFAULT_MAX_FRAME, 0, false, NULL, true, NULL };
+    NetOptions options = { NULL, NET_DEFAULT_MAX_FRAME, 0, false, NULL, true, NULL, false };
     if (v.tag == T_NIL || v.tag == T_MISSING) {
         return options;
     }
@@ -6149,6 +6282,13 @@ static NetOptions net_options(Value v, const char *operation) {
 
     if (map_get(map, str_from_cstr("ca"), &found)) {
         options.ca = net_arg_text(found, "option 'ca'");
+    }
+
+    if (map_get(map, str_from_cstr("raw"), &found)) {
+        if (found.tag != T_BOOL) {
+            tern_panic("TypeError", "option 'raw' must be a boolean, not %s", tern_type_name(found));
+        }
+        options.raw = found.as.i != 0;
     }
 
     return options;
@@ -6232,6 +6372,7 @@ static Value n_net_listen(int argc, Value *argv) {
     int handle = net_store(fd, 1);
     net_max_frames[handle - 1] = options.max_frame;
     net_timeouts[handle - 1] = options.timeout;
+    net_raw[handle - 1] = options.raw ? 1 : 0;
     if (options.token) {
         net_tokens[handle - 1] = strdup(options.token);
     }
@@ -6248,6 +6389,7 @@ static Value n_net_accept(int argc, Value *argv) {
     int listener = net_fds[slot];
     char *expected = net_tokens[slot];
     int inherited_max = net_max_frames[slot];
+    int raw = net_raw[slot];
     int handshake_ms = net_timeouts[slot] > 0 ? net_timeouts[slot] : NET_HANDSHAKE_TIMEOUT_MS;
 
     struct sockaddr_in peer;
@@ -6262,6 +6404,15 @@ static Value n_net_accept(int argc, Value *argv) {
 
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+
+    if (raw) {
+        // Nothing to negotiate: a browser or a curl has never heard of TERN
+        // and would wait forever for a hello this side is waiting for too.
+        int handle = net_store(fd, 0);
+        net_max_frames[handle - 1] = inherited_max;
+        net_raw[handle - 1] = 1;
+        return v_int(handle);
+    }
 
     // The peer must say hello before the script sees the socket. The wait is
     // bounded so one silent peer cannot hold the server forever.
@@ -6384,7 +6535,10 @@ static Value n_net_connect(int argc, Value *argv) {
         net_ssl_ctx[handle - 1] = (void *)ctx;
     }
 
-    net_send_hello(handle - 1, options.token);
+    if (!options.raw) {
+        net_send_hello(handle - 1, options.token);
+    }
+    net_raw[handle - 1] = options.raw ? 1 : 0;
     return v_int(handle);
 }
 
@@ -6407,6 +6561,15 @@ static int net_connection_slot(Value v, const char *operation) {
     return slot;
 }
 
+/// Refuses a framed call on a connection that speaks plain bytes.
+static void net_require_framed(int slot, const char *operation) {
+    if (net_raw[slot]) {
+        tern_panic("NetError",
+                   "%s() needs a framed connection; this one was opened raw, so use sendBytes/receiveBytes/receiveSome",
+                   operation);
+    }
+}
+
 static int net_datagram_slot(Value v, const char *operation) {
     int slot = net_slot(net_handle_arg(v));
     if (net_kinds[slot] != 2) {
@@ -6419,6 +6582,7 @@ static Value n_net_send(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
     net_require_stream(slot, "send");
+    net_require_framed(slot, "send");
 
     Value encoded = wire_encode(argv[1]);
     List *payload = (List *)encoded.as.o;
@@ -6460,6 +6624,7 @@ static Value n_net_receive(int argc, Value *argv) {
     (void)argc;
     int slot = net_slot(net_handle_arg(argv[0]));
     net_require_stream(slot, "receive");
+    net_require_framed(slot, "receive");
     int limit = net_max_frames[slot];
 
     unsigned char header[4];
@@ -6512,6 +6677,34 @@ static Value n_net_send_bytes(int argc, Value *argv) {
     net_slot_write(slot, buffer, length, "sendBytes");
     free(buffer);
     return v_nil();
+}
+
+/// receiveSome(connection, count): one read, up to `count` bytes. Returns an
+/// empty list at end of stream, which is what ends a protocol loop.
+static Value n_net_receive_some(int argc, Value *argv) {
+    (void)argc;
+    int slot = net_connection_slot(argv[0], "receiveSome");
+    int count = net_arg_int(argv[1], "count");
+    if (count <= 0 || count > NET_MAX_FRAME) {
+        tern_panic("NetError", "receiveSome() needs a count between 1 and %d", NET_MAX_FRAME);
+    }
+
+    unsigned char *buffer = (unsigned char *)malloc((size_t)count);
+    ssize_t got = net_slot_read_some(slot, buffer, (size_t)count);
+    if (got < 0) {
+        free(buffer);
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            tern_panic("NetError", "receiveSome() timed out");
+        }
+        tern_panic("NetError", "receiveSome() failed: %s", strerror(errno));
+    }
+
+    List *bytes = list_new(got);
+    for (ssize_t i = 0; i < got; i++) {
+        list_push(bytes, v_int(buffer[i]));
+    }
+    free(buffer);
+    return v_obj((Obj *)bytes);
 }
 
 static Value n_net_receive_bytes(int argc, Value *argv) {
@@ -9046,6 +9239,8 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("upper"), make_native_arity("upper", s_upper, 1, 1));
         map_set(map, str_from_cstr("lower"), make_native_arity("lower", s_lower, 1, 1));
         map_set(map, str_from_cstr("split"), make_native_arity("split", s_split, 2, 2));
+        map_set(map, str_from_cstr("fromBytes"), make_native_arity("fromBytes", tx_from_bytes, 1, 3));
+        map_set(map, str_from_cstr("toBytes"), make_native_arity("toBytes", tx_to_bytes, 1, 1));
         return v_obj((Obj *)map);
     }
 
@@ -9134,6 +9329,8 @@ static Value namespace_map(const char *ns) {
                 make_native_arity("sendBytes", n_net_send_bytes, 2, 2));
         map_set(map, str_from_cstr("receiveBytes"),
                 make_native_arity("receiveBytes", n_net_receive_bytes, 2, 2));
+        map_set(map, str_from_cstr("receiveSome"),
+                make_native_arity("receiveSome", n_net_receive_some, 2, 2));
         map_set(map, str_from_cstr("maxFrame"),
                 make_native_arity("maxFrame", n_net_max_frame, 2, 2));
         map_set(map, str_from_cstr("send"),

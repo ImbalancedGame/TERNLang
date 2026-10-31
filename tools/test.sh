@@ -96,6 +96,16 @@ if [[ $UPDATE -eq 0 ]]; then
   done
 fi
 
+# Qt links libGL, libEGL, libxkbcommon and libdbus-1 even when only the offscreen
+# platform is used, and a machine without a display has none of them. The
+# stand-ins are built once here rather than inside the window test, because the
+# packaging check below imports QtWidgets too and runs first: on a clean build
+# it used to fail with "libGL.so.1: cannot open shared object file" while the
+# window test further down passed, having created them on the way.
+if [[ -n "$IDE_PYTHON" && ! -d "$HERE/build/qt-stubs" ]]; then
+  "$IDE_PYTHON" "$HERE/tools/ide/qt_stubs.py" >/dev/null 2>&1 || true
+fi
+
 # Packaging: the entry point, the PyInstaller command, and what it prunes.
 if [[ $UPDATE -eq 0 && -n "$IDE_PYTHON" && -f "$HERE/tools/test_package.py" ]]; then
   if package_output="$(cd "$HERE" && timeout 400 env QT_QPA_PLATFORM=offscreen \
@@ -146,7 +156,6 @@ fi
 if [[ $UPDATE -eq 0 && -f "$HERE/tools/ide/ui_test.py" ]]; then
   ide_python="$IDE_PYTHON"
   if [[ -n "$ide_python" && -f "$HERE/build/TERN.Ide.dll" ]]; then
-    [[ -d "$HERE/build/qt-stubs" ]] || "$ide_python" "$HERE/tools/ide/qt_stubs.py" >/dev/null 2>&1 || true
     if ui_output="$(cd "$HERE" && timeout 900 env QT_QPA_PLATFORM=offscreen \
         LD_LIBRARY_PATH="$HERE/build/qt-stubs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         "$ide_python" "$HERE/tools/ide/ui_test.py" 2>&1)"; then

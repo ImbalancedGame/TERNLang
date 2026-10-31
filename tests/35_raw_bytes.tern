@@ -1,0 +1,89 @@
+// Raw sockets and byte/text conversion: the two pieces an HTTP server needs.
+//
+// A normal TERN connection opens with a hello frame and carries length-prefixed
+// values. A peer that has never heard of TERN — a browser, curl, an HTTP client
+// library — cannot do either, so `{"raw": true}` turns both off and the script
+// gets the bytes.
+import "std:net";
+import "std:text";
+import "std:time";
+
+fn kind(block) {
+    try {
+        block();
+        return "ok";
+    } catch (e) {
+        return str(e);
+    }
+}
+
+// --- bytes are text, text is bytes -----------------------------------------
+println(text.toBytes("abc"));
+println(text.toBytes("héllo"));
+println(text.fromBytes([104, 105]));
+println(text.fromBytes([104, 195, 169, 108, 108, 111]));
+println(text.fromBytes([65, 66, 67, 68], 1, 2));
+// Invalid UTF-8 decodes to U+FFFD instead of throwing: a socket can hand back
+// half a character and the reader should survive it.
+println(len(text.fromBytes([255, 254, 65])));
+println(kind(fn() { text.fromBytes("not bytes"); }));
+println(kind(fn() { text.fromBytes([1, 2, 3], 2, 5); }));
+println(kind(fn() { text.toBytes(5); }));
+
+// --- a raw server and a raw client ------------------------------------------
+let server = net.listen("127.0.0.1", 0, {"raw": true});
+let client = net.connect("127.0.0.1", net.port(server), {"raw": true});
+let connection = net.accept(server);
+net.timeout(connection, 3000);
+net.timeout(client, 3000);
+
+// No hello went either way, so the first thing on the wire is the payload.
+net.sendBytes(client, text.toBytes("GET / HTTP/1.1\r\nHost: nowhere\r\n\r\n"));
+let request = text.fromBytes(net.receiveSome(connection, 4096));
+println(request.startsWith("GET / HTTP/1.1"));
+println(request.contains("\r\n\r\n"));
+
+// receiveSome returns what has arrived, not what was asked for.
+net.sendBytes(client, text.toBytes("0123456789"));
+println(text.fromBytes(net.receiveSome(connection, 4)));
+println(text.fromBytes(net.receiveSome(connection, 100)));
+
+// A reply travels back the same way.
+net.sendBytes(connection, text.toBytes("HTTP/1.1 200 OK\r\n\r\nhi"));
+println(text.fromBytes(net.receiveSome(client, 4096)));
+
+// End of stream is an empty list, which is what ends a read loop.
+net.close(client);
+println("eof:", net.receiveSome(connection, 8).length);
+
+// Framed calls on a raw connection say so instead of injecting a header into
+// somebody's HTTP stream.
+println(kind(fn() { net.send(connection, 1); }));
+println(kind(fn() { net.receive(connection); }));
+
+// Arguments are checked.
+println(kind(fn() { net.receiveSome(connection, 0); }));
+println(kind(fn() { net.receiveSome(connection, "four"); }));
+println(kind(fn() { net.listen(0, {"raw": "yes"}); }));
+
+net.close(connection);
+net.close(server);
+
+// A framed listener still checks the hello, so the option did not change the
+// default.
+let framed = net.listen("127.0.0.1", 0);
+let peer = net.connect("127.0.0.1", net.port(framed));
+let accepted = net.accept(framed);
+net.timeout(accepted, 500);
+println(kind(fn() { net.receiveSome(accepted, 4); }));
+net.close(peer);
+net.close(accepted);
+net.close(framed);
+
+// --- the clock --------------------------------------------------------------
+// These used to be measured from boot in the compiled back end, so a program
+// printed 1970 while the interpreter printed today.
+println("epoch millis:", time.millis() > 1700000000000);
+println("epoch seconds:", time.now() > 1700000000.0);
+println("seconds not millis:", time.now() < 100000000000.0);
+println("iso looks like a date:", time.iso(time.now()).startsWith("20"));

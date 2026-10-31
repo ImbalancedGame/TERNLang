@@ -13,10 +13,10 @@ caveats below.
 
 | Area | State | Verified by |
 | --- | --- | --- |
-| Language, interpreter | complete | 36 golden tests, `tools/test.sh` |
-| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (32), `native/parity.py` (42 programs) |
+| Language, interpreter | complete | 35 golden runs, `tools/test.sh` |
+| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (33), `native/parity.py` (43 programs) |
 | `math` `json` `os` `fs` `text` `lists` `time` `random` | complete, both back ends | golden tests, parity |
-| `net` (TCP, framing, tokens, frame ceiling, UDP) | complete, both back ends | `tests/26_net.tern`, `tools/test-tls.sh` |
+| `net` (TCP, framing, tokens, frame ceiling, UDP, raw mode) | complete, both back ends | `tests/26_net.tern`, `tests/35_raw_bytes.tern`, `tools/test-tls.sh` |
 | `http` / `https` | complete, both back ends | `tests/28_http.tern`, `tools/test-tls.sh` |
 | `rcon` | complete, both back ends | `tests/29_rcon.tern` |
 | `sftp` (OpenSSH client) | complete, both back ends | `tests/30_sftp.tern` |
@@ -24,29 +24,31 @@ caveats below.
 | `gl` (libEGL, OpenGL 3.3 core) | complete against a mock driver | `tools/test-gl.sh` |
 | `d3d12` (device, target, HLSL, PSO, draw) | complete against a mock driver | `tools/test-d3d12.sh` |
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
-| MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
+| MSDN-style reference | 281 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
 | TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (133) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (53) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       42 passed
+./tools/test.sh                                       43 passed
 python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
-python3 native/run_tests.py                           32 passed
-python3 native/parity.py                              42 compared, 0 differing
+python3 native/run_tests.py                           33 passed
+python3 native/parity.py                              43 compared, 0 differing
+python3 tools/test_examples.py                        53 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
 bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
 bash tools/test-ide.sh                                39 passed
 python3 tools/debug_test.py                           41 passed
-python3 tools/gen-reference.py --check                278 pages up to date
+python3 tools/gen-reference.py --check                281 pages up to date
 ```
 
 ## Benchmarks
@@ -130,7 +132,14 @@ Ordered by what would bite a user first.
    `.exe` — but `tools/test_runner.py` proves the resolution, not a Windows
    process launch. `pip install ziglang` and one `ternc.py` run is the check
    that remains.
-2. **Neither renderer has run on real hardware.** `gl` and `d3d12` are tested
+2. **Neither renderer has a window.** Both draw into an offscreen target and
+   read it back, which is why `examples/rotating_cube.tern` writes PNGs instead
+   of showing them. Everything below presentation is real — geometry,
+   projection, shading, draw calls, readback — but a window needs a swap chain
+   (or a blitted DIB) and a message loop in each backend, and neither exists
+   yet. On Windows a `d3d12` window is the natural next step; on Linux it means
+   an X11 or Wayland surface for EGL.
+3. **Neither renderer has run on real hardware.** `gl` and `d3d12` are tested
    against mocks that answer the calls in the right order and paint what they
    are told to paint. That proves the plumbing — that the vertex buffer reaches
    the draw, that the readback pitch is the device's — and not that a driver
@@ -138,32 +147,32 @@ Ordered by what would bite a user first.
    Windows machine, and `tools/gl/probe.tern` on a machine with a GPU, is the
    check that remains. The structure mirror is already checked against the real
    `d3d12.h` by the Windows build (`tools/d3d12/gen_layout_check.py`).
-3. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
+4. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
    `sftp` and `gl` answer `UnsupportedError` in a Windows binary; the language,
    `math`, `time`, `json`, `os`, `fs`, `text`, `lists` and `d3d12` are there.
    Winsock is the missing translation for the first four, and `wgl` or an EGL
    build for the last. The interpreter on Windows has all of them.
-4. **`d3d12` draws with one vertex buffer per call.** Correct, and the wrong
+5. **`d3d12` draws with one vertex buffer per call.** Correct, and the wrong
    shape for a renderer that draws a thousand times a frame: each `d3d12.draw`
    creates an upload-heap buffer and waits for the GPU. A ring of persistently
    mapped buffers is the next step, and it needs the fence work that goes with
    it.
-5. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
+6. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
    `TlsError: server TLS is not supported`: a script can be a TLS client but not
    a TLS server. Both back ends would need the other half of the handshake
    (OpenSSL's `SSL_accept`, .NET's `SslStream` on the accepted socket).
-6. **Map writes are memory bound, not compute bound.** Not a correctness
+7. **Map writes are memory bound, not compute bound.** Not a correctness
    problem; listed because it is the one benchmark where compiling buys nothing
    and it will not improve until the table's layout does (a bucket array with
    inline keys, or a chunked table that avoids the doubling rehash).
-7. **Small allocation churn.** The native collector is conservative: an integer
+8. **Small allocation churn.** The native collector is conservative: an integer
    that happens to look like an object address can keep an object alive, and the
    heap floor is 16 MiB, so a tiny program's RSS is not tiny. The interpreter
    leaves that to .NET.
-8. **`fs` error text differs slightly.** A compiled binary names the path as the
+9. **`fs` error text differs slightly.** A compiled binary names the path as the
    script wrote it; the interpreter reports the resolved absolute path. Same
    error kind, different text, which `parity.py` tolerates and a user might not.
-9. **Diagnostics in compiled binaries.** Compiler warnings from
+10. **Diagnostics in compiled binaries.** Compiler warnings from
    `./tools/tern check` are not emitted by binaries, and there is no sandbox:
    `--no-fs`, `--no-net`, `engine.AllowFileSystem` and `engine.AllowNetwork`
    belong to the interpreter, since a binary has no engine to configure.
@@ -172,6 +181,27 @@ Out of scope by request: DLSS, and FTP (SFTP is the supported transfer, because
 SSH is what the servers actually offer).
 
 ## Recently fixed
+
+* The runner used to treat any argument beginning with `--` as its own, so
+  `tern run deploy.tern --dry-run` performed a real deployment and the script
+  never saw its flag. Options are now recognised only before the script path;
+  everything after it is `os.args()`.
+* Relative paths in `fs`, `gl` and `d3d12` resolved against the script's
+  directory in the interpreter but against the working directory in a compiled
+  binary, so a passing script could fail once run from elsewhere. Both back ends
+  use the working directory now; only `import` still resolves against the
+  importing file.
+* `while true` never ran its body: the constant-condition path patched the body's
+  exit jump to the loop exit. It loops, and `tests/13_loops.tern` covers it.
+* `text.toBytes` and `text.fromBytes` were added inside the `#ifndef _WIN32`
+  block of the native runtime, so a Windows binary would not compile at all
+  while every Linux suite stayed green. They are in the cross-platform section
+  now, `35_raw_bytes` is part of the Windows cross-build, and `ternc.py` finds a
+  `ziglang` installed into the checkout's virtualenv — the reason the gap only
+  showed up when the suite was run by hand with `TERN_ZIG` set.
+* `text.fromBytes` reported a missing list with a different sentence in each
+  back end; the native runtime now matches the interpreter word for word, which
+  `tests/35_raw_bytes.tern` pins.
 
 * A refused connection with a timeout used to abort the interpreter: the
   connect path waited on a `Task`, whose `AggregateException` is not a

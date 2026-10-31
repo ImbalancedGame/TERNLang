@@ -290,6 +290,22 @@ FUNCTIONS = {
         "example": ["println(net.receiveBytes(connection, 4));"],
         "see": ["net.sendBytes"],
     },
+    "net.receiveSome": {
+        "summary": "Reads up to n bytes, or returns an empty list at end of stream.",
+        "params": [CONNECTION, ("count", "int", "The most bytes to take, 1..67108864.")],
+        "returns": ("list of int", "What arrived: 1..count bytes, or an empty list at end of stream."),
+        "errors": [("NetError", "`count` is out of range, the read times out, or the socket is closed."),
+                   ("ConnectionError", "The other side reset the connection.")],
+        "remarks": "The difference from `net.receiveBytes` is that a short read is normal: it "
+                   "returns as soon as any bytes arrive, so it suits a protocol loop that reads "
+                   "until the peer closes. An empty list means end of stream, not a timeout - a "
+                   "timeout raises `NetError`, which is why a caller wanting to distinguish the "
+                   "two should set `net.timeout` first. Reads do not cross frame headers; use "
+                   "this only on a connection opened or accepted with the `raw` option.",
+        "example": ["while true {", "    let chunk = net.receiveSome(connection, 4096);",
+                    "    if len(chunk) == 0 { break; }", "    println(len(chunk));", "}"],
+        "see": ["net.receiveBytes", "net.sendBytes", "net.timeout"],
+    },
     "net.maxFrame": {
         "summary": "Reads, or changes, the largest frame a connection accepts.",
         "params": [CONNECTION, ("bytes", "int", "The new ceiling, 256..67108864.")],

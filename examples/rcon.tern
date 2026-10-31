@@ -1,0 +1,134 @@
+// Source RCON: log in, run commands, read the answers.
+//
+//   tern run examples/rcon.tern                                     usage
+//   tern run examples/rcon.tern 127.0.0.1 27015 secret              interactive
+//   tern run examples/rcon.tern 127.0.0.1 27015 secret status list  run and exit
+//
+// RCON is the remote console every Source-engine game server speaks — Counter-
+// Strike, Team Fortress, Garry's Mod — and a growing number of other servers
+// do the same, Minecraft included. It is a length-prefixed little-endian packet
+// with an id, a type and a NUL-terminated body, on a plain TCP socket.
+//
+// The password is visible in `ps` if you pass it as an argument. That is fine on
+// your own machine and a bad idea on a shared one: RCON_PASSWORD is read when
+// the argument is missing.
+
+import "std:rcon";
+import "std:time";
+
+let arguments = os.args();
+let host = arguments.length > 0 ? arguments[0] : "";
+let port = arguments.length > 1 ? arguments[1].toInt(27015) : 27015;
+let password = arguments.length > 2 ? arguments[2] : os.env("RCON_PASSWORD", "");
+let commands = arguments.length > 3 ? arguments.slice(3) : [];
+
+fn usage() {
+    println("usage: tern run examples/rcon.tern [host] [port] [password] [command...]");
+    println();
+    println("  with commands   runs them, prints the answers, exits");
+    println("  without         asks for each command at a prompt; quit or Ctrl+C leaves");
+    println("  RCON_PASSWORD   used when the password argument is missing");
+    println();
+    println("  tern run examples/rcon.tern 127.0.0.1 27015 secret status");
+    println("  tern run examples/rcon.tern 127.0.0.1 27015 secret \"say server restarting in 5\"");
+}
+
+// --- running commands -------------------------------------------------------
+
+fn show(session, command) {
+    let began = time.millis();
+    let answer = "";
+    try {
+        answer = rcon.execute(session, command);
+    } catch (e) {
+        eprint("${command}: ${e}\n");
+        return;
+    }
+
+    let took = time.millis() - began;
+    let text = answer.trim();
+    println("> ${command}   (${len(text)} bytes, ${took} ms)");
+    if text == "" {
+        println("  (no output — the server ran it and said nothing)");
+    } else {
+        for line in text.lines() {
+            println("  " + line);
+        }
+    }
+}
+
+fn interactive(session) {
+    println("Type a command and press enter. `quit`, `exit` or Ctrl+C leaves.");
+    println("Common ones: status, list, say <text>, changelevel <map>");
+    while true {
+        let command = input("rcon> ");
+        if command == nil {
+            break;                       // end of input: piped, or the console closed
+        }
+
+        let trimmed = command.trim();
+        if trimmed == "" {
+            continue;
+        }
+        if trimmed == "quit" or trimmed == "exit" or trimmed == "q" {
+            break;
+        }
+        if trimmed == "help" or trimmed == "?" {
+            println("  status          what the server is doing");
+            println("  list            who is connected");
+            println("  say <text>      say it in chat");
+            println("  help            this list");
+            println("  quit            leave");
+            continue;
+        }
+
+        show(session, trimmed);
+    }
+}
+
+fn main() {
+    if host == "" or host == "--help" or host == "-h" {
+        usage();
+        if host == "" {
+            println();
+            println("No server was named, so nothing was contacted.");
+        }
+        return;
+    }
+
+    if password == "" {
+        eprint("no password: pass one as the third argument or set RCON_PASSWORD\n");
+        return;
+    }
+
+    // --- logging in ---------------------------------------------------------
+    //
+    // The handshake is the protocol's auth packet: the server answers with the
+    // same id for success and -1 for refusal, which rcon.connect turns into an
+    // AuthenticationError. Nothing else is sent until that has happened, so a
+    // wrong password costs one round trip and no state.
+    let session = nil;
+    try {
+        // A short timeout is the difference between "the server is down" and a
+        // terminal that appears to have frozen.
+        session = rcon.connect(host, port, password, {"timeout": 5000});
+    } catch (e) {
+        eprint("cannot log in to ${host}:${port}: ${e}\n");
+        return;
+    }
+
+    println("connected to ${host}:${port}");
+
+    if len(commands) > 0 {
+        for command in commands {
+            show(session, command);
+        }
+    } else {
+        interactive(session);
+    }
+
+    rcon.close(session);
+    println("session closed");
+}
+
+main();

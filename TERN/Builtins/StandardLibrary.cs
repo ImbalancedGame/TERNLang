@@ -720,7 +720,13 @@ namespace TERN.Builtins
                 return path;
             }
 
-            return Path.GetFullPath(Path.Combine(engine.WorkingDirectory, path));
+            // Relative paths belong to the process, not to the script. The
+            // compiled back end has no "script directory" to resolve against —
+            // a binary can be copied anywhere — so `fs.read("data.txt")` means
+            // the directory `tern` was run from, in both back ends and in
+            // `os.cwd()`. Imports are the exception and resolve against the
+            // importing file, which is what makes `import "lib/x.tern"` work.
+            return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), path));
         }
 
         // ------------------------------------------------------------ file handles
@@ -1114,6 +1120,38 @@ namespace TERN.Builtins
 
                 return Value.Str(text + builder.ToString(0, width - text.Length));
             }, "Pads a string to a width on the right.");
+
+            // Bytes and text are the two halves of every protocol: a socket
+            // hands back a list of byte values and a header is text.
+            Add(map, "fromBytes", 1, 3, (vm, a) =>
+            {
+                if (a[0].Kind != ValueKind.List)
+                {
+                    throw vm.Error("TypeError", $"fromBytes() expects a list of bytes, not {vm.TypeName(a[0])}");
+                }
+
+                var bytes = Wire.FromList(vm, a[0]);
+                var offset = a.Length > 1 ? (int)BuiltinMethods.RequireInt(a[1], "fromBytes", 2) : 0;
+                var length = a.Length > 2 ? (int)BuiltinMethods.RequireInt(a[2], "fromBytes", 3) : bytes.Length - offset;
+                if (offset < 0 || length < 0 || offset > bytes.Length || offset + length > bytes.Length)
+                {
+                    throw vm.Error("ArgumentError",
+                        $"fromBytes() range {offset}..{offset + length} is outside {bytes.Length} bytes");
+                }
+
+                // Invalid UTF-8 becomes U+FFFD rather than an exception: a
+                // half-received sequence should not kill the reader.
+                return Value.Str(new UTF8Encoding(false, false).GetString(bytes, offset, length));
+            }, "Decodes a list of bytes as UTF-8 text.");
+            Add(map, "toBytes", 1, 1, (vm, a) =>
+            {
+                if (a[0].Kind != ValueKind.Str)
+                {
+                    throw vm.Error("TypeError", $"toBytes() expects a string, not {vm.TypeName(a[0])}");
+                }
+
+                return Value.Of(Wire.ToList(Encoding.UTF8.GetBytes(a[0].AsString())));
+            }, "Encodes text as UTF-8 bytes.");
 
             engine.RegisterValue("text", Value.Of(map));
             engine.RegisterStdModule(new StdModule

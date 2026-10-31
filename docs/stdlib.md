@@ -163,17 +163,18 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 
 | Name | Signature | Notes |
 | ---- | --------- | ----- |
-| `accept` | `accept(arg)` | Waits for one connection, checks its hello, and returns its handle. |
+| `accept` | `accept(arg)` | Waits for one connection, checks its hello (unless the listener is raw), and returns its handle. |
 | `close` | `close(arg)` | Closes a socket handle. |
-| `connect` | `connect(arg, arg, [arg])` | Connects and says hello. Options: timeout, token, maxFrame. |
+| `connect` | `connect(arg, arg, [arg])` | Connects and says hello (unless raw). Options: timeout, token, maxFrame, raw. |
 | `decode` | `decode(arg)` | Decodes bytes produced by encode back into a value. |
 | `encode` | `encode(arg)` | Encodes a value to a list of bytes. |
-| `listen` | `listen(arg, [arg], [arg])` | Listens on a port and returns a server handle. Options: token, maxFrame. |
+| `listen` | `listen(arg, [arg], [arg])` | Listens on a port and returns a server handle. Options: token, maxFrame, raw. |
 | `maxFrame` | `maxFrame(arg, arg)` | Largest frame this socket accepts; a peer cannot make you allocate more. |
 | `peer` | `peer(arg)` | Address of the other side of a connection. |
 | `port` | `port(arg)` | Local port of a socket (useful after listen(0)). |
 | `receive` | `receive(arg)` | Waits for one frame and returns the decoded value. |
 | `receiveBytes` | `receiveBytes(arg, arg)` | Reads exactly n bytes (no frame header). |
+| `receiveSome` | `receiveSome(arg, arg)` | Reads up to n bytes, or returns an empty list at end of stream. |
 | `send` | `send(arg, arg)` | Encodes a value and sends it as one frame. |
 | `sendBytes` | `sendBytes(arg, arg)` | Sends raw bytes (no frame header). Used by protocols layered on net. |
 | `timeout` | `timeout(arg, arg)` | Sets the receive/send timeout in milliseconds (0 waits forever). |
@@ -229,10 +230,12 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | Name | Signature | Notes |
 | ---- | --------- | ----- |
 | `format` | `format(arg, ...)` | Formats {} and {0} placeholders with arguments. |
+| `fromBytes` | `fromBytes(arg, [arg], [arg])` | Decodes a list of bytes as UTF-8 text. |
 | `join` | `join(arg, [arg])` | Joins a list with a separator. |
 | `lower` | `lower(arg)` | Lowercased copy. |
 | `pad` | `pad(arg, arg, [arg])` | Pads a string to a width on the right. |
 | `split` | `split(arg, arg)` | Splits on a separator. |
+| `toBytes` | `toBytes(arg)` | Encodes text as UTF-8 bytes. |
 | `trim` | `trim(arg)` | Removes surrounding whitespace. |
 | `upper` | `upper(arg)` | Uppercased copy. |
 

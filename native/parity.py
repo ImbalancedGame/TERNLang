@@ -28,6 +28,12 @@ TERN = runner.command(REPO)
 # Scripts that exercise the compiler's diagnostics instead of running.
 COMPILER_ONLY = {"12_lint", "24_parse_errors"}
 
+# Examples that cannot be run with no arguments and no peer: one listens on a
+# socket, one logs in to an RCON server, one shells out to sftp, and the cube
+# writes a directory of PNGs. tools/test_examples.py runs all four against mock
+# servers and a mock driver, which is where their output is compared.
+RUNS_ELSEWHERE = {"http_server", "rcon", "sftp_deploy", "rotating_cube"}
+
 
 def scripts():
     """Every script to compare, in a stable order."""
@@ -41,7 +47,7 @@ def scripts():
     examples = os.path.join(REPO, "examples")
     if os.path.isdir(examples):
         for name in sorted(os.listdir(examples)):
-            if name.endswith(".tern"):
+            if name.endswith(".tern") and name[:-5] not in RUNS_ELSEWHERE:
                 found.append(os.path.join(examples, name))
     # Extra differential sweeps live beside the harness as sweep*.tern.
     for name in sorted(os.listdir(HERE)):

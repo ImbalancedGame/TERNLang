@@ -272,6 +272,14 @@ namespace TERN.Compiler
             /// <summary>Points a jump at a target, respecting which operand holds the address.</summary>
             private void PatchTo(int index, int target)
             {
+                // -1 means "there is no jump to patch": a condition that is
+                // always true emits none, and every caller patches the exit it
+                // was given whether or not one was emitted.
+                if (index < 0)
+                {
+                    return;
+                }
+
                 var instruction = _code[index];
                 _code[index] = instruction.Op switch
                 {
@@ -1497,9 +1505,13 @@ namespace TERN.Compiler
                         return Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0);
                     }
 
-                    var never = Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0);
-                    PatchTo(never, _code.Count);
-                    return never;
+                    // The condition always passes, so there is no jump to make.
+                    // This used to emit one and patch it to the next instruction
+                    // as a stand-in for "nothing" — and the caller then patched
+                    // that same instruction to the end of the body, so
+                    // `while true { ... }` was a loop whose first instruction
+                    // jumped over itself. -1 is the honest answer.
+                    return -1;
                 }
 
                 if (TryGetComparison(condition) is { } comparison)
