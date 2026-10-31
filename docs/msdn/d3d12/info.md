@@ -1,6 +1,6 @@
 # d3d12.info
 
-Describes the adapter.
+Describes the adapter and the binding.
 
 ## Syntax
 
@@ -15,7 +15,7 @@ _None._
 ## Return value
 
 - Type: `map`
-- `name` and `nodes`.
+- `name`, `nodes` and `build`; `build` is the revision of the Direct3D 12 binding, which a failure report should quote.
 
 ## Errors
 

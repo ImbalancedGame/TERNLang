@@ -78,8 +78,9 @@ namespace TERN.Builtins
                 var report = new TernMap();
                 report.Set(Value.Str("name"), Value.Str(driver.AdapterName()));
                 report.Set(Value.Str("nodes"), new Value(1));
+                report.Set(Value.Str("build"), Value.Str(Build));
                 return Value.Of(report);
-            }, "Describes the adapter: {name, nodes}.");
+            }, "Describes the adapter: {name, nodes, build}.");
 
             Add(map, "create", 2, 2, (vm, a) =>
             {
@@ -131,7 +132,7 @@ namespace TERN.Builtins
             {
                 var target = targets.Get(vm, a[0]);
                 var path = OutputPath(vm, a[1]);
-                var bytes = target.ReadPixels(vm);
+                var bytes = target.ReadPixels(vm, "d3d12.save");
                 try
                 {
                     Png.Write(path, target.Width, target.Height, bytes, flip: true);
@@ -179,7 +180,7 @@ namespace TERN.Builtins
             {
                 var window = windows.Get(vm, a[0]);
                 var target = targets.Get(vm, a[1]);
-                var pixels = target.ReadPixels(vm);
+                var pixels = target.ReadPixels(vm, "d3d12.present");
                 return Value.Bool(window.Present(pixels, target.Width, target.Height));
             }, "Shows the target in the window: d3d12.present(window, device); false once it is closed.");
 
@@ -603,6 +604,62 @@ namespace TERN.Builtins
         }
 
         /// <summary>
+        /// The revision of this binding, reported by <c>d3d12.info()</c> and
+        /// printed by <c>examples/rotating_cube.tern</c>. It exists because a
+        /// report of "the readback buffer could not be mapped (0x887a0005)" was
+        /// traced to a binary built before the fix that caused it: without a
+        /// stamp the two look identical, and a fix that worked looks like one
+        /// that did not. Keep it equal to <c>TERN_D3D12_BUILD</c>.
+        /// </summary>
+        private const string Build = "2026-10-31.5";
+
+        /// <summary>
+        /// Why the driver removed the device, in the words the native backend
+        /// uses, or an empty string when it did not. The two tables have to
+        /// match: both back ends report the same failures.
+        /// </summary>
+        private static string RemovedReason(IntPtr device)
+        {
+            if (device == IntPtr.Zero)
+            {
+                return string.Empty;
+            }
+
+            return (uint)Slot<DeviceRemovedReasonFn>(device, 37)(device) switch
+            {
+                0 => string.Empty,
+                0x887A0005 => "the device was removed",
+                0x887A0006 => "the GPU hung and the driver reset it (TDR)",
+                0x887A0007 => "the device was reset",
+                0x887A0020 => "the driver hit an internal error",
+                0x8007000E => "out of memory",
+                _ => "the device was removed for an unknown reason",
+            };
+        }
+
+        /// <summary>
+        /// The error for a call that failed: the driver's reason when the device
+        /// was removed, otherwise what the HRESULT means. Same text as
+        /// <c>d3d12_fail_removed</c> in the native runtime.
+        /// </summary>
+        private static Exception RemovedError(VM vm, IntPtr device, string what, long hr)
+        {
+            if (((uint)hr) == 0x887A0005)
+            {
+                var reason = RemovedReason(device);
+                if (reason.Length != 0)
+                {
+                    return vm.Error("D3D12Error", $"{what}: {reason} (0x{(uint)hr:x8})");
+                }
+            }
+
+            var explained = Explain(hr);
+            return explained.Length != 0
+                ? vm.Error("D3D12Error", $"{what}: {explained} (0x{(uint)hr:x8})")
+                : vm.Error("D3D12Error", $"{what} (0x{(uint)hr:x8})");
+        }
+
+        /// <summary>
         /// What an HRESULT from Direct3D means, in words a person can act on.
         /// The raw code is always kept: it is the only thing that makes a report
         /// precise. The native runtime has the same table, and they are kept in
@@ -695,6 +752,7 @@ namespace TERN.Builtins
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate IntPtr GetGpuAddressFn(IntPtr self);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long EnumAdapters1Fn(IntPtr self, uint index, out IntPtr adapter);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void GetDesc1Fn(IntPtr self, IntPtr description);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long DeviceRemovedReasonFn(IntPtr self);
 
         private static T Slot<T>(IntPtr obj, int slot) where T : Delegate
         {
@@ -855,8 +913,8 @@ namespace TERN.Builtins
                     {
                         var reason = Explain(hr);
                         var detail = reason.Length > 0
-                            ? $": {reason} (0x{(uint)hr:X8})"
-                            : $" (0x{(uint)hr:X8})";
+                            ? $": {reason} (0x{(uint)hr:x8})"
+                            : $" (0x{(uint)hr:x8})";
                         throw vm.Error("D3D12Error",
                             $"Direct3D 12 is not available on this system: D3D12CreateDevice failed{detail}");
                     }
@@ -1096,7 +1154,7 @@ namespace TERN.Builtins
                         var message = BlobText(errors);
                         Release(errors);
                         throw vm.Error("D3D12Error", message.Length == 0
-                            ? $"the {which} shader did not compile (0x{(uint)hr:X8})"
+                            ? $"the {which} shader did not compile (0x{(uint)hr:x8})"
                             : $"the {which} shader did not compile: {message}");
                     }
 
@@ -1160,7 +1218,7 @@ namespace TERN.Builtins
                         Slot<CreateRootSignatureFn>(_device, 16)(_device, 0, bytes, length, iid, out signature));
                     if (hr < 0 || signature == IntPtr.Zero)
                     {
-                        throw vm.Error("D3D12Error", $"the root signature could not be created (0x{(uint)hr:X8})");
+                        throw vm.Error("D3D12Error", $"the root signature could not be created (0x{(uint)hr:x8})");
                     }
 
                     return signature;
@@ -1230,7 +1288,7 @@ namespace TERN.Builtins
                             Slot<CreateGraphicsPipelineStateFn>(_device, 10)(_device, ref description, iid, out pipeline));
                         if (hr < 0 || pipeline == IntPtr.Zero)
                         {
-                            throw vm.Error("D3D12Error", $"the pipeline state could not be created (0x{(uint)hr:X8})");
+                            throw vm.Error("D3D12Error", $"the pipeline state could not be created (0x{(uint)hr:x8})");
                         }
 
                         _pipelines.Add(pipeline);
@@ -1315,7 +1373,8 @@ namespace TERN.Builtins
                 Slot<DrawInstancedFn>(_list, 12)(_list, (uint)count, 1, 0, 0);
 
                 Transition(StateCopySource);
-                Submit(vm);
+                Submit(vm, "d3d12.draw");
+                CheckDevice(vm, "d3d12.draw");
             }
 
             /// <summary>
@@ -1342,7 +1401,7 @@ namespace TERN.Builtins
                     _device, ref heap, 0, ref buffer, StateGenericRead, IntPtr.Zero, iid, out resource));
                 if (hr < 0 || resource == IntPtr.Zero)
                 {
-                    throw vm.Error("D3D12Error", $"the vertex buffer could not be created (0x{(uint)hr:X8})");
+                    throw vm.Error("D3D12Error", $"the vertex buffer could not be created (0x{(uint)hr:x8})");
                 }
 
                 var range = new Range { Begin = 0, End = 0 };
@@ -1350,7 +1409,7 @@ namespace TERN.Builtins
                 if (hr < 0 || data == IntPtr.Zero)
                 {
                     Release(resource);
-                    throw vm.Error("D3D12Error", $"the vertex buffer could not be mapped (0x{(uint)hr:X8})");
+                    throw RemovedError(vm, _device, "the vertex buffer could not be mapped", hr);
                 }
 
                 Marshal.Copy(vertices, 0, data, vertices.Length);
@@ -1406,7 +1465,7 @@ namespace TERN.Builtins
                 Slot<ResourceBarrierFn>(_list, 26)(_list, 1, ref barrier);
             }
 
-            private void Submit(VM vm)
+            private void Submit(VM vm, string what)
             {
                 Slot<CloseListFn>(_list, 9)(_list);
 
@@ -1435,7 +1494,24 @@ namespace TERN.Builtins
                     System.Threading.Thread.Sleep(1);
                 }
 
-                throw vm.Error("D3D12Error", $"the GPU did not finish within {WaitTimeout} ms");
+                var why = RemovedReason(_device);
+                throw why.Length != 0
+                    ? vm.Error("D3D12Error", $"the GPU did not finish within {WaitTimeout} ms during {what}: {why}")
+                    : vm.Error("D3D12Error", $"the GPU did not finish within {WaitTimeout} ms during {what}");
+            }
+
+            /// <summary>
+            /// DXGI_ERROR_DEVICE_REMOVED is reported at whatever call next
+            /// touches the device, rarely the one that removed it. Asking after
+            /// every submit turns "somewhere before this" into "during this".
+            /// </summary>
+            private void CheckDevice(VM vm, string what)
+            {
+                var reason = RemovedReason(_device);
+                if (reason.Length != 0)
+                {
+                    throw vm.Error("D3D12Error", $"the device was removed during {what}: {reason}");
+                }
             }
 
             public void Clear(VM vm, float r, float g, float b, float a)
@@ -1450,10 +1526,11 @@ namespace TERN.Builtins
                 Slot<ClearRenderTargetViewFn>(_list, 48)(_list, _rtv, ref colour[0], 0, IntPtr.Zero);
 
                 Transition(StateCopySource);
-                Submit(vm);
+                Submit(vm, "d3d12.clear");
+                CheckDevice(vm, "d3d12.clear");
             }
 
-            private IntPtr CopyOut(VM vm)
+            private IntPtr CopyOut(VM vm, string what)
             {
                 Reset();
 
@@ -1482,21 +1559,22 @@ namespace TERN.Builtins
 
                 Slot<CopyTextureRegionFn>(_list, 16)(_list, ref destination, 0, 0, ref source, IntPtr.Zero);
                 Transition(StateCommon);
-                Submit(vm);
+                Submit(vm, what);
+                CheckDevice(vm, what);
 
                 var range = new Range { Begin = 0, End = 0 };
                 var hr = Slot<MapFn>(_readback, 8)(_readback, 0, ref range, out var data);
                 if (hr < 0 || data == IntPtr.Zero)
                 {
-                    throw vm.Error("D3D12Error", $"the readback buffer could not be mapped (0x{(uint)hr:X8})");
+                    throw RemovedError(vm, _device, "the readback buffer could not be mapped", hr);
                 }
 
                 return data;
             }
 
-            public byte[] ReadPixels(VM vm)
+            public byte[] ReadPixels(VM vm, string what = "d3d12.pixels")
             {
-                var data = CopyOut(vm);
+                var data = CopyOut(vm, what);
                 var pixels = new byte[Width * (long)Height * 4];
                 var rowBytes = Width * 4;
                 // Bottom row first, like gl.pixels, so a script does not care which

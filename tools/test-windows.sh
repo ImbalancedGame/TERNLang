@@ -52,7 +52,7 @@ status=0
 for source in tests/01_basics.tern tests/02_strings.tern tests/05_collections.tern \
               tests/08_errors.tern tests/09_builtins.tern tests/22_fs.tern \
               tests/27_json.tern tests/26_net.tern tests/35_raw_bytes.tern \
-              examples/rotating_cube.tern; do
+              examples/rotating_cube.tern examples/d3d12_diagnose.tern; do
     name="$(basename "$source" .tern)"
     [ -f "$source" ] || continue
     if ! TERN_ZIG="$ZIG" python3 native/ternc.py --target windows "$source" -o "$WORK/$name.exe" > "$WORK/$name.log" 2>&1; then

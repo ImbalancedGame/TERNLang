@@ -32,6 +32,14 @@
 #define D3D12_MAX_DIMENSION 16384
 #define D3D12_WAIT_TIMEOUT_MS 30000
 
+// The revision of this binding, reported by d3d12.info() and printed by
+// examples/rotating_cube.tern. It exists because a report of
+// "the readback buffer could not be mapped (0x887a0005)" was traced to a binary
+// built before the fix that caused it: the two are indistinguishable without a
+// stamp, and the fix looked like it had failed. Bump it whenever the D3D12 or
+// window code changes what a failure means.
+#define TERN_D3D12_BUILD "2026-10-31.5"
+
 // --- the structures, with the offsets the SDK headers give them -------------
 
 typedef struct {
@@ -489,6 +497,17 @@ static void d3d12_release(void *object) {
     ((unsigned long (*)(void *))TERN_SLOT(object, 2))(object);   // Release
 }
 
+static const char *d3d12_removed_reason(TernD3D12Target *target);
+
+/// Fails when the device is gone, naming the call that broke it.
+///
+/// DXGI_ERROR_DEVICE_REMOVED is reported at whatever call next touches the
+/// device, which is rarely the one that removed it: the report that started
+/// this was a map in save_frame failing because a barrier three frames earlier
+/// had lied. Asking after every submit turns "somewhere before this" into
+/// "during this call".
+static void d3d12_check_device(TernD3D12Target *target, const char *what);
+
 static long d3d12_wait(TernD3D12Target *target) {
     // Polling GetCompletedValue keeps one code path on both platforms: a script
     // renders offscreen and waits, which is not a frame-rate critical path.
@@ -507,15 +526,22 @@ static long d3d12_wait(TernD3D12Target *target) {
     return -1;
 }
 
-static void d3d12_submit(TernD3D12Target *target) {
+static void d3d12_submit(TernD3D12Target *target, const char *what) {
     ((long (*)(void *))TERN_SLOT(target->list, 9))(target->list);            // Close
     void *lists[1] = { target->list };
     ((PfnExecuteCommandLists)TERN_SLOT(target->queue, 10))(target->queue, 1, lists);
     target->fence_value++;
     ((PfnFenceSignal)TERN_SLOT(target->queue, 14))(target->queue, target->fence, target->fence_value);
     if (d3d12_wait(target) != 0) {
-        tern_panic("D3D12Error", "the GPU did not finish within %d ms", D3D12_WAIT_TIMEOUT_MS);
+        const char *reason = d3d12_removed_reason(target);
+        if (reason && reason[0]) {
+            tern_panic("D3D12Error", "the GPU did not finish within %d ms during %s: %s",
+                       D3D12_WAIT_TIMEOUT_MS, what, reason);
+        }
+        tern_panic("D3D12Error", "the GPU did not finish within %d ms during %s",
+                   D3D12_WAIT_TIMEOUT_MS, what);
     }
+    d3d12_check_device(target, what);
 }
 
 static void d3d12_reset(TernD3D12Target *target) {
@@ -609,6 +635,13 @@ static const char *d3d12_removed_reason(TernD3D12Target *target) {
     case 0x887A0020ul: return "the driver hit an internal error";
     case 0x8007000Eul: return "out of memory";
     default: return "the device was removed for an unknown reason";
+    }
+}
+
+static void d3d12_check_device(TernD3D12Target *target, const char *what) {
+    const char *reason = d3d12_removed_reason(target);
+    if (reason && reason[0]) {
+        tern_panic("D3D12Error", "the device was removed during %s: %s", what, reason);
     }
 }
 
@@ -1066,8 +1099,7 @@ static D3D12_VERTEX_BUFFER_VIEW d3d12_upload_vertices(TernD3D12Target *target, V
     hr = ((PfnMap)TERN_SLOT(resource, 8))(resource, 0, &range, &data);
     if (hr < 0 || !data) {
         d3d12_release(resource);
-        tern_panic("D3D12Error", "the vertex buffer could not be mapped (0x%08lx)",
-                   (unsigned long)hr & 0xFFFFFFFFul);
+        d3d12_fail_removed(target, "the vertex buffer could not be mapped", hr);
     }
 
     float *packed = (float *)data;
@@ -1140,7 +1172,7 @@ static Value n_d3d12_draw(int argc, Value *argv) {
     ((void (*)(void *, unsigned, unsigned, unsigned, unsigned))TERN_SLOT(target->list, 12))(
         target->list, (unsigned)count, 1, 0, 0);                              // DrawInstanced
     d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
-    d3d12_submit(target);
+    d3d12_submit(target, "d3d12.draw");
     return v_nil();
 }
 
@@ -1161,6 +1193,7 @@ static Value n_d3d12_info(int argc, Value *argv) {
     Map *report = map_new();
     map_set(report, str_from_cstr("name"), str_from_cstr(""));
     map_set(report, str_from_cstr("nodes"), v_int(1));
+    map_set(report, str_from_cstr("build"), str_from_cstr(TERN_D3D12_BUILD));
 
     if (driver->create_factory) {
         void *factory = NULL;
@@ -1216,11 +1249,11 @@ static Value n_d3d12_clear(int argc, Value *argv) {
     ((PfnClearRenderTargetView)TERN_SLOT(target->list, 48))(
         target->list, target->rtv, colour, 0, NULL);
     d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
-    d3d12_submit(target);
+    d3d12_submit(target, "d3d12.clear");
     return v_nil();
 }
 
-static void d3d12_copy_out(TernD3D12Target *target) {
+static void d3d12_copy_out(TernD3D12Target *target, const char *what) {
     d3d12_reset(target);
     D3D12_TEXTURE_COPY_LOCATION destination;
     memset(&destination, 0, sizeof destination);
@@ -1242,13 +1275,13 @@ static void d3d12_copy_out(TernD3D12Target *target) {
         target->list, &destination, 0, 0, &source, NULL);
 
     d3d12_transition(target, D3D12_RESOURCE_STATE_COMMON_);
-    d3d12_submit(target);
+    d3d12_submit(target, what);
 }
 
 static Value n_d3d12_pixels(int argc, Value *argv) {
     (void)argc;
     TernD3D12Target *target = d3d12_slot_arg(argv[0]);
-    d3d12_copy_out(target);
+    d3d12_copy_out(target, "d3d12.pixels");
 
     D3D12_RANGE range;
     range.begin = 0;
@@ -1278,7 +1311,7 @@ static Value n_d3d12_save(int argc, Value *argv) {
     (void)argc;
     TernD3D12Target *target = d3d12_slot_arg(argv[0]);
     const char *path = path_arg(argc, argv, 1);
-    d3d12_copy_out(target);
+    d3d12_copy_out(target, "d3d12.save");
 
     D3D12_RANGE range;
     range.begin = 0;
@@ -1353,7 +1386,7 @@ static Value n_d3d12_present(int argc, Value *argv) {
     }
     TernD3D12Target *target = d3d12_slot_arg(arg(argc, argv, 1));
 
-    d3d12_copy_out(target);
+    d3d12_copy_out(target, "d3d12.present");
 
     D3D12_RANGE range;
     range.begin = 0;

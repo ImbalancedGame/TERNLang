@@ -30,7 +30,7 @@ caveats below.
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
-| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (63) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic — each run, not just compiled | `tools/test_examples.py` (65) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
@@ -40,8 +40,8 @@ in all of them:
 python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
 python3 native/run_tests.py                           33 passed
-python3 native/parity.py                              43 compared, 0 differing
-python3 tools/test_examples.py                        63 passed
+python3 native/parity.py                              44 compared, 0 differing
+python3 tools/test_examples.py                        65 passed
 python3 tools/test_namespaces.py                      23 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
@@ -147,7 +147,10 @@ Ordered by what would bite a user first.
    `tools/tern tools/d3d12/probe.tern` and `tools/gl/probe.tern` on a machine
    with a GPU are the thorough ones. The structure mirror is already checked
    against the real `d3d12.h` by the Windows build
-   (`tools/d3d12/gen_layout_check.py`).
+   (`tools/d3d12/gen_layout_check.py`). When a call fails there,
+   `examples/d3d12_diagnose.tern` is the one to run: it makes each call in turn
+   and prints what each did, so the failure names itself, and it reports the
+   binding revision that produced it.
 3. **The window blits, it does not present.** `d3d12.window` opens a real
    Win32 window and `d3d12.present` puts the frame in it, so
    `examples/rotating_cube.tern` shows a turning cube rather than describing
@@ -196,6 +199,26 @@ Out of scope by request: DLSS, and FTP (SFTP is the supported transfer, because
 SSH is what the servers actually offer).
 
 ## Recently fixed
+
+* **A fix that looked like it had not worked.** The report after the resource
+  state fix was the same sentence as before it —
+  `the readback buffer could not be mapped (0x887a0005)` at
+  `save_frame (rotating_cube:360)` — because it was the same binary: line 360
+  is `d3d12.save` and line 460 is `main()` in the tree *before* the fix, and
+  neither moved when it landed. Two things made that indistinguishable from a
+  failed fix, and both are gone. The binding now stamps itself
+  (`d3d12.info()["build"]`, printed by the cube example and by
+  `examples/d3d12_diagnose.tern`), so a report says which build produced it.
+  And a failure now names the call that broke the device rather than the call
+  that noticed: after every submit both back ends ask
+  `GetDeviceRemovedReason`, so a barrier that removes the device during
+  `d3d12.clear` says so there instead of surfacing as a map failure three calls
+  later. The interpreter's messages were also missing the driver's reason
+  entirely — `0x887A0005` there said only what the code said, while the native
+  backend had been taught to ask; both now report the same sentence, down to
+  the case of the hex. A mock knob removes the device mid-run
+  (`TERN_D3D12_REMOVED_AFTER`) or fails the readback map (`TERN_D3D12_MAP_REMOVED`),
+  and `tools/test-d3d12.sh` compares the two back ends' exact wording for both.
 
 * **`examples/rotating_cube.tern` was ASCII art, not a rendering.** That was a
   fair description: the only thing it could do with a GPU was write PNGs into a

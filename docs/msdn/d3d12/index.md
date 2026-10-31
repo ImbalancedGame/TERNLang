@@ -23,7 +23,7 @@ input is `POSITION` (`float3`) followed by `COLOR` (`float4`).
 | [`closeWindow`](closeWindow.md) | 1..1 | Closes a window. |
 | [`create`](create.md) | 2..2 | Creates a device and an offscreen render target. |
 | [`draw`](draw.md) | 3..3 | Draws triangles. |
-| [`info`](info.md) | 0..0 | Describes the adapter. |
+| [`info`](info.md) | 0..0 | Describes the adapter and the binding. |
 | [`pipeline`](pipeline.md) | 3..3 | Compiles HLSL and builds a pipeline state. |
 | [`pixels`](pixels.md) | 1..1 | Reads the target back as RGBA bytes. |
 | [`present`](present.md) | 2..2 | Shows the target in the window. |

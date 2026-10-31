@@ -417,6 +417,10 @@ fn run_window(seconds) {
         d3d12.close(target);
         return nil;
     }
+    // Which binding this is. A report of a failure is only useful with the
+    // build that produced it: a binary from before a fix reports the revision
+    // it was built with, and one line here saves a round trip spent guessing.
+    println("Direct3D 12 binding " + d3d12.info()["build"] + ".");
     println("showing the cube in a window - close it, or press Escape.");
 
     let started = time.millis();
@@ -527,6 +531,9 @@ fn main() {
         return;
     }
 
+    if (surface.backend == "d3d12") {
+        println("Direct3D 12 binding " + d3d12.info()["build"] + ".");
+    }
     if (!fs.exists(out)) { fs.mkdir(out); }
 
     let bytes = 0;

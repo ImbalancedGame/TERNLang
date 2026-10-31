@@ -220,6 +220,102 @@ fi
 echo "d3d12: the cube animates in both back ends"
 unset TERN_D3D12_WINDOW
 
+# ------------------------------------------------------------------ diagnose
+#
+# The program a user runs on a machine this repository cannot reach. Under the
+# mock it proves the whole path prints one line per call, in both back ends.
+echo "d3d12: running the diagnostic program"
+unset TERN_D3D12_WINDOW
+TERN_D3D12_PNG="$WORK/diag_interp.png" ./tools/tern examples/d3d12_diagnose.tern \
+    > "$WORK/diag_interp.out" 2> "$WORK/diag_interp.err" || {
+    echo "d3d12: the interpreter diagnostic failed" >&2
+    cat "$WORK/diag_interp.out" "$WORK/diag_interp.err" >&2
+    exit 1
+}
+python3 native/ternc.py examples/d3d12_diagnose.tern -o "$WORK/diagnose" > "$WORK/diag_build.txt" 2>&1 || {
+    echo "d3d12: the diagnostic did not build" >&2
+    sed -n 1,20p "$WORK/diag_build.txt" >&2
+    exit 1
+}
+TERM_D3D12_PNG="$WORK/diag_native.png" TERN_D3D12_PNG="$WORK/diag_native.png" "$WORK/diagnose" \
+    > "$WORK/diag_native.out" 2> "$WORK/diag_native.err" || {
+    echo "d3d12: the native diagnostic failed" >&2
+    cat "$WORK/diag_native.out" "$WORK/diag_native.err" >&2
+    exit 1
+}
+# The file sizes differ between the two runs only if the writers do, and they
+# are compared, so any difference is a real one.
+sed -i "s|$WORK/diag_interp.png|diag.png|g" "$WORK/diag_interp.out"
+sed -i "s|$WORK/diag_native.png|diag.png|g" "$WORK/diag_native.out"
+if ! diff -u "$WORK/diag_interp.out" "$WORK/diag_native.out"; then
+    echo "d3d12: the two back ends disagree about the diagnostic" >&2
+    exit 1
+fi
+grep -q "^binding: " "$WORK/diag_interp.out" || {
+    echo "d3d12: the diagnostic does not report the binding build" >&2
+    cat "$WORK/diag_interp.out" >&2
+    exit 1
+}
+if grep -q ": .*Error" "$WORK/diag_interp.out"; then
+    echo "d3d12: the diagnostic reported an error against the mock" >&2
+    cat "$WORK/diag_interp.out" >&2
+    exit 1
+fi
+grep -q "^done$" "$WORK/diag_interp.out" || {
+    echo "d3d12: the diagnostic did not finish" >&2
+    cat "$WORK/diag_interp.out" >&2
+    exit 1
+}
+echo "d3d12: the diagnostic walks the whole path in both back ends"
+
+# ------------------------------------------------------- a removed device
+#
+# The failure that started this was reported three calls after the cause. These
+# two runs prove the message now says which call broke the device, and that the
+# interpreter and the compiled binary word it identically.
+echo "d3d12: a device removed during a submit"
+for backend in interp native; do
+    # A panic goes to stderr, so the two streams are captured together: what a
+    # user pastes is what the terminal showed.
+    if [ "$backend" = "native" ]; then
+        TERN_D3D12_REMOVED_AFTER=1 "$WORK/probe" > "$WORK/removed_$backend.out" 2>&1 || true
+    else
+        TERN_D3D12_REMOVED_AFTER=1 ./tools/tern tools/d3d12/probe.tern \
+            > "$WORK/removed_$backend.out" 2>&1 || true
+    fi
+done
+if ! diff -u "$WORK/removed_interp.out" "$WORK/removed_native.out"; then
+    echo "d3d12: the two back ends disagree about a removed device" >&2
+    exit 1
+fi
+grep -q "the device was removed during d3d12.clear: the GPU hung" "$WORK/removed_interp.out" || {
+    echo "d3d12: a removed device does not name the call that broke it" >&2
+    cat "$WORK/removed_interp.out" >&2
+    exit 1
+}
+echo "d3d12: the report names the call that removed the device"
+
+echo "d3d12: a device that fails the readback map"
+for backend in interp native; do
+    if [ "$backend" = "native" ]; then
+        TERN_D3D12_MAP_REMOVED=1 "$WORK/probe" > "$WORK/map_$backend.out" 2>&1 || true
+    else
+        TERN_D3D12_MAP_REMOVED=1 ./tools/tern tools/d3d12/probe.tern \
+            > "$WORK/map_$backend.out" 2>&1 || true
+    fi
+done
+if ! diff -u "$WORK/map_interp.out" "$WORK/map_native.out"; then
+    echo "d3d12: the two back ends disagree about a failed map" >&2
+    exit 1
+fi
+grep -q "the readback buffer could not be mapped: the GPU hung and the driver reset it (TDR) (0x887a0005)" \
+    "$WORK/map_interp.out" || {
+    echo "d3d12: a failed map does not say why" >&2
+    cat "$WORK/map_interp.out" >&2
+    exit 1
+}
+echo "d3d12: the report says why the map failed"
+
 echo "d3d12: the unavailable path"
 cat > "$WORK/missing.tern" <<'TERN'
 import "std:d3d12";

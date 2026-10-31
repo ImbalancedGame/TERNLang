@@ -118,6 +118,7 @@ typedef struct {
     unsigned char colour[4];
     unsigned char *memory;
     unsigned state;             // the D3D12_RESOURCE_STATES it is really in
+    unsigned readback;          // created in a READBACK heap
 } MockResource;
 
 // The transition half of D3D12_RESOURCE_BARRIER, laid out as the header has it.
@@ -212,6 +213,27 @@ static void device_get_footprints(void *self, const ResourceDesc *desc, unsigned
                                   unsigned *rows, unsigned long long *row_size,
                                   unsigned long long *total);
 
+// ------------------------------------------------------- device removal
+//
+// A removed device is reported at whatever call next touches it, which is
+// rarely the one that removed it and is the reason the runtime now asks
+// GetDeviceRemovedReason after every submit. These knobs reproduce both halves
+// of that: TERN_D3D12_REMOVED_AFTER=n removes the device after the nth
+// ExecuteCommandLists, and TERN_D3D12_MAP_REMOVED=1 makes the readback map fail
+// the way it did in the report that started this.
+static int mock_removed;
+static unsigned mock_submits;
+
+static unsigned mock_removal_code(void) {
+    const char *value = getenv("TERN_D3D12_REMOVED_REASON");
+    return value && value[0] ? (unsigned)strtoul(value, NULL, 0) : 0x887A0006u;
+}
+
+static long device_removed_reason(void *self) {
+    (void)self;
+    return mock_removed ? (long)mock_removal_code() : 0;
+}
+
 static void *device_vtbl[44] = {
     [0] = (void *)mock_query, [1] = (void *)mock_addref, [2] = (void *)mock_release,
     [8] = (void *)device_create_command_queue,
@@ -223,6 +245,7 @@ static void *device_vtbl[44] = {
     [20] = (void *)device_create_rtv,
     [27] = (void *)device_create_committed_resource,
     [36] = (void *)device_create_fence,
+    [37] = (void *)device_removed_reason,
     [38] = (void *)device_get_footprints,
 };
 
@@ -328,6 +351,12 @@ static long resource_map(void *self, unsigned subresource, const void *range, vo
     (void)subresource;
     (void)range;
     MockResource *resource = (MockResource *)self;
+    const char *map_removed = getenv("TERN_D3D12_MAP_REMOVED");
+    if (resource->readback && map_removed && map_removed[0] && strcmp(map_removed, "0") != 0) {
+        mock_removed = 1;
+        *data = NULL;
+        return (long)0x887A0005L;
+    }
     *data = resource->memory;
     return 0;
 }
@@ -516,8 +545,9 @@ static long device_create_committed_resource(void *self, const HeapProps *heap, 
                                              const ResourceDesc *desc, int state, const void *clear,
                                              const Guid *iid, void **out) {
     CHECK_IID("CreateCommittedResource", IID_ID3D12Resource_);
-    (void)self; (void)heap; (void)flags; (void)clear; (void)iid;
+    (void)self; (void)flags; (void)clear; (void)iid;
     MockResource *resource = (MockResource *)calloc(1, sizeof(MockResource));
+    resource->readback = heap && heap->type == 3;
     resource->vtbl = resource_vtbl;
     resource->state = (unsigned)state;
     resource->kind = desc->dimension == 3 ? 0u : 1u;
@@ -581,6 +611,12 @@ static void device_get_footprints(void *self, const ResourceDesc *desc, unsigned
 
 static void queue_execute(void *self, unsigned count, void *const *lists) {
     (void)self;
+    mock_submits++;
+    const char *after = getenv("TERN_D3D12_REMOVED_AFTER");
+    if (after && after[0] && (unsigned)strtoul(after, NULL, 0) == mock_submits && !mock_removed) {
+        mock_removed = 1;
+        fprintf(stderr, "mock_d3d12: the device was removed after %u submit(s)\n", mock_submits);
+    }
     for (unsigned i = 0; i < count; i++) {
         MockList *list = (MockList *)lists[i];
         if (list->closing && mock_target) {

@@ -437,6 +437,18 @@ def test_graphics(checks):
                      "STATE MISMATCH" not in (direct.stdout + direct.stderr),
                      (direct.stdout + direct.stderr)[-400:])
 
+    # Every example runs, so the diagnostic is run too: it is the program a
+    # user is told to run when a Direct3D call fails on their machine, and it
+    # would be no use if it had only ever been compiled.
+    diagnostic = subprocess.run(CLI + [os.path.join(ROOT, "examples", "d3d12_diagnose.tern")],
+                                cwd=ROOT, capture_output=True, text=True,
+                                env=dict(environment_d3d,
+                                         TERN_D3D12_PNG=os.path.join(work, "diagnose.png")))
+    checks.check("the diagnostic runs every step", diagnostic.returncode == 0
+                 and "done" in diagnostic.stdout, (diagnostic.stderr or diagnostic.stdout)[-400:])
+    checks.check("and reports the binding it is running",
+                 "binding: " in diagnostic.stdout, diagnostic.stdout[-300:])
+
     # Point the driver at something that is not a driver: the availability probe
     # itself throws, and the example still has to finish with its text frames.
     broken = subprocess.run(CLI + [example, "--frames", "1", "--out", os.path.join(work, "broken")],
