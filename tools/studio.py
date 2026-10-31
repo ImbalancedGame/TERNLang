@@ -144,9 +144,17 @@ def build_if_needed():
                 return False
         return True
 
-    print("cannot build: no toolchain and no `dotnet` SDK on PATH.\n"
-          "Install the .NET 8 SDK, or run tools/setup-toolchain.sh where a shell\n"
-          "and a C compiler are available.", file=sys.stderr)
+    if WINDOWS:
+        print("cannot build: `dotnet` was not found on PATH.\n\n"
+              "Studio needs the .NET 8 SDK to build the syntax server and the\n"
+              "debugger:\n\n"
+              "    winget install Microsoft.DotNet.SDK.8\n\n"
+              "then close and reopen the terminal so PATH is picked up, and run\n"
+              "this launcher again.", file=sys.stderr)
+    else:
+        print("cannot build: no toolchain and no `dotnet` SDK on PATH.\n\n"
+              "Either install the .NET 8 SDK, or bootstrap the sandbox toolchain:\n\n"
+              "    bash tools/setup-toolchain.sh\n", file=sys.stderr)
     return False
 
 
