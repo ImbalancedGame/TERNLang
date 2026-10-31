@@ -767,11 +767,11 @@ the surface back as RGBA bytes with the bottom row first, like `glReadPixels`;
 `gl.save` writes the same pixels as a PNG (top row first, so the image is the
 right way up) with stored deflate blocks — no zlib, no image library.
 
-Two APIs are deliberately missing. DirectX is Windows-only and the compiled
-backend emits POSIX C, so it would need a Windows port first. DLSS is NVIDIA's
-proprietary NGX SDK: it needs a signed agreement, an RTX card and integration
-into a Direct3D or Vulkan renderer, so it cannot live in a dependency-free
-scripting language.
+DLSS is deliberately missing. It is NVIDIA's proprietary NGX SDK: it needs a
+signed agreement, an RTX card and integration into a Direct3D or Vulkan
+renderer, so it cannot live in a dependency-free scripting language. Direct3D 12
+is not missing — it is the next section, and unlike this module it also works
+from a Windows binary.
 
 `tools/test-gl.sh` builds `tools/gl/mock_driver.c` — a fake libEGL that answers
 the same calls — points `TERN_GL_LIBRARY` at it, runs the same program in both
@@ -827,6 +827,17 @@ Two caveats. The compiled backend has to be a Windows binary
 (`python3 native/ternc.py --target windows app.tern -o app.exe`), and the
 interpreter needs .NET on Windows. Neither is available in a POSIX build, where
 every call raises `D3D12Error: Direct3D 12 is not available on this system`.
+
+Which modules a Windows binary has is not uniform, and the difference is worth
+knowing before writing a program that has to run there: `math`, `time`, `json`,
+`os`, `random`, `text`, `lists`, `fs` and `d3d12` are all present, while `net`,
+`http`, `rcon`, `sftp` and `gl` raise
+`UnsupportedError: this module is not part of the Windows build yet` — the names
+exist, so the failure is a sentence rather than `map has no method 'send'`.
+`d3d12.available()` is the way to ask whether the renderer is really there: it
+returns `false` when `d3d12.dll` cannot be loaded, and `create` can still fail on
+a machine without `d3dcompiler_47.dll`, so a program that only wants to render
+when it can should treat the whole attempt as fallible.
 
 The pipeline is verified against a mock driver, not against a GPU: no Windows
 machine is available here, so the tests prove the plumbing — that the vertex

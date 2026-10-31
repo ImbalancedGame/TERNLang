@@ -30,18 +30,19 @@ caveats below.
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
-| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (53) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (55) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       43 passed
+./tools/test.sh                                       44 passed
 python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
 python3 native/run_tests.py                           33 passed
 python3 native/parity.py                              43 compared, 0 differing
-python3 tools/test_examples.py                        53 passed
+python3 tools/test_examples.py                        55 passed
+python3 tools/test_namespaces.py                      23 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
 bash tools/test-windows.sh                            ok
@@ -151,7 +152,10 @@ Ordered by what would bite a user first.
    `sftp` and `gl` answer `UnsupportedError` in a Windows binary; the language,
    `math`, `time`, `json`, `os`, `fs`, `text`, `lists` and `d3d12` are there.
    Winsock is the missing translation for the first four, and `wgl` or an EGL
-   build for the last. The interpreter on Windows has all of them.
+   build for the last. The interpreter on Windows has all of them. Which module
+   lands in which group is no longer left to reading the preprocessor:
+   `tools/test_namespaces.py` checks it, and it is how the `d3d12` gap below was
+   found.
 5. **`d3d12` draws with one vertex buffer per call.** Correct, and the wrong
    shape for a renderer that draws a thousand times a frame: each `d3d12.draw`
    creates an upload-heap buffer and waits for the GPU. A ring of persistently
@@ -181,6 +185,25 @@ Out of scope by request: DLSS, and FTP (SFTP is the supported transfer, because
 SSH is what the servers actually offer).
 
 ## Recently fixed
+
+* A Windows binary had no `d3d12` namespace at all: the registration sat inside
+  the `#else` of the platform split, which is the non-Windows half, so every
+  call answered `TypeError: map has no method 'available'` — including in
+  `examples/rotating_cube.tern`, which the report came from. It is registered
+  outside the split now, where the header already worked on both systems.
+  Nothing on Linux could see this: the Linux branch was correct and
+  `tools/test-windows.sh` only proves a Windows binary builds. `net.receiveSome`
+  had the same shape of bug in the other direction — present in the real
+  namespace, missing from the Windows stub list, so a Windows call to it failed
+  with the same `map has no method` message instead of the module's own
+  `UnsupportedError`. `tools/test_namespaces.py` now compares the two halves of
+  `namespace_map` with each other and with `tern docs`, and fails on either bug
+  (`43 passed` → `44 passed`, one new group).
+* `examples/rotating_cube.tern` guessed that `gl.available()` would answer even
+  when `gl` was not built for the platform. On Windows it raises, one line after
+  the same class of failure had already been reported from `d3d12`, so the
+  fallback path is inside the `try` now: an unusable backend costs a sentence,
+  never the run.
 
 * The runner used to treat any argument beginning with `--` as its own, so
   `tern run deploy.tern --dry-run` performed a real deployment and the script

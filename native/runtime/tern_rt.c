@@ -9288,8 +9288,8 @@ static Value namespace_map(const char *ns) {
     if (strcmp(ns, "net") == 0) {
         static const char *names[] = { "encode", "decode", "listen", "accept", "connect",
                                        "send", "receive", "sendBytes", "receiveBytes",
-                                       "maxFrame", "udpListen", "udpSend", "udpReceive",
-                                       "close", "timeout", "port", "peer", NULL };
+                                       "receiveSome", "maxFrame", "udpListen", "udpSend",
+                                       "udpReceive", "close", "timeout", "port", "peer", NULL };
         return missing_module("net", names);
     }
     if (strcmp(ns, "http") == 0) {
@@ -9426,6 +9426,8 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+#endif
+
     if (strcmp(ns, "d3d12") == 0) {
         // The argument counts mirror TERN/Builtins/D3D12.cs.
         map_set(map, str_from_cstr("available"),
@@ -9450,8 +9452,6 @@ static Value namespace_map(const char *ns) {
                 make_native_arity("close", n_d3d12_close, 1, 1));
         return v_obj((Obj *)map);
     }
-
-#endif
 
     if (strcmp(ns, "random") == 0) {
         map_set(map, str_from_cstr("seed"), make_native_arity("seed", rnd_seed, 1, 1));
