@@ -19,6 +19,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
+sys.path.insert(0, ROOT)
+from tools import runner      # noqa: E402
+from ide.Studio import runtime  # noqa: E402
+
 # The workloads repeated, so that a run takes seconds rather than milliseconds
 # and the interpreter's work dominates process start-up.
 WORKLOADS = ["fib.tern", "loop.tern", "bintree.tern", "maps.tern", "strings.tern"]
@@ -44,26 +48,32 @@ def generate(directory):
     return generated
 
 
+INTERPRETER = runner.command(ROOT)
+DEBUGGER = runtime.command(ROOT, "TERN.Debug") or []
+
+# Whatever the launchers need — a bundled runtime wants DOTNET_ROOT, an SDK
+# install wants nothing — worked out rather than assumed.
 ENVIRONMENT = dict(os.environ)
-ENVIRONMENT.setdefault("DOTNET_ROOT", os.path.join(
-    os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain"), "dotnet"))
+ENVIRONMENT.update(runtime.environment(ROOT, INTERPRETER[0]))
+if DEBUGGER:
+    ENVIRONMENT.update(runtime.environment(ROOT, DEBUGGER[0]))
 
 
 def run(launcher, *arguments):
-    """Wall-clock seconds for one run, or None if it failed."""
+    """Wall-clock seconds for one run, or None if it failed.
+
+    `launcher` is an argv prefix, since the interpreter is `dotnet …dll` on a
+    machine with no bash.
+    """
     started = time.perf_counter()
-    result = subprocess.run([launcher, *arguments], cwd=ROOT, capture_output=True,
+    result = subprocess.run([*launcher, *arguments], cwd=ROOT, capture_output=True,
                             text=True, timeout=600, env=ENVIRONMENT)
     elapsed = time.perf_counter() - started
     return elapsed if result.returncode == 0 else None
 
 
 def main():
-    interpreter = os.path.join(ROOT, "tools", "tern")
-    debugger = os.path.join(ROOT, "build", "dotnet")
-    assembly = os.path.join(ROOT, "build", "TERN.Debug.dll")
-
-    if not os.path.exists(assembly):
+    if not runtime.assembly(ROOT, "TERN.Debug") or not DEBUGGER:
         print("build/TERN.Debug.dll is missing; run tools/build.py --debugger", file=sys.stderr)
         return 1
 
@@ -75,8 +85,8 @@ def main():
     print(f"{'workload':<16}{'interpreter':>12}{'debugger':>12}{'cost':>9}")
     for workload in WORKLOADS:
         path = scaled[workload]
-        plain = [run(interpreter, "run", path) for _ in range(RUNS)]
-        detached = [run(debugger, assembly, "--detached", path) for _ in range(RUNS)]
+        plain = [run(INTERPRETER, "run", path) for _ in range(RUNS)]
+        detached = [run(DEBUGGER, "--detached", path) for _ in range(RUNS)]
 
         if None in plain or None in detached:
             print(f"{workload:<16}{'failed':>12}")

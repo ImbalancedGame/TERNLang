@@ -106,18 +106,23 @@ def assembly(install_root, name, configuration="Release"):
 
 
 def runner(install_root):
-    """How to run a TERN program: `[dotnet, TERN.Runner.dll]`, or the shell
-    launcher `tools/tern` when that is what exists.
+    """How to run a TERN program: `[dotnet, TERN.Runner.dll]`, or a launcher
+    script when that is what exists.
 
-    The shell launcher is a bash script, so it is only a fallback for a machine
-    that has bash and no directly runnable assembly.
+    The assembly is preferred because it is the only form that behaves the same
+    everywhere. `tools/tern` is a bash script and `tools/tern.cmd` is a batch
+    file; each has to be handed to something that can read it, and on Windows
+    that is `cmd /c` — passing a `.cmd` straight to subprocess is exactly the
+    WinError 193 this ordering avoids.
     """
     found = command(install_root, "TERN.Runner")
     if found:
         return found
     for base in (install_root, os.getcwd()):
-        script = os.path.join(base, "tools", "tern")
+        script = os.path.join(base, "tools", "tern" + (".cmd" if WINDOWS else ""))
         if _exists(script):
+            if WINDOWS:
+                return [os.environ.get("COMSPEC", "cmd.exe"), "/c", script]
             return [script]
     return ["tern"]
 

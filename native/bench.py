@@ -19,7 +19,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 BENCH = os.path.join(REPO, "bench")
 TERNC = os.path.join(HERE, "ternc.py")
-TERN = os.path.join(REPO, "tools", "tern")
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+from tools import runner  # noqa: E402
+
+TERN = runner.command(REPO)
+# `tools/tern` set this for itself; a directly started assembly needs it.
+ENVIRONMENT = {**os.environ, **runner.environment(REPO, TERN)}
 
 WORKLOADS = ["fib", "loop", "maps", "strings", "bintree"]
 
@@ -28,7 +34,8 @@ def best_run(command, runs, cwd=None):
     best = float("inf")
     for _ in range(runs):
         start = time.perf_counter()
-        done = subprocess.run(command, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        done = subprocess.run(command, cwd=cwd, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, env=ENVIRONMENT)
         if done.returncode != 0:
             # Timing a workload that crashed would report a meaningless number.
             return None
@@ -50,7 +57,7 @@ def main(argv):
     with tempfile.TemporaryDirectory() as build:
         for name in names:
             source = os.path.join(BENCH, name + ".tern")
-            binary = os.path.join(build, name)
+            binary = os.path.join(build, name + (".exe" if os.name == "nt" else ""))
             built = subprocess.run(
                 [sys.executable, TERNC, source, "-o", binary, "--cflags=" + args.cflags],
                 capture_output=True, text=True,
@@ -66,7 +73,7 @@ def main(argv):
 
             row = {"name": name, "native": native}
             if args.interp:
-                row["interp"] = best_run([TERN, "run", source], args.runs, cwd=REPO)
+                row["interp"] = best_run([*TERN, "run", source], args.runs, cwd=REPO)
             rows.append(row)
 
     if args.interp:

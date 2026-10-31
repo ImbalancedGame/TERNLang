@@ -14,6 +14,7 @@ which makes the collector run constantly and turns any missed root into a
 wrong answer or a crash. `--no-stress` runs only the normal pass.
 """
 import argparse
+import difflib
 import os
 import subprocess
 import sys
@@ -22,7 +23,6 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 TESTS = os.path.join(REPO, "tests")
-TERN = os.path.join(REPO, "tools", "tern")
 
 # Scripts that never reach a runtime: they exercise the compiler's diagnostics.
 COMPILER_ONLY = {"12_lint", "24_parse_errors"}
@@ -58,7 +58,9 @@ def main(argv):
             # both sides must compare byte for byte.
             expected = open(os.path.join(TESTS, name + ".out"), encoding="utf-8",
                             errors="surrogateescape").read()
-            binary = os.path.join(build, name)
+            # ternc.py appends .exe on Windows, so the path that gets executed
+            # has to be the one it wrote, not the one that was asked for.
+            binary = os.path.join(build, name + (".exe" if os.name == "nt" else ""))
 
             build_result = subprocess.run(
                 [sys.executable, os.path.join(HERE, "ternc.py"), source, "-o", binary],
@@ -104,10 +106,10 @@ def main(argv):
             failed.append((name, problem))
 
             if args.verbose:
-                diff = subprocess.run(["diff", "-u", os.path.join(TESTS, name + ".out"), "-"],
-                                      input=actual, capture_output=True, text=True,
-                                      encoding="utf-8", errors="surrogateescape")
-                print(diff.stdout)
+                # difflib rather than the `diff` command: Windows has neither.
+                print("".join(difflib.unified_diff(
+                    expected.splitlines(keepends=True), actual.splitlines(keepends=True),
+                    fromfile=name + ".out", tofile="actual")), end="")
 
     width = max([len(n) for n in names] + [4])
     for name in names:

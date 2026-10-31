@@ -26,14 +26,16 @@ caveats below.
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
-| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging | `tools/ide/ui_test.py` (89) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging | `tools/ide/ui_test.py` (100) |
+| Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       39 passed
+./tools/test.sh                                       40 passed
+python3 tools/test_runner.py                          15 passed
 python3 native/run_tests.py                           32 passed
 python3 native/parity.py                              42 compared, 0 differing
 bash tools/test-gl.sh                                 ok
@@ -114,7 +116,15 @@ what `tools/tern run` reports.
 
 Ordered by what would bite a user first.
 
-1. **Neither renderer has run on real hardware.** `gl` and `d3d12` are tested
+1. **The native backend has not been built on a Windows machine.** The pieces
+   that made it impossible there are fixed and tested as far as Linux allows —
+   the CLI is started as `dotnet build/TERN.Runner.dll` instead of the bash
+   `tools/tern` that raised `WinError 193`, the C compiler is discovered rather
+   than assumed (`zig cc` when nothing else is present), and `-o app` gains
+   `.exe` — but `tools/test_runner.py` proves the resolution, not a Windows
+   process launch. `pip install ziglang` and one `ternc.py` run is the check
+   that remains.
+2. **Neither renderer has run on real hardware.** `gl` and `d3d12` are tested
    against mocks that answer the calls in the right order and paint what they
    are told to paint. That proves the plumbing — that the vertex buffer reaches
    the draw, that the readback pitch is the device's — and not that a driver
@@ -122,32 +132,32 @@ Ordered by what would bite a user first.
    Windows machine, and `tools/gl/probe.tern` on a machine with a GPU, is the
    check that remains. The structure mirror is already checked against the real
    `d3d12.h` by the Windows build (`tools/d3d12/gen_layout_check.py`).
-2. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
+3. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
    `sftp` and `gl` answer `UnsupportedError` in a Windows binary; the language,
    `math`, `time`, `json`, `os`, `fs`, `text`, `lists` and `d3d12` are there.
    Winsock is the missing translation for the first four, and `wgl` or an EGL
    build for the last. The interpreter on Windows has all of them.
-3. **`d3d12` draws with one vertex buffer per call.** Correct, and the wrong
+4. **`d3d12` draws with one vertex buffer per call.** Correct, and the wrong
    shape for a renderer that draws a thousand times a frame: each `d3d12.draw`
    creates an upload-heap buffer and waits for the GPU. A ring of persistently
    mapped buffers is the next step, and it needs the fence work that goes with
    it.
-4. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
+5. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
    `TlsError: server TLS is not supported`: a script can be a TLS client but not
    a TLS server. Both back ends would need the other half of the handshake
    (OpenSSL's `SSL_accept`, .NET's `SslStream` on the accepted socket).
-5. **Map writes are memory bound, not compute bound.** Not a correctness
+6. **Map writes are memory bound, not compute bound.** Not a correctness
    problem; listed because it is the one benchmark where compiling buys nothing
    and it will not improve until the table's layout does (a bucket array with
    inline keys, or a chunked table that avoids the doubling rehash).
-6. **Small allocation churn.** The native collector is conservative: an integer
+7. **Small allocation churn.** The native collector is conservative: an integer
    that happens to look like an object address can keep an object alive, and the
    heap floor is 16 MiB, so a tiny program's RSS is not tiny. The interpreter
    leaves that to .NET.
-7. **`fs` error text differs slightly.** A compiled binary names the path as the
+8. **`fs` error text differs slightly.** A compiled binary names the path as the
    script wrote it; the interpreter reports the resolved absolute path. Same
    error kind, different text, which `parity.py` tolerates and a user might not.
-8. **Diagnostics in compiled binaries.** Compiler warnings from
+9. **Diagnostics in compiled binaries.** Compiler warnings from
    `./tools/tern check` are not emitted by binaries, and there is no sandbox:
    `--no-fs`, `--no-net`, `engine.AllowFileSystem` and `engine.AllowNetwork`
    belong to the interpreter, since a binary has no engine to configure.

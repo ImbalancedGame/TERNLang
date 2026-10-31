@@ -92,6 +92,17 @@ match tickets.length {
 native/build.sh examples/triage.tern -o triage && ./triage
 ```
 
+On Windows the same things are `tools\tern.cmd` and `dotnet build`; the native
+backend needs a GCC-compatible C compiler and `pip install ziglang` is the
+quickest way to have one - see [`native/README.md`](native/README.md#building-on-windows).
+
+```bat
+dotnet build                                            :: .NET 8 SDK
+tools\tern.cmd run examples\wordcount.tern notes.txt
+pip install ziglang
+python native\ternc.py examples\wordcount.tern -o wordcount.exe
+```
+
 Script arguments are exposed as `os.args()`:
 
 ```bash
