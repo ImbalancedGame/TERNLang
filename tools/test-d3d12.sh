@@ -25,12 +25,26 @@ export TERN_DXGI_LIBRARY="$WORK/libd3d12.so"
 # The mock exports D3DCompile too, so the shader path runs without HLSL.
 export TERN_D3DCOMPILER_LIBRARY="$WORK/libd3d12.so"
 
+# A barrier that names the wrong "before" state is undefined behaviour on real
+# hardware; the driver may remove the device and the failure then surfaces at the
+# next call that touches it. The mock tracks every resource's state and says so,
+# and any such line fails this script.
+check_states() {
+    if grep -q "STATE MISMATCH" "$1"; then
+        echo "d3d12: a barrier named the wrong resource state" >&2
+        grep "STATE MISMATCH" "$1" | head -5 >&2
+        exit 1
+    fi
+}
+
 echo "d3d12: running the probe in the interpreter"
 TERN_D3D12_PNG="$WORK/interp.png" ./tools/tern tools/d3d12/probe.tern > "$WORK/interp.txt" 2>&1 || {
     echo "d3d12: the interpreter probe failed" >&2
     cat "$WORK/interp.txt" >&2
     exit 1
 }
+
+check_states "$WORK/interp.txt"
 
 echo "d3d12: compiling the probe natively"
 python3 native/ternc.py tools/d3d12/probe.tern -o "$WORK/probe" > "$WORK/build.txt" 2>&1 || {
@@ -44,6 +58,8 @@ TERN_D3D12_PNG="$WORK/native.png" "$WORK/probe" > "$WORK/native.txt" 2>&1 || {
     cat "$WORK/native.txt" >&2
     exit 1
 }
+
+check_states "$WORK/native.txt"
 
 if ! diff -u "$WORK/interp.txt" "$WORK/native.txt"; then
     echo "d3d12: the two back ends disagree" >&2
@@ -79,6 +95,28 @@ for name in ("interp", "native"):
     assert (255, 0, 0, 255) in set(pixels), set(pixels)
 print("d3d12: the PNG decodes to the drawn colour")
 PY
+
+# The rotating cube drives the same code with five renderers and far more
+# transitions than the probe, so it gets its own turn.
+echo "d3d12: rendering the cube through the same mock"
+python3 native/ternc.py examples/rotating_cube.tern -o "$WORK/cube" > "$WORK/cube_build.txt" 2>&1 || {
+    echo "d3d12: the cube did not build" >&2
+    sed -n 1,20p "$WORK/cube_build.txt" >&2
+    exit 1
+}
+if ! TERN_D3D12_PNG="$WORK/cube.png" "$WORK/cube" --frames 2 --out "$WORK/cube_frames" \
+        > "$WORK/cube.txt" 2>&1; then
+    echo "d3d12: the cube failed through the mock" >&2
+    cat "$WORK/cube.txt" >&2
+    exit 1
+fi
+check_states "$WORK/cube.txt"
+grep -q "with d3d12" "$WORK/cube.txt" || {
+    echo "d3d12: the cube did not use the Direct3D 12 renderer" >&2
+    cat "$WORK/cube.txt" >&2
+    exit 1
+}
+echo "d3d12: the cube keeps every resource state consistent"
 
 echo "d3d12: the unavailable path"
 cat > "$WORK/missing.tern" <<'TERN'

@@ -460,6 +460,11 @@ typedef struct {
     unsigned long long fence_value;
     unsigned long long row_pitch;
     unsigned long long total_bytes;
+    // The state the render target is actually in, so the next barrier can name
+    // it correctly. D3D12 compares this against what it was told and the result
+    // of a mismatch is undefined: the debug layer complains, and a driver may
+    // remove the device, which surfaces later as an unrelated call failing.
+    unsigned state;
     int width;
     int height;
     int open;
@@ -524,6 +529,20 @@ static void d3d12_barrier(TernD3D12Target *target, void *resource, unsigned befo
     ((PfnResourceBarrier)TERN_SLOT(target->list, 26))(target->list, 1, &barrier);
 }
 
+/// Moves the render target to `after`, naming the state it is really in.
+///
+/// This replaces the hard-coded pairs the calls used to write. `clear` leaves
+/// the target in COPY_SOURCE and `draw` then announced it as COMMON, which is
+/// not what the resource was in: a script that clears and draws (every frame of
+/// every program) told the driver a lie on each frame.
+static void d3d12_transition(TernD3D12Target *target, unsigned after) {
+    if (target->state == after) {
+        return;
+    }
+    d3d12_barrier(target, target->target, target->state, after);
+    target->state = after;
+}
+
 // --- argument helpers ------------------------------------------------------
 
 static int d3d12_int_arg(Value v, const char *what) {
@@ -567,6 +586,26 @@ static void d3d12_unavailable(const char *why) {
     tern_panic("D3D12Error", "Direct3D 12 is not available on this system: %s", why);
 }
 
+/// Why the device was removed, when it was: GetDeviceRemovedReason gives the
+/// fault, and DXGI_ERROR_DEVICE_REMOVED on its own says only that something went
+/// wrong earlier, often in a different call. Returns an empty string when the
+/// device is fine.
+static const char *d3d12_removed_reason(TernD3D12Target *target) {
+    if (!target || !target->device) {
+        return "";
+    }
+    long reason = ((long (*)(void *))TERN_SLOT(target->device, 37))(target->device);
+    switch ((unsigned long)reason & 0xFFFFFFFFul) {
+    case 0: return "";
+    case 0x887A0005ul: return "the device was removed";
+    case 0x887A0006ul: return "the GPU hung and the driver reset it (TDR)";
+    case 0x887A0007ul: return "the device was reset";
+    case 0x887A0020ul: return "the driver hit an internal error";
+    case 0x8007000Eul: return "out of memory";
+    default: return "the device was removed for an unknown reason";
+    }
+}
+
 /// What an HRESULT from this file means, in words a person can act on.
 ///
 /// The raw code is always kept, because it is the only thing that makes a bug
@@ -594,6 +633,21 @@ static const char *d3d12_explain(long hr) {
     default:
         return NULL;
     }
+}
+
+static void d3d12_fail(const char *what, long hr);
+
+/// Panics with the HRESULT, what it means, and - when the device is gone - the
+/// reason the driver gave, which is the only part that points at the fault.
+static void d3d12_fail_removed(TernD3D12Target *target, const char *what, long hr) {
+    const char *reason = ((unsigned long)hr & 0xFFFFFFFFul) == 0x887A0005ul
+        ? d3d12_removed_reason(target)
+        : NULL;
+    if (reason && reason[0]) {
+        tern_panic("D3D12Error", "%s: %s (0x%08lx)", what, reason,
+                   (unsigned long)hr & 0xFFFFFFFFul);
+    }
+    d3d12_fail(what, hr);
 }
 
 /// Panics with the HRESULT and, when it is known, what it means.
@@ -698,6 +752,7 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     }
     ((PfnCreateRenderTargetView)TERN_SLOT(target->device, 20))(
         target->device, target->target, NULL, target->rtv);
+    target->state = D3D12_RESOURCE_STATE_COMMON_;
 
     // The readback buffer is sized from the layout the device reports, so its
     // row pitch is whatever this driver wants rather than a guess.
@@ -1066,7 +1121,7 @@ static Value n_d3d12_draw(int argc, Value *argv) {
     int count = view.size_in_bytes / D3D12_VERTEX_STRIDE;
 
     d3d12_reset(target);
-    d3d12_barrier(target, target->target, D3D12_RESOURCE_STATE_COMMON_, D3D12_RESOURCE_STATE_RENDER_TARGET_);
+    d3d12_transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET_);
     ((PfnOMSetRenderTargets)TERN_SLOT(target->list, 46))(target->list, 1, &target->rtv, 0, NULL);
     ((void (*)(void *, void *))TERN_SLOT(target->list, 30))(
         target->list, target->signatures[handle - 1]);                        // SetGraphicsRootSignature
@@ -1078,7 +1133,7 @@ static Value n_d3d12_draw(int argc, Value *argv) {
         target->list, 0, 1, &view);                                           // IASetVertexBuffers
     ((void (*)(void *, unsigned, unsigned, unsigned, unsigned))TERN_SLOT(target->list, 12))(
         target->list, (unsigned)count, 1, 0, 0);                              // DrawInstanced
-    d3d12_barrier(target, target->target, D3D12_RESOURCE_STATE_RENDER_TARGET_, D3D12_RESOURCE_STATE_COPY_SOURCE_);
+    d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
     d3d12_submit(target);
     return v_nil();
 }
@@ -1149,12 +1204,12 @@ static Value n_d3d12_clear(int argc, Value *argv) {
     colour[3] = (float)d3d12_unit_arg(arg(argc, argv, 4), "alpha");
 
     d3d12_reset(target);
-    d3d12_barrier(target, target->target, D3D12_RESOURCE_STATE_COMMON_, D3D12_RESOURCE_STATE_RENDER_TARGET_);
+    d3d12_transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET_);
     ((PfnOMSetRenderTargets)TERN_SLOT(target->list, 46))(
         target->list, 1, &target->rtv, 0, NULL);
     ((PfnClearRenderTargetView)TERN_SLOT(target->list, 48))(
         target->list, target->rtv, colour, 0, NULL);
-    d3d12_barrier(target, target->target, D3D12_RESOURCE_STATE_RENDER_TARGET_, D3D12_RESOURCE_STATE_COPY_SOURCE_);
+    d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
     d3d12_submit(target);
     return v_nil();
 }
@@ -1180,8 +1235,7 @@ static void d3d12_copy_out(TernD3D12Target *target) {
     ((PfnCopyTextureRegion)TERN_SLOT(target->list, 16))(
         target->list, &destination, 0, 0, &source, NULL);
 
-    d3d12_barrier(target, target->target, D3D12_RESOURCE_STATE_COPY_SOURCE_,
-                  D3D12_RESOURCE_STATE_COMMON_);
+    d3d12_transition(target, D3D12_RESOURCE_STATE_COMMON_);
     d3d12_submit(target);
 }
 
@@ -1196,8 +1250,7 @@ static Value n_d3d12_pixels(int argc, Value *argv) {
     void *data = NULL;
     long hr = ((PfnMap)TERN_SLOT(target->readback, 8))(target->readback, 0, &range, &data);
     if (hr < 0 || !data) {
-        tern_panic("D3D12Error", "the readback buffer could not be mapped (0x%08lx)",
-                   (unsigned long)hr & 0xFFFFFFFFul);
+        d3d12_fail_removed(target, "the readback buffer could not be mapped", hr);
     }
 
     // Bottom row first, like gl.pixels, so a script does not care which backend
@@ -1227,8 +1280,7 @@ static Value n_d3d12_save(int argc, Value *argv) {
     void *data = NULL;
     long hr = ((PfnMap)TERN_SLOT(target->readback, 8))(target->readback, 0, &range, &data);
     if (hr < 0 || !data) {
-        tern_panic("D3D12Error", "the readback buffer could not be mapped (0x%08lx)",
-                   (unsigned long)hr & 0xFFFFFFFFul);
+        d3d12_fail_removed(target, "the readback buffer could not be mapped", hr);
     }
 
     size_t row_bytes = (size_t)target->width * 4;

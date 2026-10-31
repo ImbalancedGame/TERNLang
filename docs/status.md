@@ -193,6 +193,23 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **Every Direct3D 12 barrier named the wrong "before" state.** `clear` moved
+  the target to `COPY_SOURCE` for the readback and left it there; `draw` then
+  told the driver the resource was in `COMMON` and moved it to
+  `RENDER_TARGET`. The driver had never been told about `RENDER_TARGET` →
+  `COPY_SOURCE`, so from the second frame of any clear-and-draw program every
+  barrier was a lie about what it was about to change. Windows does not
+  diagnose that: it is undefined behaviour, and the device was sometimes
+  removed instead, which surfaced as `the readback buffer could not be mapped
+  (0x887A0005)` in `save_frame`, several calls away from the bug. Both back
+  ends now track the real state (`TernD3D12Target.state`, `Target._state`) and
+  transition from it, skipping no-op transitions, and the mock driver tracks
+  the state too: it prints `RESOURCE STATE MISMATCH: a barrier claims state 0
+  but the resource is in 4` and `tools/test-d3d12.sh` fails on it. Proved by
+  reinstating the old pair and watching the script fail. A map failure is also
+  followed by `GetDeviceRemovedReason` now, so the next report of this kind
+  says whether the device was removed, reset, or out of memory instead of only
+  quoting the HRESULT.
 * **The Direct3D 12 binding would have failed on any real GPU.** Every `Create*`
   was given `IID_ID3D12Device` instead of the id of the interface it was
   creating — `CreateCommandQueue` wants `IID_ID3D12CommandQueue`, a resource

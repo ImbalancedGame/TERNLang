@@ -911,6 +911,7 @@ namespace TERN.Builtins
             private IntPtr _allocator;
             private IntPtr _list;
             private IntPtr _heap;
+            private uint _state = StateCommon;
             private IntPtr _texture;
             private IntPtr _readback;
             private IntPtr _fence;
@@ -1273,7 +1274,7 @@ namespace TERN.Builtins
 
                 var view = Upload(vm, packed);
                 Reset();
-                Barrier(_texture, StateCommon, StateRenderTarget);
+                Transition(StateRenderTarget);
 
                 var handle = _rtv;
                 Slot<OMSetRenderTargetsFn>(_list, 46)(_list, 1, ref handle, 0, IntPtr.Zero);
@@ -1283,7 +1284,7 @@ namespace TERN.Builtins
                 Slot<SetVertexBuffersFn>(_list, 44)(_list, 0, 1, ref view);
                 Slot<DrawInstancedFn>(_list, 12)(_list, (uint)count, 1, 0, 0);
 
-                Barrier(_texture, StateRenderTarget, StateCopySource);
+                Transition(StateCopySource);
                 Submit(vm);
             }
 
@@ -1341,6 +1342,24 @@ namespace TERN.Builtins
                 Slot<ResetListFn>(_list, 10)(_list, _allocator, IntPtr.Zero);
             }
 
+            /// <summary>
+            /// Moves the render target to <paramref name="after"/>, naming the
+            /// state it is really in. The calls used to write both states by
+            /// hand, and <c>Clear</c> leaves the target in CopySource while
+            /// <c>Draw</c> announced Common — a lie to the driver on every
+            /// frame, which on real hardware can remove the device.
+            /// </summary>
+            private void Transition(uint after)
+            {
+                if (_state == after)
+                {
+                    return;
+                }
+
+                Barrier(_texture, _state, after);
+                _state = after;
+            }
+
             private void Barrier(IntPtr resource, uint before, uint after)
             {
                 var barrier = new ResourceBarrier
@@ -1392,7 +1411,7 @@ namespace TERN.Builtins
             public void Clear(VM vm, float r, float g, float b, float a)
             {
                 Reset();
-                Barrier(_texture, StateCommon, StateRenderTarget);
+                Transition(StateRenderTarget);
 
                 var handle = _rtv;
                 Slot<OMSetRenderTargetsFn>(_list, 46)(_list, 1, ref handle, 0, IntPtr.Zero);
@@ -1400,7 +1419,7 @@ namespace TERN.Builtins
                 var colour = new[] { r, g, b, a };
                 Slot<ClearRenderTargetViewFn>(_list, 48)(_list, _rtv, ref colour[0], 0, IntPtr.Zero);
 
-                Barrier(_texture, StateRenderTarget, StateCopySource);
+                Transition(StateCopySource);
                 Submit(vm);
             }
 
@@ -1432,7 +1451,7 @@ namespace TERN.Builtins
                 };
 
                 Slot<CopyTextureRegionFn>(_list, 16)(_list, ref destination, 0, 0, ref source, IntPtr.Zero);
-                Barrier(_texture, StateCopySource, StateCommon);
+                Transition(StateCommon);
                 Submit(vm);
 
                 var range = new Range { Begin = 0, End = 0 };
