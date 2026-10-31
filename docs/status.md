@@ -373,7 +373,9 @@ SSH is what the servers actually offer).
   `d3d12.closeWindow(window)` closes it.
   The example runs the window by default on Windows and falls back to PNG
   frames and text where there is no `user32`, so nothing about it needs a
-  display to run. It is tested headless: `tools/d3d12/mock_user32.c` fakes
+  display to run - and when it does fall back on a machine that *has* Direct3D
+  12, it says so in one line, because the text on its own reads like a program
+  that was only ever an ASCII renderer. It is tested headless: `tools/d3d12/mock_user32.c` fakes
   `user32`, `gdi32` and `kernel32`, and `tools/test-d3d12.sh` opens a window,
   presents frames in both back ends, compares the checksums of the pixels that
   reached the window, and checks that the window closes itself the way a person
