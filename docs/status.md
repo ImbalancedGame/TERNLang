@@ -203,10 +203,14 @@ SSH is what the servers actually offer).
 * **A fix that looked like it had not worked.** The report after the resource
   state fix was the same sentence as before it —
   `the readback buffer could not be mapped (0x887a0005)` at
-  `save_frame (rotating_cube:360)` — because it was the same binary: line 360
-  is `d3d12.save` and line 460 is `main()` in the tree *before* the fix, and
-  neither moved when it landed. Two things made that indistinguishable from a
-  failed fix, and both are gone. The binding now stamps itself
+  `save_frame (rotating_cube:360)` — with no reason attached. Only two things
+  produce that wording: a build from *before* the fix, since the fixed native
+  backend appends the driver's reason, or the interpreter, which never asked
+  for one until it was taught to. The trace pins the rest: line 360 is
+  `d3d12.save` and line 460 is `main()` in the version of the example before
+  the window arrived, and both moved when it did, so the program predated that
+  too. Two things made a stale build indistinguishable from a failed fix, and
+  both are gone. The binding now stamps itself
   (`d3d12.info()["build"]`, printed by the cube example and by
   `examples/d3d12_diagnose.tern`), so a report says which build produced it.
   And a failure now names the call that broke the device rather than the call
