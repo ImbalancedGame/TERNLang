@@ -313,9 +313,10 @@ bash tools/ide.sh
 
 It has live diagnostics, completion, hover documentation, go-to-definition,
 find usages, rename, a structure view, a run/compile window with streaming
-output, a debugger with breakpoints, stepping, a call stack and locals, a git
-commit window with coloured diffs, project and problems tool windows, two themes
-and a full keymap. See
+output, a terminal that is a real shell, a debugger with breakpoints (which can
+carry conditions), watches, stepping, a call stack and locals, a git commit
+window with coloured diffs, project and problems tool windows, two themes and a
+full keymap. See
 [`docs/ide.md`](docs/ide.md) for what is there, and for the short list of what
 is not.
 
@@ -328,7 +329,8 @@ tools/tern-ls          # speaks LSP on stdin/stdout
 
 The debugger is a third process (`build/TERN.Debug.dll`) that drives the VM
 directly: a breakpoint rewrites one instruction into an opcode that parks the
-program until the IDE says to continue. Debugging the interpreter costs the
+program until the IDE says to continue, and a conditioned breakpoint is judged
+by the debugger with the VM parked. Debugging the interpreter costs the
 interpreter nothing — the benchmarks run at the same speed through the
 debugger's binary as through `tern`, measured in
 [`bench/compare/debug_overhead.py`](bench/compare/debug_overhead.py).
