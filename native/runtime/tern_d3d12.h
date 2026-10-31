@@ -38,7 +38,7 @@
 // built before the fix that caused it: the two are indistinguishable without a
 // stamp, and the fix looked like it had failed. Bump it whenever the D3D12 or
 // window code changes what a failure means.
-#define TERN_D3D12_BUILD "2026-10-31.6"
+#define TERN_D3D12_BUILD "2026-10-31.7"
 
 // --- the structures, with the offsets the SDK headers give them -------------
 
@@ -197,6 +197,19 @@ typedef struct {
 typedef struct {
     size_t pointer;
 } D3D12_CPU_DESCRIPTOR_HANDLE;  // 8
+
+// D3D12_CLEAR_VALUE: the colour a render target is optimised for. Passing NULL
+// instead is legal, but the driver then warns that every clear is slower - it
+// was the one line the debug layer printed on a real machine - and it is right:
+// a clear announced in advance can replace the contents outright instead of
+// being ordered against them.
+typedef struct {
+    int format;
+    union {
+        float colour[4];
+        int depth_stencil[2];
+    } u;
+} D3D12_CLEAR_VALUE;   // 20
 
 // d3d12sdklayers.h. Only the two calls that read a stored message are used, but
 // the structure has to be exact or the description pointer is read from the
@@ -375,6 +388,8 @@ _Static_assert(offsetof(D3D12_MESSAGE, description_bytes) == 24,
 _Static_assert(sizeof(D3D12_TEXTURE_COPY_LOCATION) == 48, "copy location size");
 _Static_assert(offsetof(D3D12_TEXTURE_COPY_LOCATION, u) == 16, "copy location union offset");
 _Static_assert(sizeof(D3D12_CPU_DESCRIPTOR_HANDLE) == 8, "cpu handle size");
+_Static_assert(sizeof(D3D12_CLEAR_VALUE) == 20, "clear value size");
+_Static_assert(offsetof(D3D12_CLEAR_VALUE, u) == 4, "clear value union offset");
 _Static_assert(sizeof(D3D12_SHADER_BYTECODE) == 16, "shader bytecode size");
 _Static_assert(sizeof(D3D12_STREAM_OUTPUT_DESC) == 32, "stream output size");
 _Static_assert(sizeof(D3D12_RENDER_TARGET_BLEND_DESC) == 40, "blend target size");
@@ -955,9 +970,20 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     texture.layout = 0;   // D3D12_TEXTURE_LAYOUT_UNKNOWN
     texture.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET_;
 
+    // The colour the example clears to: a hint, not a requirement, and the
+    // difference between "the driver has to keep the old contents" and a plain
+    // fill on the GPU.
+    D3D12_CLEAR_VALUE clear;
+    memset(&clear, 0, sizeof clear);
+    clear.format = DXGI_FORMAT_R8G8B8A8_UNORM_;
+    clear.u.colour[0] = 0.05f;
+    clear.u.colour[1] = 0.06f;
+    clear.u.colour[2] = 0.09f;
+    clear.u.colour[3] = 1.0f;
+
     hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
         target->device, &default_heap, 0, &texture, D3D12_RESOURCE_STATE_COMMON_,
-        NULL, &TERN_IID_ID3D12Resource, &target->target);
+        &clear, &TERN_IID_ID3D12Resource, &target->target);
     if (hr < 0) {
         d3d12_unavailable("a render target could not be created");
     }
@@ -1534,9 +1560,9 @@ static Value n_d3d12_save(int argc, Value *argv) {
     }
     ((PfnUnmap)TERN_SLOT(target->readback, 9))(target->readback, 0, &range);
 
-    tern_png_write(path, target->width, target->height, tight, 1);
+    size_t written = tern_png_write(path, target->width, target->height, tight, 1);
     free(tight);
-    return v_nil();
+    return v_int((int64_t)written);
 }
 
 static Value n_d3d12_size(int argc, Value *argv) {

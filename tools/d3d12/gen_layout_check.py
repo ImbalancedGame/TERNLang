@@ -37,6 +37,8 @@ FIELDS = {
 UNIONS = {
     "D3D12_RESOURCE_BARRIER": "Transition",
     "D3D12_TEXTURE_COPY_LOCATION": "PlacedFootprint",
+    # The SDK's clear value has an anonymous union holding Color[4].
+    "D3D12_CLEAR_VALUE": "Color",
 }
 
 SIZE = re.compile(r"_Static_assert\(sizeof\((\w+)\)\s*==\s*(\d+)\s*,")

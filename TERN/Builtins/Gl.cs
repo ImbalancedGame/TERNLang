@@ -139,9 +139,10 @@ namespace TERN.Builtins
                 var context = contexts.Get(vm, a[0]);
                 var path = OutputPath(vm, a[1]);
                 var bytes = context.Pixels(vm);
+                long written;
                 try
                 {
-                    Png.Write(path, context.Width, context.Height, bytes, flip: true);
+                    written = Png.Write(path, context.Width, context.Height, bytes, flip: true);
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException
                                                   or NotSupportedException or ArgumentException)
@@ -149,7 +150,7 @@ namespace TERN.Builtins
                     throw vm.Error("IOError", $"cannot write '{path}': {error.Message}");
                 }
 
-                return Value.Nil;
+                return new Value(written);
             }, "Saves the surface as a PNG: gl.save(handle, path).");
 
             Add(map, "size", 1, 1, (vm, a) =>
@@ -867,7 +868,13 @@ namespace TERN.Builtins
     {
         private static readonly uint[] Crc = BuildCrcTable();
 
-        public static void Write(string path, int width, int height, byte[] rgba, bool flip)
+        /// <summary>
+        /// Writes an RGBA image as a PNG and returns how many bytes were written.
+        /// The count is the caller's own evidence that the picture reached the
+        /// file: a report that says "saved, 0 bytes" should not leave anyone
+        /// guessing whether the writer or the file system is at fault.
+        /// </summary>
+        public static long Write(string path, int width, int height, byte[] rgba, bool flip)
         {
             using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
             file.Write(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A });
@@ -893,6 +900,8 @@ namespace TERN.Builtins
 
             WriteChunk(file, "IDAT", Deflate(raw));
             WriteChunk(file, "IEND", Array.Empty<byte>());
+            file.Flush();
+            return file.Position;
         }
 
         private static byte[] Deflate(byte[] data)

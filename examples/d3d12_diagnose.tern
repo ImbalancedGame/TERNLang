@@ -144,11 +144,20 @@ fn main() {
     // draw, copy to the readback buffer, map, and the file writer.
     let path = os.env("TERN_D3D12_PNG", "d3d12_diagnose.png");
     step("save", fn() {
-        d3d12.save(target, path);
+        // Two numbers, because they disagreed once: the write knows how many
+        // bytes it put in the file, and fs.size asks the file system. When the
+        // Windows build read the wrong field of struct stat, the write was fine
+        // and fs.size said 0 - so both are printed.
+        let written = d3d12.save(target, path);
         if (!fs.exists(path)) {
             return "ok, but " + path + " is not there";
         }
-        return "ok, " + str(fs.size(path)) + " bytes in " + path;
+        let on_disk = fs.size(path);
+        if (on_disk != written) {
+            let detail = str(written) + " bytes were written but the file system says " + str(on_disk);
+            return "wrong: " + detail;
+        }
+        return "ok, " + str(written) + " bytes in " + path;
     });
 
     step("close", fn() {

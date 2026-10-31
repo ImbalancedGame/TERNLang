@@ -200,6 +200,31 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **A saved PNG reported `0 bytes` on Windows while the file was fine.** The
+  writer wrote the picture and the size was asked for from the wrong half of
+  `struct stat`. mingw changes `off_t`, `st_size` and the entry point `stat()`
+  together, but only if `_FILE_OFFSET_BITS` is defined *before* the first
+  system header is read — set it later and the structure stays 32-bit while
+  `stat()` resolves to the 64-bit function, so `st_size` is read from an offset
+  the kernel never wrote (`struct stat` 48 bytes and `st_size` at 20 against
+  `_stat64`'s 56 bytes and 24). The define now sits at the top of
+  `native/runtime/tern_rt.h`, before every include, and
+  `native/runtime/tern_platform.h` asserts the two structures agree, that
+  `off_t` and `st_size` are 8 bytes, and that their offsets match — so this
+  cannot come back quietly on any target. `d3d12.save` and `gl.save` now return
+  the number of bytes they wrote, and `examples/d3d12_diagnose.tern` prints
+  that count beside `fs.size` of the same file and fails the step if they
+  disagree, which is the pair that exposed it.
+* **Every clear warned that the render target had no clear value.** The
+  Direct3D 12 debug layer said the resource was created without an optimized
+  clear value, which means each clear is ordered against the previous contents
+  instead of replacing them. `CreateCommittedResource` now receives a
+  `D3D12_CLEAR_VALUE` matching the target's format and the colour the example
+  clears to, in both back ends; the structure is asserted to be 20 bytes with
+  its union at offset 4, checked against `d3d12.h` by
+  `tools/d3d12/gen_layout_check.py`, and the mock fails the run if a render
+  target arrives without one or with a mismatched format.
+
 * **The first real GPU removed the device on the first copy: `CopyTextureRegion`
   was missing an argument.** The method is
   `CopyTextureRegion(pDst, DstX, DstY, DstZ, pSrc, pSrcBox)`. TERN calls it

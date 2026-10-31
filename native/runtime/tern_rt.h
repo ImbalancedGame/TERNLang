@@ -6,6 +6,17 @@
 #ifndef TERN_RT_H
 #define TERN_RT_H
 
+// Before every system header, here and in the generated file that includes this
+// one first. <sys/types.h> caches off_t when it is first read, so a
+// _FILE_OFFSET_BITS that arrives later leaves `struct stat` 32-bit while
+// <sys/stat.h> still redirects stat() to the 64-bit variant: stat() then writes
+// 56 bytes into a 48-byte structure and st_size is read from the wrong offset.
+// On Windows that made fs.size() answer 0 for a 1.2 MB PNG. tern_platform.h
+// asserts the two agree, so this cannot regress quietly.
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #define _GNU_SOURCE
 #include <setjmp.h>
 #include <stdarg.h>

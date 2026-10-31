@@ -105,6 +105,8 @@ typedef struct { int format; unsigned width, height, depth, pitch; } Footprint;
 typedef struct { unsigned long long offset; Footprint footprint; } PlacedFootprint;
 typedef struct { void *resource; int type; union { PlacedFootprint placed; unsigned index; } u; } CopyLocation;
 typedef struct { size_t pointer; } CpuHandle;
+// D3D12_CLEAR_VALUE: a format and four floats (or a depth/stencil pair).
+typedef struct { int format; union { float colour[4]; int depth_stencil[2]; } u; } ClearValue;
 
 typedef struct {
     void **vtbl;
@@ -375,6 +377,7 @@ static void device_get_footprints(void *self, const ResourceDesc *desc, unsigned
 // ExecuteCommandLists, and TERN_D3D12_MAP_REMOVED=1 makes the readback map fail
 // the way it did in the report that started this.
 static int mock_removed;
+static unsigned mock_state_mismatches;
 static unsigned mock_submits;
 
 static unsigned mock_removal_code(void) {
@@ -698,7 +701,7 @@ static long device_create_committed_resource(void *self, const HeapProps *heap, 
                                              const ResourceDesc *desc, int state, const void *clear,
                                              const Guid *iid, void **out) {
     CHECK_IID("CreateCommittedResource", IID_ID3D12Resource_);
-    (void)self; (void)flags; (void)clear; (void)iid;
+    (void)self; (void)flags; (void)iid;
     MockResource *resource = (MockResource *)calloc(1, sizeof(MockResource));
     resource->readback = heap && heap->type == 3;
     resource->vtbl = resource_vtbl;
@@ -710,11 +713,42 @@ static long device_create_committed_resource(void *self, const HeapProps *heap, 
         resource->size = desc->width;
         resource->memory = (unsigned char *)calloc(1, (size_t)desc->width);
     } else {
-        // The texture's cleared colour lives here until a copy reads it.
+        // The colour the resource is cleared to, until a copy reads it.
         resource->colour[0] = 0;
         resource->colour[1] = 0;
         resource->colour[2] = 0;
         resource->colour[3] = 255;
+
+        // A render target carries the colour it will be cleared to, so that the
+        // driver can throw the old contents away instead of preserving them.
+        // Passing NULL is legal and the Direct3D 12 debug layer warns about it
+        // on every clear, which is exactly the warning a real run printed.
+        if (desc->flags & 1u) {   // D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+            const ClearValue *value = (const ClearValue *)clear;
+            if (!value) {
+                mock_state_mismatches++;
+                fprintf(stderr,
+                        "mock_d3d12: CLEAR VALUE MISSING: a render target was created with no "
+                        "optimized clear value, so every clear is unordered\n");
+            } else if (value->format != desc->format) {
+                mock_state_mismatches++;
+                fprintf(stderr,
+                        "mock_d3d12: CLEAR VALUE MISMATCH: the clear value is format %d and the "
+                        "resource is format %d\n", value->format, desc->format);
+            } else {
+                for (int i = 0; i < 4; i++) {
+                    float channel = value->u.colour[i];
+                    if (!(channel >= 0.0f && channel <= 1.0f)) {
+                        mock_state_mismatches++;
+                        fprintf(stderr,
+                                "mock_d3d12: CLEAR VALUE MISMATCH: channel %d is %f, outside "
+                                "[0, 1]\n", i, (double)channel);
+                        break;
+                    }
+                    resource->colour[i] = mock_byte(channel);
+                }
+            }
+        }
         mock_target = resource;
     }
     *out = resource;
@@ -795,8 +829,6 @@ static long list_reset(void *self, void *allocator, void *state) {
     list->closing = 0;
     return 0;
 }
-
-static unsigned mock_state_mismatches;
 
 static void list_barrier(void *self, unsigned count, const void *barriers) {
     (void)self;

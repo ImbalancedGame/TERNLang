@@ -790,7 +790,7 @@ FUNCTIONS = {
     "gl.save": {
         "summary": "Saves the surface as a PNG.",
         "params": [("context", "int", "A context handle."), ("path", "string", "Where to write it.")],
-        "returns": None,
+        "returns": ("int", "The number of bytes written."),
         "errors": [("IOError", "The file cannot be written.")],
         "remarks": "The PNG is written with stored deflate blocks: valid, larger on disk, and "
                    "no zlib in sight.",
@@ -909,9 +909,17 @@ FUNCTIONS = {
     "d3d12.save": {
         "summary": "Saves the target as a PNG.",
         "params": [("device", "int", "A device handle."), ("path", "string", "Where to write it.")],
-        "returns": None,
+        "returns": ("int", "The number of bytes written."),
         "errors": [("IOError", "The file cannot be written.")],
-        "example": ['d3d12.save(target, "frame.png");'],
+        "example": [
+            "let device = d3d12.create(640, 480);",
+            "d3d12.draw(device);",
+            'println("saved", d3d12.save(device, "frame.png"), "bytes");',
+        ],
+        "remarks": "The byte count is the writer's own evidence that the picture reached the "
+                   "file. A PNG of a 640x480 frame is a few hundred kilobytes, so any other "
+                   "number is worth looking at. `d3d12.pixels` returns the same image as a "
+                   "list of ints if you want to look at it without a file.",
         "see": ["d3d12.pixels"],
     },
     "d3d12.size": {

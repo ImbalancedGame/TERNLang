@@ -17,7 +17,8 @@ gl.save(context, path)
 
 ## Return value
 
-`nil`.
+- Type: `int`
+- The number of bytes written.
 
 ## Remarks
 
