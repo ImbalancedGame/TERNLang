@@ -30,7 +30,7 @@ caveats below.
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
-| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (55) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube — each run, not just compiled | `tools/test_examples.py` (58) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
@@ -41,7 +41,7 @@ python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
 python3 native/run_tests.py                           33 passed
 python3 native/parity.py                              43 compared, 0 differing
-python3 tools/test_examples.py                        55 passed
+python3 tools/test_examples.py                        58 passed
 python3 tools/test_namespaces.py                      23 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
@@ -133,21 +133,28 @@ Ordered by what would bite a user first.
    `.exe` — but `tools/test_runner.py` proves the resolution, not a Windows
    process launch. `pip install ziglang` and one `ternc.py` run is the check
    that remains.
-2. **Neither renderer has a window.** Both draw into an offscreen target and
+2. **Neither renderer has rendered a frame on real hardware.** Both are tested
+   against mocks that answer the calls in the right order and paint what they
+   are told to paint, which proves the plumbing — that the vertex buffer
+   reaches the draw, that the readback pitch is the device's — and not that a
+   driver accepts the description. For Direct3D 12 that gap is not theoretical:
+   it hid a device id with the right first word and an invented tail, and a
+   `Create*` call given the wrong interface id, for as long as the binding has
+   existed. The ids are right now and the mock enforces them, but the remaining
+   claims — descriptor heap offsets, the root signature blob, the PSO
+   description, the readback pitch — have still only met a fake. Running
+   `examples/rotating_cube.tern` on the Windows machine is the cheap test;
+   `tools/tern tools/d3d12/probe.tern` and `tools/gl/probe.tern` on a machine
+   with a GPU are the thorough ones. The structure mirror is already checked
+   against the real `d3d12.h` by the Windows build
+   (`tools/d3d12/gen_layout_check.py`).
+3. **Neither renderer has a window.** Both draw into an offscreen target and
    read it back, which is why `examples/rotating_cube.tern` writes PNGs instead
    of showing them. Everything below presentation is real — geometry,
    projection, shading, draw calls, readback — but a window needs a swap chain
    (or a blitted DIB) and a message loop in each backend, and neither exists
    yet. On Windows a `d3d12` window is the natural next step; on Linux it means
    an X11 or Wayland surface for EGL.
-3. **Neither renderer has run on real hardware.** `gl` and `d3d12` are tested
-   against mocks that answer the calls in the right order and paint what they
-   are told to paint. That proves the plumbing — that the vertex buffer reaches
-   the draw, that the readback pitch is the device's — and not that a driver
-   accepts the description. Running `tools/tern tools/d3d12/probe.tern` on a
-   Windows machine, and `tools/gl/probe.tern` on a machine with a GPU, is the
-   check that remains. The structure mirror is already checked against the real
-   `d3d12.h` by the Windows build (`tools/d3d12/gen_layout_check.py`).
 4. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
    `sftp` and `gl` answer `UnsupportedError` in a Windows binary; the language,
    `math`, `time`, `json`, `os`, `fs`, `text`, `lists` and `d3d12` are there.
@@ -186,6 +193,20 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **The Direct3D 12 binding would have failed on any real GPU.** Every `Create*`
+  was given `IID_ID3D12Device` instead of the id of the interface it was
+  creating — `CreateCommandQueue` wants `IID_ID3D12CommandQueue`, a resource
+  wants `IID_ID3D12Resource`, and Windows answers `E_NOINTERFACE` for anything
+  else. The device id itself was also wrong: `189819f1-1b6b-4ec5-baaf-…`
+  instead of `189819f1-1db6-4b57-be54-…`, right first word and an invented
+  tail. The mock driver ignored the id entirely, so every test passed; the
+  first real call returned `0x80004002`. All the ids are now the `uuid()`
+  values from `d3d12.idl`/`dxgi.idl`, both back ends ask for the right
+  interface, and the mock rejects a mismatch the way Windows does — proved by
+  putting the old id back and watching `tools/test-d3d12.sh` fail with the
+  user's exact error. An unknown HRESULT is also translated now: the message a
+  person saw said "Direct3D 12 is not available on this system", which pointed
+  at their machine rather than at the bug.
 * A Windows binary had no `d3d12` namespace at all: the registration sat inside
   the `#else` of the platform split, which is the non-Windows half, so every
   call answered `TypeError: map has no method 'available'` — including in

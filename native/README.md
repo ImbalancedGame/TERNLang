@@ -245,6 +245,13 @@ out the COM vtables and structures (the offsets were printed from the shipped
 Windows and `dlopen` elsewhere. That is what lets the tests drive the real call
 sequence on Linux against `tools/d3d12/mock_d3d12.c`.
 
+The interface ids are checked the same way, and for the same reason: a Create
+call that is handed an id Windows does not recognise fails with `E_NOINTERFACE`,
+which is what a user's first run on a GPU produced. `tools/d3d12/mock_d3d12.c`
+now compares every id against the value from the SDK's `uuid()` line and refuses
+a mismatch, so `tools/test-d3d12.sh` proves the binding asks for the right
+interface before it ever reaches a driver.
+
 The mirror is checked rather than trusted: `tools/d3d12/gen_layout_check.py`
 reads the `_Static_assert`s out of `runtime/tern_d3d12.h` and emits the same
 assertions against the real `d3d12.h`, and `tools/test-d3d12.sh` compiles that

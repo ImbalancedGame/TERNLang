@@ -845,6 +845,20 @@ buffer reaches the draw and the colour lands in the target — and not that
 Direct3D accepts the description. Running `tools/tern tools/d3d12/probe.tern`
 on a Windows machine is the check that remains.
 
+The mock answers the way Windows does, which took a while to get right: it used
+to ignore the interface id that every `Create*` is given and hand back an object
+regardless, so a binding that passed the *device's* id to `CreateCommandQueue`
+passed every test here and failed at the first call on real hardware with
+`0x80004002` (`E_NOINTERFACE`). The ids are now all correct — each call asks for
+the interface it is creating — and `tools/d3d12/mock_d3d12.c` rejects a wrong one
+exactly as Windows does, so the same mistake fails on this machine. The ids come
+from the `uuid()` attributes in `d3d12.idl` and `dxgi.idl`, which is what the
+SDK's `DEFINE_GUID` lines are generated from.
+
+An HRESULT that is not quoted verbatim is translated: "no adapter on this machine
+supports Direct3D 12 at feature level 11_0" is `DXGI_ERROR_UNSUPPORTED`, and "an
+interface id was rejected - this is a bug in TERN" is the one above.
+
 ---
 
 ## 14. Program entry, arguments and sandboxing

@@ -34,8 +34,44 @@ typedef struct {
     unsigned char d[8];
 } TernGuid;
 
+// Every Create* on the device takes the interface id it should hand back, and
+// answers E_NOINTERFACE (0x80004002) when it does not recognise the one it was
+// given. Passing the device's own id to CreateCommandQueue is therefore not
+// merely untidy: it fails, on hardware, at the first call.
+//
+// These are copied from the uuid() attributes in d3d12.idl and dxgi.idl, which
+// is what the SDK's DEFINE_GUID lines come from. They were wrong before — a
+// device id with a correct first word and an invented tail — and nothing here
+// could notice, because the mock driver never looked at the id it was passed.
+// tools/d3d12/mock_d3d12.c now checks every one of them and answers
+// E_NOINTERFACE exactly as Windows does, so a wrong id fails on the build
+// machine instead of on a user's GPU.
 static const TernGuid TERN_IID_ID3D12Device = {
-    0x189819f1u, 0x1b6b, 0x4ec5, { 0xba, 0xaf, 0x95, 0xa3, 0x7f, 0x9e, 0x51, 0x55 }
+    0x189819f1u, 0x1db6u, 0x4b57u, { 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7 }
+};
+static const TernGuid TERN_IID_ID3D12CommandQueue = {
+    0x0ec870a6u, 0x5d7eu, 0x4c22u, { 0x8c, 0xfc, 0x5b, 0xaa, 0xe0, 0x76, 0x16, 0xed }
+};
+static const TernGuid TERN_IID_ID3D12CommandAllocator = {
+    0x6102dee4u, 0xaf59u, 0x4b09u, { 0xb9, 0x99, 0xb4, 0x4d, 0x73, 0xf0, 0x9b, 0x24 }
+};
+static const TernGuid TERN_IID_ID3D12GraphicsCommandList = {
+    0x5b160d0fu, 0xac1bu, 0x4185u, { 0x8b, 0xa8, 0xb3, 0xae, 0x42, 0xa5, 0xa4, 0x55 }
+};
+static const TernGuid TERN_IID_ID3D12DescriptorHeap = {
+    0x8efb471du, 0x616cu, 0x4f49u, { 0x90, 0xf7, 0x12, 0x7b, 0xb7, 0x63, 0xfa, 0x51 }
+};
+static const TernGuid TERN_IID_ID3D12Resource = {
+    0x696442beu, 0xa72eu, 0x4059u, { 0xbc, 0x79, 0x5b, 0x5c, 0x98, 0x04, 0x0f, 0xad }
+};
+static const TernGuid TERN_IID_ID3D12Fence = {
+    0x0a753dcfu, 0xc4d8u, 0x4b91u, { 0xad, 0xf6, 0xbe, 0x5a, 0x60, 0xd9, 0x5a, 0x76 }
+};
+static const TernGuid TERN_IID_ID3D12RootSignature = {
+    0xc54a6b66u, 0x72dfu, 0x4ee8u, { 0x8b, 0xe5, 0xa9, 0x46, 0xa1, 0x42, 0x92, 0x14 }
+};
+static const TernGuid TERN_IID_ID3D12PipelineState = {
+    0x765a30f3u, 0xf624u, 0x4c6fu, { 0xa8, 0x28, 0xac, 0xe9, 0x48, 0x62, 0x24, 0x45 }
 };
 static const TernGuid TERN_IID_IDXGIFactory1 = {
     0x770aae78u, 0xf26f, 0x4dba, { 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87 }
@@ -531,6 +567,45 @@ static void d3d12_unavailable(const char *why) {
     tern_panic("D3D12Error", "Direct3D 12 is not available on this system: %s", why);
 }
 
+/// What an HRESULT from this file means, in words a person can act on.
+///
+/// The raw code is always kept, because it is the only thing that makes a bug
+/// report precise, but 0x80004002 sent a user looking at their machine when the
+/// real answer was "TERN passed the wrong interface id".
+static const char *d3d12_explain(long hr) {
+    switch ((unsigned long)hr & 0xFFFFFFFFul) {
+    case 0x80004002ul:
+        return "an interface id was rejected - this is a bug in TERN's Direct3D "
+               "binding, not in this machine";
+    case 0x887A0004ul:
+        return "no adapter on this machine supports Direct3D 12 at feature level "
+               "11_0; a driver update may add it";
+    case 0x887A0005ul:
+        return "the graphics driver was reset while the call was running";
+    case 0x887A0006ul:
+        return "the graphics driver stopped responding and was reset";
+    case 0x80070057ul:
+        return "the description was rejected as invalid - this is a bug in TERN";
+    case 0x8007000Eul:
+        return "out of memory";
+    case 0x80070005ul:
+        return "access was denied - a remote desktop session or a sandbox "
+               "without GPU access looks like this";
+    default:
+        return NULL;
+    }
+}
+
+/// Panics with the HRESULT and, when it is known, what it means.
+static void d3d12_fail(const char *what, long hr) {
+    const char *reason = d3d12_explain(hr);
+    if (reason) {
+        tern_panic("D3D12Error", "%s: %s (0x%08lx)", what, reason,
+                   (unsigned long)hr & 0xFFFFFFFFul);
+    }
+    tern_panic("D3D12Error", "%s (0x%08lx)", what, (unsigned long)hr & 0xFFFFFFFFul);
+}
+
 // --- creating a device -----------------------------------------------------
 
 static TernD3D12Target *d3d12_make_device(int width, int height) {
@@ -554,9 +629,8 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     long hr = driver->create_device(NULL, D3D_FEATURE_LEVEL_11_0_,
                                     &TERN_IID_ID3D12Device, &target->device);
     if (hr < 0 || !target->device) {
-        tern_panic("D3D12Error",
-                   "Direct3D 12 is not available on this system: D3D12CreateDevice failed (0x%08lx)",
-                   (unsigned long)hr & 0xFFFFFFFFul);
+        d3d12_fail("Direct3D 12 is not available on this system: "
+                   "D3D12CreateDevice failed", hr);
     }
 
     D3D12_HEAP_PROPERTIES default_heap;
@@ -573,20 +647,21 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
         D3D12_COMMAND_LIST_TYPE_DIRECT_, 0, 0, 0
     };
     hr = ((PfnCreateCommandQueue)TERN_SLOT(target->device, 8))(
-        target->device, &queue_desc, &TERN_IID_ID3D12Device, &target->queue);
+        target->device, &queue_desc, &TERN_IID_ID3D12CommandQueue, &target->queue);
     if (hr < 0) {
         d3d12_unavailable("a command queue could not be created");
     }
 
     hr = ((PfnCreateCommandAllocator)TERN_SLOT(target->device, 9))(
-        target->device, D3D12_COMMAND_LIST_TYPE_DIRECT_, &TERN_IID_ID3D12Device, &target->allocator);
+        target->device, D3D12_COMMAND_LIST_TYPE_DIRECT_, &TERN_IID_ID3D12CommandAllocator,
+        &target->allocator);
     if (hr < 0) {
         d3d12_unavailable("a command allocator could not be created");
     }
 
     hr = ((PfnCreateCommandList)TERN_SLOT(target->device, 12))(
         target->device, D3D12_COMMAND_LIST_TYPE_DIRECT_, 0, target->allocator, NULL,
-        &TERN_IID_ID3D12Device, &target->list);
+        &TERN_IID_ID3D12GraphicsCommandList, &target->list);
     if (hr < 0) {
         d3d12_unavailable("a command list could not be created");
     }
@@ -597,7 +672,7 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     heap_desc.type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV_;
     heap_desc.num_descriptors = 1;
     hr = ((PfnCreateDescriptorHeap)TERN_SLOT(target->device, 14))(
-        target->device, &heap_desc, &TERN_IID_ID3D12Device, &target->heap);
+        target->device, &heap_desc, &TERN_IID_ID3D12DescriptorHeap, &target->heap);
     if (hr < 0) {
         d3d12_unavailable("a descriptor heap could not be created");
     }
@@ -617,7 +692,7 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
 
     hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
         target->device, &default_heap, 0, &texture, D3D12_RESOURCE_STATE_COMMON_,
-        NULL, &TERN_IID_ID3D12Device, &target->target);
+        NULL, &TERN_IID_ID3D12Resource, &target->target);
     if (hr < 0) {
         d3d12_unavailable("a render target could not be created");
     }
@@ -651,13 +726,13 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
 
     hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
         target->device, &readback_heap, 0, &buffer, D3D12_RESOURCE_STATE_COPY_DEST_,
-        NULL, &TERN_IID_ID3D12Device, &target->readback);
+        NULL, &TERN_IID_ID3D12Resource, &target->readback);
     if (hr < 0) {
         d3d12_unavailable("a readback buffer could not be created");
     }
 
     hr = ((PfnCreateFence)TERN_SLOT(target->device, 36))(
-        target->device, 0, 0, &TERN_IID_ID3D12Device, &target->fence);
+        target->device, 0, 0, &TERN_IID_ID3D12Fence, &target->fence);
     if (hr < 0) {
         d3d12_unavailable("a fence could not be created");
     }
@@ -804,7 +879,8 @@ static void *d3d12_empty_root_signature(void *device) {
     const void *bytes = blob_bytes(blob, &length);
     void *signature = NULL;
     long hr = ((long (*)(void *, unsigned, const void *, size_t, const TernGuid *, void **))
-               TERN_SLOT(device, 16))(device, 0, bytes, length, &TERN_IID_ID3D12Device, &signature);
+               TERN_SLOT(device, 16))(device, 0, bytes, length,
+                                   &TERN_IID_ID3D12RootSignature, &signature);
     d3d12_release(blob);
     if (hr < 0 || !signature) {
         tern_panic("D3D12Error", "the root signature could not be created (0x%08lx)",
@@ -863,7 +939,7 @@ static void *d3d12_make_program(TernD3D12Target *target, const char *vertex_sour
     void *pipeline = NULL;
     long hr = ((long (*)(void *, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *, const TernGuid *, void **))
                TERN_SLOT(target->device, 10))(target->device, &description,
-                                              &TERN_IID_ID3D12Device, &pipeline);
+                                              &TERN_IID_ID3D12PipelineState, &pipeline);
     d3d12_release(vertex);
     d3d12_release(pixel);
     if (hr < 0 || !pipeline) {
@@ -916,7 +992,7 @@ static D3D12_VERTEX_BUFFER_VIEW d3d12_upload_vertices(TernD3D12Target *target, V
     void *resource = NULL;
     long hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
         target->device, &upload_heap, 0, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ_,
-        NULL, &TERN_IID_ID3D12Device, &resource);
+        NULL, &TERN_IID_ID3D12Resource, &resource);
     if (hr < 0 || !resource) {
         tern_panic("D3D12Error", "the vertex buffer could not be created (0x%08lx)",
                    (unsigned long)hr & 0xFFFFFFFFul);
