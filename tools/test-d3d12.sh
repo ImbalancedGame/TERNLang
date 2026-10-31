@@ -202,7 +202,60 @@ if ! diff -u "$WORK/win_interp.out" "$WORK/win_native.out"; then
     echo "d3d12: the two back ends disagree about the window" >&2
     exit 1
 fi
-echo "d3d12: both back ends presented the same frames"
+
+# The frames above have to have gone through the swap chain, not the blit: the
+# picture is checked either way, and the point of the exercise is that a flip
+# model swap chain is what put it on screen.
+for stream in "$WORK/win_interp.err" "$WORK/win_native.err"; do
+    if ! grep -q "mock_dxgi: swap chain" "$stream"; then
+        echo "d3d12: the swap chain was never created ($stream)" >&2
+        cat "$stream" >&2
+        exit 1
+    fi
+done
+echo "d3d12: both back ends presented the same frames, through a swap chain"
+
+# And the same frames again with the swap chain refused, which is the path a
+# machine without IDXGIFactory2 takes. The checksums have to be identical: the
+# copy into a back buffer must show exactly what StretchDIBits showed, or the
+# new path is a different picture rather than the same one, sooner.
+echo "d3d12: checking the blit shows the same frame as the swap chain"
+export TERN_DXGI_NO_FACTORY2=1
+TERN_D3D12_PNG="$WORK/interp_blit.png" ./tools/tern tools/d3d12/probe.tern \
+    > "$WORK/blit_interp.out" 2> "$WORK/blit_interp.err" || {
+    echo "d3d12: the interpreter probe failed without a swap chain" >&2
+    cat "$WORK/blit_interp.out" "$WORK/blit_interp.err" >&2
+    exit 1
+}
+TERN_D3D12_PNG="$WORK/native_blit.png" "$WORK/probe" \
+    > "$WORK/blit_native.out" 2> "$WORK/blit_native.err" || {
+    echo "d3d12: the native probe failed without a swap chain" >&2
+    cat "$WORK/blit_native.out" "$WORK/blit_native.err" >&2
+    exit 1
+}
+unset TERN_DXGI_NO_FACTORY2
+if grep -q "mock_dxgi: swap chain" "$WORK/blit_interp.err" "$WORK/blit_native.err"; then
+    echo "d3d12: a swap chain was created after being refused" >&2
+    exit 1
+fi
+if [ "$(grep -c 'mock_user32: frame' "$WORK/blit_interp.err")" != 2 ]; then
+    echo "d3d12: the blit path did not present two frames" >&2
+    cat "$WORK/blit_interp.err" >&2
+    exit 1
+fi
+if ! diff -u <(grep 'mock_user32: frame' "$WORK/blit_interp.err") \
+             <(grep 'mock_user32: frame' "$WORK/win_interp.err"); then
+    echo "d3d12: the swap chain shows a different picture from the blit" >&2
+    exit 1
+fi
+if ! diff -u <(grep 'mock_user32: frame' "$WORK/blit_native.err") \
+             <(grep 'mock_user32: frame' "$WORK/win_native.err"); then
+    echo "d3d12: the native swap chain shows a different picture from the blit" >&2
+    exit 1
+fi
+check_states "$WORK/blit_interp.err"
+check_states "$WORK/blit_native.err"
+echo "d3d12: the blit and the swap chain put the same pixels on screen"
 
 # The rotating cube drives the same code with five renderers and far more
 # transitions than the probe, so it gets its own turn.

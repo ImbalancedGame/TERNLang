@@ -68,6 +68,25 @@ typedef struct {
 #define MSG_NONE 0
 
 static int frames_presented;
+
+/// One frame reached the screen. Both ways of getting it there end here: the
+/// blit calls it directly, and the swap chain's mock calls it through this same
+/// symbol, so a window opened with a swap chain still counts frames, still
+/// closes itself after TERN_WINDOW_FRAMES, and still prints the frame's
+/// checksum in the same order - which is what lets a test compare the two paths
+/// pixel for pixel.
+///
+/// The checksum is over BGRA bytes with the first row at the top, whether they
+/// came from a DIB or from a back buffer, so the same picture gives the same
+/// number either way.
+void mock_window_frame(int width, int height, uint32_t checksum) {
+    frames_presented++;
+    // stderr, not stdout: the probe's own output is diffed between the two back
+    // ends, and a library has no business interleaving with it.
+    fprintf(stderr, "mock_user32: frame %d %dx%d checksum 0x%08x\n",
+            frames_presented, width, height, checksum);
+    fflush(stderr);
+}
 static int frames_to_run = -1;
 static int window_open;
 static int client_width, client_height;
@@ -280,12 +299,7 @@ unsigned StretchDIBits(void *dc, int xDest, int yDest, int destWidth, int destHe
         hash *= 16777619u;
     }
 
-    frames_presented++;
-    // stderr, not stdout: the probe's own output is diffed between the two back
-    // ends, and a library has no business interleaving with it.
-    fprintf(stderr, "mock_user32: frame %d %dx%d checksum 0x%08x\n",
-            frames_presented, srcWidth, srcHeight, hash);
-    fflush(stderr);
+    mock_window_frame(srcWidth, srcHeight, hash);
     return srcWidth;
 }
 

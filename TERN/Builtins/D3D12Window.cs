@@ -162,6 +162,25 @@ namespace TERN.Builtins
 
         public static bool Supported => Load() is not null;
 
+        /// <summary>The Win32 handle, for the swap chain that presents into it.</summary>
+        internal IntPtr Handle => _hwnd;
+
+        /// <summary>
+        /// Processes the window's messages and answers whether it is still open.
+        /// What <c>d3d12.present</c> calls once the frame is on the swap chain.
+        /// </summary>
+        public bool PumpMessages()
+        {
+            var api = Load();
+            if (api is null || Closed)
+            {
+                return false;
+            }
+
+            Pump(api);
+            return !Closed;
+        }
+
         private static T? Export<T>(IntPtr library, string name) where T : Delegate
         {
             if (!NativeLibrary.TryGetExport(library, name, out var address))
@@ -262,7 +281,11 @@ namespace TERN.Builtins
             return _api?.DefWindowProc?.Invoke(hwnd, message, wparam, lparam) ?? IntPtr.Zero;
         }
 
-        private bool Closed;
+        /// <summary>
+        /// True once the window has gone. Read by <c>d3d12.present</c>, which
+        /// must stop presenting into a window that is no longer there.
+        /// </summary>
+        internal bool Closed;
 
         public static D3D12Window? Create(int width, int height, string title)
         {

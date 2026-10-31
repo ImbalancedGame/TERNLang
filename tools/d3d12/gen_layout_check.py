@@ -31,6 +31,8 @@ FIELDS = {
     "render_target_formats": "RTVFormats",
     "description": "pDescription",
     "description_bytes": "DescriptionByteLength",
+    # DXGI_SWAP_CHAIN_DESC1 spells the sample description out in full.
+    "sample": "SampleDesc",
     # tagRECT, which D3D12_RECT is a typedef of, spells its members in lower
     # case: RECT has left/top/right/bottom, not Left/Top/Right/Bottom.
     "bottom": "bottom",
@@ -72,6 +74,8 @@ def main():
     print("#include <stddef.h>")
     print("#include <windows.h>")
     print("#include <d3d12.h>")
+    # The swap chain description is DXGI's, not Direct3D 12's.
+    print("#include <dxgi1_2.h>")
     print()
     for check in checks:
         print(check)
