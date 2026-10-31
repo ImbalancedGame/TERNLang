@@ -400,7 +400,7 @@ def test_graphics(checks):
                               capture_output=True, text=True, env=environment)
     checks.check("the renderer path runs", rendered.returncode == 0,
                  (rendered.stderr or rendered.stdout)[-400:])
-    checks.check("it names the renderer it used", "with gl." in rendered.stdout,
+    checks.check("it names the renderer it used", "with gl (" in rendered.stdout,
                  rendered.stdout[-200:])
     written = sorted(name for name in os.listdir(work) if name.endswith(".png"))
     checks.check("it wrote one PNG per frame", len(written) == 3, str(written))
@@ -410,6 +410,18 @@ def test_graphics(checks):
                      and header[1] == 480, str(header))
         payloads = {open(os.path.join(work, name), "rb").read() for name in written}
         checks.check("the frames differ", len(payloads) == 3)
+
+    # Point the driver at something that is not a driver: the availability probe
+    # itself throws, and the example still has to finish with its text frames.
+    broken = subprocess.run(CLI + [example, "--frames", "1", "--out", os.path.join(work, "broken")],
+                            cwd=ROOT, capture_output=True, text=True,
+                            env=dict(os.environ, TERN_GL_LIBRARY="/nonexistent/libEGL.so.1"))
+    checks.check("an unusable backend is a sentence, not a traceback",
+                 broken.returncode == 0 and "Traceback" not in (broken.stdout + broken.stderr),
+                 (broken.stderr or broken.stdout)[-400:])
+    checks.check("and it says which backend it could not use",
+                 "OpenGL is not usable here" in broken.stdout or "no GPU renderer" in broken.stdout,
+                 broken.stdout[-300:])
 
     help_run = subprocess.run(CLI + [example, "--help"], cwd=ROOT,
                               capture_output=True, text=True, env=environment)

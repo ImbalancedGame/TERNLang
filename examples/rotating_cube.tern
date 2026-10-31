@@ -17,7 +17,7 @@
 //
 //   tern run examples/rotating_cube.tern
 //   tern run examples/rotating_cube.tern --ascii
-//   tern run examples/rotating_cube.tern --frames 36 --out frames
+//   tern run examples/rotating_cube.tern --frames 24 --out frames
 //   tern run examples/rotating_cube.tern --ascii --size 100x50
 //
 // Both renderers are driven from the same triangle list on purpose: when the
@@ -292,30 +292,36 @@ struct Surface { backend, target, program }
 
 /// Opens whichever renderer this machine has, Direct3D 12 first.
 ///
-/// A module can be present and still fail - a Windows install without
-/// d3dcompiler_47.dll has Direct3D 12 but cannot compile the shaders - so each
-/// attempt is guarded and the next one is tried in turn.
-fn open_surface(width, height) {
-    if (d3d12.available()) {
-        try {
-            let handle = d3d12.create(width, height);
-            return Surface("d3d12", handle, d3d12.pipeline(handle, hlsl_vertex(), hlsl_pixel()));
-        } catch (error) {
-            println("Direct3D 12 is installed but not usable here: " + str(error));
-            println("trying OpenGL instead.");
-        }
+/// Every call is guarded, including the availability probe. A module can be
+/// present and still fail - a Windows install without d3dcompiler_47.dll has
+/// Direct3D 12 but cannot compile the shaders - and a module can be absent
+/// enough that even asking whether it is there raises. Neither should cost
+/// more than a line of output on a script whose text frames need no GPU at
+/// all, which is why the whole attempt is inside the try rather than just the
+/// calls after the probe.
+fn try_renderer(name, open) {
+    try {
+        let surface = open();
+        if (surface != nil) { return surface; }
+    } catch (error) {
+        println(name + " is not usable here: " + str(error));
     }
-
-    if (gl.available()) {
-        try {
-            let handle = gl.create(width, height);
-            return Surface("gl", handle, gl.program(handle, glsl_vertex(), glsl_fragment()));
-        } catch (error) {
-            println("OpenGL is installed but not usable here: " + str(error));
-        }
-    }
-
     return nil;
+}
+
+fn open_surface(width, height) {
+    let direct3d = try_renderer("Direct3D 12", fn() {
+        if (!d3d12.available()) { return nil; }
+        let first = d3d12.create(width, height);
+        return Surface("d3d12", first, d3d12.pipeline(first, hlsl_vertex(), hlsl_pixel()));
+    });
+    if (direct3d != nil) { return direct3d; }
+
+    return try_renderer("OpenGL", fn() {
+        if (!gl.available()) { return nil; }
+        let second = gl.create(width, height);
+        return Surface("gl", second, gl.program(second, glsl_vertex(), glsl_fragment()));
+    });
 }
 
 /// Flattens the triangles into the list both modules draw from.
@@ -367,7 +373,7 @@ fn usage() {
     println("usage: tern run examples/rotating_cube.tern [options]");
     println("");
     println("  --ascii           only draw the cube as text");
-    println("  --frames N        how many PNG frames to write (default 24)");
+    println("  --frames N        how many PNG frames to write (default 12)");
     println("  --out DIR         where to put them (default cube_frames)");
     println("  --size WIDTHxHEIGHT  text grid (default 72x36)");
     println("  --help            this text");
@@ -376,7 +382,10 @@ fn usage() {
 fn main() {
     let arguments = os.args();
     let text_only = false;
-    let frames = 24;
+    // Twelve is a half turn in 30-degree steps: enough to see the cube move,
+    // and at 640x480 about 14 MB of PNG, because the writer stores pixels
+    // rather than compressing them.
+    let frames = 12;
     let out = "cube_frames";
     let width = 72;
     let height = 36;
@@ -427,14 +436,18 @@ fn main() {
 
     if (!fs.exists(out)) { fs.mkdir(out); }
 
+    let bytes = 0;
     for i in range(frames) {
         let path = out + "/frame-" + str(i).padStart(3, "0") + ".png";
         paint(surface, frame_at(360.0 * i / frames));
         save_frame(surface, path);
+        bytes += fs.size(path);
     }
     close_surface(surface);
 
-    println("wrote " + str(frames) + " frames to " + out + "/ with " + surface.backend + ".");
+    let size = str(math.round(bytes / 1048576.0, 1)) + " MB";
+    println("wrote " + str(frames) + " frames to " + out + "/ with " + surface.backend +
+            " (" + size + ").");
 }
 
 main();

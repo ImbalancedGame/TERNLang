@@ -265,6 +265,15 @@ translations and answer
 `std:d3d12` is the exception to that rule because its whole interface is
 `LoadLibrary` plus function pointers, which is the same shape on both systems.
 
+That paragraph describes what the platform split is meant to do, so it is
+checked rather than trusted: `tools/test_namespaces.py` parses `namespace_map`
+and fails if a module is implemented only for non-Windows without a stub there
+(`d3d12` was, so a Windows binary answered `map has no method 'available'`), if
+a stub list is missing a member the real namespace has, or if either back end
+registers a namespace or a member the other one does not. It runs as part of
+`tools/test.sh`, which is the only way to catch this class of bug on a machine
+that cannot execute a Windows binary.
+
 ## Limitations
 
 * The collector is conservative: an integer that happens to look like an object

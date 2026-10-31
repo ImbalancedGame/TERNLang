@@ -37,11 +37,23 @@ cd "$HERE"
 echo "windows: using $ZIG"
 
 status=0
-# 35_raw_bytes is here because it is the only test that touches text.toBytes
-# and text.fromBytes, which used to sit inside the #ifndef _WIN32 block and
-# so failed to compile for this target while every Linux suite stayed green.
-for name in 01_basics 02_strings 05_collections 08_errors 09_builtins 22_fs 27_json 26_net 35_raw_bytes; do
-    source="tests/$name.tern"
+# What is in this list, and why:
+#
+#   35_raw_bytes          the only test that touches text.toBytes and
+#                         text.fromBytes, which used to sit inside the
+#                         #ifndef _WIN32 block and so did not compile for this
+#                         target while every Linux suite stayed green.
+#   examples/rotating_cube the only program that uses std:d3d12 from a compiled
+#                         binary. Building it here is what keeps the Direct3D 12
+#                         structures honest for this target — and it is the
+#                         program whose `d3d12.available()` came back as "map has
+#                         no method 'available'" because d3d12 was registered
+#                         inside the non-Windows half of namespace_map.
+for source in tests/01_basics.tern tests/02_strings.tern tests/05_collections.tern \
+              tests/08_errors.tern tests/09_builtins.tern tests/22_fs.tern \
+              tests/27_json.tern tests/26_net.tern tests/35_raw_bytes.tern \
+              examples/rotating_cube.tern; do
+    name="$(basename "$source" .tern)"
     [ -f "$source" ] || continue
     if ! TERN_ZIG="$ZIG" python3 native/ternc.py --target windows "$source" -o "$WORK/$name.exe" > "$WORK/$name.log" 2>&1; then
         echo "windows: $name did not build" >&2

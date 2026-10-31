@@ -86,6 +86,23 @@ if [[ $UPDATE -eq 0 && -f "$HERE/tools/test_sources.py" ]]; then
   fi
 fi
 
+# The standard library has to be the same on both back ends and on every
+# platform. This is static: the Windows half of the runtime cannot be executed
+# here, and a module left inside the non-Windows branch is exactly the kind of
+# bug no Linux run can see (it cost a user a "map has no method 'available'").
+if [[ $UPDATE -eq 0 && -f "$HERE/tools/test_namespaces.py" && -f "$HERE/build/TERN.Runner.dll" ]]; then
+  if namespace_output="$(cd "$HERE" && timeout 300 python3 "$HERE/tools/test_namespaces.py" 2>&1)"; then
+    echo "ok    native-ns   $(tail -1 <<<"$namespace_output")"
+    pass=$((pass+1))
+  else
+    echo "FAIL native-ns"
+    tail -20 <<<"$namespace_output" | sed 's/^/      /'
+    fail=$((fail+1)); failed_names+=("native-ns")
+  fi
+elif [[ $UPDATE -eq 0 ]]; then
+  echo "skip  native-ns (needs build/TERN.Runner.dll)"
+fi
+
 # Everything that needs PySide6 uses the same interpreter, found once.
 IDE_PYTHON=""
 if [[ $UPDATE -eq 0 ]]; then
