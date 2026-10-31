@@ -14,6 +14,8 @@ import os
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
+from . import runtime
+
 
 def _specs(breakpoints):
     """Breakpoints as the server wants them: dicts with a line and a condition.
@@ -62,31 +64,25 @@ class DebugSession(QObject):
     # ------------------------------------------------------------- lifecycle
 
     def _command(self):
-        """How to start the debugger, preferring the installation's runtime."""
-        roots = [self.root, os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))))]
+        """How to start the debugger: the bundled runtime or a system one."""
+        roots = [os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), self.root]
         for base in roots:
-            launcher = os.path.join(base, "build", "dotnet")
-            assembly = os.path.join(base, "build", "TERN.Debug.dll")
-            if os.path.exists(launcher) and os.path.exists(assembly):
-                return launcher, assembly, base
-
-        toolchain = os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain")
-        candidate = os.path.join(toolchain, "dotnet", "dotnet")
-        if os.path.exists(candidate):
-            return candidate, os.path.join(self.root, "build", "TERN.Debug.dll"), self.root
-        return "dotnet", os.path.join(self.root, "build", "TERN.Debug.dll"), self.root
+            command = runtime.command(base, "TERN.Debug")
+            if command:
+                return command[0], command[1], base
+        return None, None, self.root
 
     def start(self):
         launcher, assembly, base = self._command()
-        if not os.path.exists(assembly):
-            self.failed.emit(f"{assembly} is missing; run tools/build.py --debugger")
+        if launcher is None or assembly is None:
+            self.failed.emit("TERN.Debug.dll is missing (run tools/ide.py, which "
+                             "builds it) or there is no .NET runtime to run it")
             return False
 
         environment = QProcessEnvironment.systemEnvironment()
-        if not environment.contains("DOTNET_ROOT"):
-            environment.insert("DOTNET_ROOT", os.path.join(
-                os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain"), "dotnet"))
+        for name, value in runtime.environment(base, launcher).items():
+            environment.insert(name, value)
         self.process.setProcessEnvironment(environment)
         self.process.setWorkingDirectory(base)
         self.process.start(launcher, [assembly])

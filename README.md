@@ -312,6 +312,16 @@ python3 -m venv .venv && .venv/bin/pip install "PySide6-Essentials==6.9.3"
 bash tools/ide.sh                      # builds what is missing, then opens this repo
 ```
 
+On Windows, in cmd — the virtualenv has a `Scripts\` folder, not `bin/`, and
+there is a `.cmd` launcher:
+
+```bat
+dotnet build                           :: the .NET 8 SDK; writes build\*.dll
+python -m venv .venv
+.venv\Scripts\pip install "PySide6-Essentials==6.9.3"
+tools\ide.cmd
+```
+
 It has live diagnostics, completion, hover documentation, go-to-definition,
 find usages, rename, a structure view, a run/compile window with streaming
 output, a terminal that is a real shell, a debugger with breakpoints (which can

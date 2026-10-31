@@ -29,6 +29,7 @@ from .lsp import LanguageServer, path_for, uri_for
 from .panels import (ChangesPanel, ConsolePanel, DebugPanel, DiffPanel,
                      FindInPathPanel, ProblemsPanel, ProjectPanel,
                      SearchEverywhereDialog, StructurePanel, SymbolDialog)
+from . import runtime
 from .debugger import DebugSession
 from .terminal import TerminalPanel
 from .vcs import parse_diff
@@ -50,7 +51,9 @@ class StudioWindow(QMainWindow):
         # not the project: opening somebody else's directory must not take the
         # language server with it.
         self.install = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self.launcher = launcher or self._find_launcher()
+        # A list, so the same field holds `tools/tern` and `dotnet …dll`.
+        self.launcher = (launcher if isinstance(launcher, list)
+                         else [launcher] if launcher else self._find_launcher())
         self.theme_name = theme
         self.theme = THEMES[theme]
         self.tabs = {}                       # path -> EditorArea
@@ -475,6 +478,12 @@ class StudioWindow(QMainWindow):
 
     def _start_server(self):
         command = self._server_command()
+        if command is None:
+            # Better than a confusing "did not start": say what is missing.
+            self.status_server.setText("syntax server: not built")
+            self._append_log("TERN.Ide.dll is missing (run tools/ide.py, which "
+                             "builds it) or there is no .NET runtime to run it")
+            return
         self.server = LanguageServer(command, self.root, self)
         self.server.diagnostics.connect(self._on_diagnostics)
         self.server.ready.connect(self._on_server_ready)
@@ -482,32 +491,26 @@ class StudioWindow(QMainWindow):
         self.server.start()
 
     def _find_launcher(self):
-        for base in (self.root, self.install):
-            candidate = os.path.join(base, "tools", "tern")
-            if os.path.exists(candidate):
-                return candidate
-        return "tern"
+        """The command that runs a TERN program, as a list.
+
+        An assembly run through `dotnet` where one can be found — which is the
+        only form that works on Windows, since `tools/tern` is a bash script —
+        and that script otherwise.
+        """
+        for base in (self.install, self.root):
+            found = runtime.runner(base)
+            if found != ["tern"]:
+                return found
+        return ["tern"]
 
     def _server_command(self):
-        # The same launcher tools/tern uses: build/dotnet is the runtime copied
-        # next to the assemblies. The toolchain directory itself holds the .NET
-        # root, not an executable, so it cannot be used directly.
-        base = self.install
-        assembly = os.path.join(base, "build", "TERN.Ide.dll")
-        if not os.path.exists(assembly):
-            base = self.root
-            assembly = os.path.join(base, "build", "TERN.Ide.dll")
-
-        launcher = os.path.join(base, "build", "dotnet")
-        if os.path.exists(launcher):
-            return [launcher, assembly]
-
-        toolchain = os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain")
-        candidate = os.path.join(toolchain, "dotnet", "dotnet")
-        if os.path.exists(candidate):
-            return [candidate, assembly]
-
-        return ["dotnet", assembly]
+        # Either the bundled runtime next to the assemblies or an SDK install,
+        # whichever this machine has; runtime.py decides.
+        for base in (self.install, self.root):
+            command = runtime.command(base, "TERN.Ide")
+            if command:
+                return command
+        return None
 
     def _on_server_ready(self, ok):
         self.status_server.setText("syntax server: ready" if ok else "syntax server: unavailable")
@@ -1464,7 +1467,7 @@ class StudioWindow(QMainWindow):
             return
         if editor.document().isModified():
             self.save_current()
-        self._start_process([self.launcher, "run", editor.path], "Run")
+        self._start_process([*self.launcher, "run", editor.path], "Run")
 
     def compile_and_run(self):
         editor = self._editor()
@@ -1529,7 +1532,7 @@ class StudioWindow(QMainWindow):
             return
         if editor.document().isModified():
             self.save_current()
-        self._start_process([self.launcher, "check", editor.path], "Check")
+        self._start_process([*self.launcher, "check", editor.path], "Check")
 
     # ------------------------------------------------------------------ misc
 

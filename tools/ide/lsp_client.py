@@ -371,13 +371,20 @@ def main():
     verbose = "-v" in sys.argv or "--verbose" in sys.argv
     log_path = os.path.join(tempfile.gettempdir(), "tern-ls.log")
 
-    command = [os.path.join(ROOT, "build", "dotnet"), os.path.join(ROOT, "build", "TERN.Ide.dll")]
+    sys.path.insert(0, ROOT)
+    from ide.Studio.runtime import command as runtime_command
+
+    command = runtime_command(ROOT, "TERN.Ide") or [
+        os.path.join(ROOT, "build", "dotnet"), os.path.join(ROOT, "build", "TERN.Ide.dll")]
     if not os.path.exists(command[1]):
         print("ide: build/TERN.Ide.dll missing; run tools/build.py --ide", file=sys.stderr)
         return 1
 
     env = dict(os.environ)
-    env["DOTNET_ROOT"] = os.path.join(os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain"), "dotnet")
+    from ide.Studio.runtime import environment as runtime_environment
+
+    for name, value in runtime_environment(ROOT, command[0]).items():
+        env.setdefault(name, value)
 
     client = LanguageClient(command + ["--log=" + log_path], log_path=log_path)
     client.process.kill()  # the environment is set below; restart with it

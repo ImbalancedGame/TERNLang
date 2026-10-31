@@ -18,22 +18,22 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 
 def server_command():
     """How to start the debugger, as an argv list."""
-    assembly = os.path.join(ROOT, "build", "TERN.Debug.dll")
-    launcher = os.path.join(ROOT, "build", "dotnet")
-    if os.path.exists(launcher):
-        return [launcher, assembly]
-    toolchain = os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain")
-    candidate = os.path.join(toolchain, "dotnet", "dotnet")
-    if os.path.exists(candidate):
-        return [candidate, assembly]
-    return ["dotnet", assembly]
+    sys.path.insert(0, ROOT)
+    from ide.Studio.runtime import command
+
+    found = command(ROOT, "TERN.Debug")
+    return found or [os.path.join(ROOT, "build", "dotnet"),
+                     os.path.join(ROOT, "build", "TERN.Debug.dll")]
 
 
 class DebugClient:
     def __init__(self, cwd=None):
         environment = dict(os.environ)
-        environment.setdefault("DOTNET_ROOT", os.path.join(
-            os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain"), "dotnet"))
+        sys.path.insert(0, ROOT)
+        from ide.Studio.runtime import environment as runtime_environment
+
+        for name, value in runtime_environment(ROOT).items():
+            environment.setdefault(name, value)
         self.process = subprocess.Popen(
             server_command(), cwd=cwd or ROOT, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

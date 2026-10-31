@@ -16,10 +16,11 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "docs", "ide", "img")
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("DOTNET_ROOT", os.path.join(
-    os.environ.get("TERN_TOOLCHAIN_DIR", "/tmp/tern-toolchain"), "dotnet"))
-
 sys.path.insert(0, ROOT)
+from ide.Studio.runtime import environment as _runtime_environment  # noqa: E402
+
+for _name, _value in _runtime_environment(ROOT).items():
+    os.environ.setdefault(_name, _value)
 
 
 def pump(app, milliseconds):
