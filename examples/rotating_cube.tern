@@ -299,29 +299,33 @@ struct Surface { backend, target, program }
 /// more than a line of output on a script whose text frames need no GPU at
 /// all, which is why the whole attempt is inside the try rather than just the
 /// calls after the probe.
-fn try_renderer(name, open) {
+fn try_renderer(name, open, notes) {
     try {
         let surface = open();
         if (surface != nil) { return surface; }
+        notes.push(name + " is not available on this system");
     } catch (error) {
-        println(name + " is not usable here: " + str(error));
+        notes.push(name + ": " + str(error));
     }
     return nil;
 }
 
-fn open_surface(width, height) {
+/// Returns a surface, or nil with one line per renderer in `notes` saying why
+/// not. Nothing here is an error: the text frames are the point of the example
+/// and they need none of this.
+fn open_surface(width, height, notes) {
     let direct3d = try_renderer("Direct3D 12", fn() {
         if (!d3d12.available()) { return nil; }
         let first = d3d12.create(width, height);
         return Surface("d3d12", first, d3d12.pipeline(first, hlsl_vertex(), hlsl_pixel()));
-    });
+    }, notes);
     if (direct3d != nil) { return direct3d; }
 
     return try_renderer("OpenGL", fn() {
         if (!gl.available()) { return nil; }
         let second = gl.create(width, height);
         return Surface("gl", second, gl.program(second, glsl_vertex(), glsl_fragment()));
-    });
+    }, notes);
 }
 
 /// Flattens the triangles into the list both modules draw from.
@@ -426,11 +430,14 @@ fn main() {
 
     if (text_only) { return; }
 
-    let surface = open_surface(640, 480);
+    let notes = [];
+    let surface = open_surface(640, 480, notes);
     if (surface == nil) {
-        println("no GPU renderer: neither Direct3D 12 nor OpenGL could be loaded.");
-        println("The text frames above need neither. tools/gl/mock_driver.c and");
-        println("tools/d3d12/mock_d3d12.c stand in for a driver when there is none.");
+        println("no GPU renderer on this machine:");
+        for note in notes {
+            println("  " + note);
+        }
+        println("The text frames above need neither; --ascii draws only them.");
         return;
     }
 

@@ -556,10 +556,75 @@ namespace TERN.Builtins
                 Marshal.StructureToPtr(this, pointer, false);
                 return pointer;
             }
+
+            /// <summary>Runs <paramref name="body"/> with this id, then frees it.</summary>
+            public T With<T>(Func<IntPtr, T> body)
+            {
+                var pointer = Allocate();
+                try
+                {
+                    return body(pointer);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(pointer);
+                }
+            }
         }
 
+        /// <summary>
+        /// What an HRESULT from Direct3D means, in words a person can act on.
+        /// The raw code is always kept: it is the only thing that makes a report
+        /// precise. The native runtime has the same table, and they are kept in
+        /// step because both back ends report the same failures.
+        /// </summary>
+        private static string Explain(long hr)
+        {
+            return ((uint)hr) switch
+            {
+                0x80004002 => "an interface id was rejected - this is a bug in TERN's Direct3D binding, not in this machine",
+                0x887A0004 => "no adapter on this machine supports Direct3D 12 at feature level 11_0; a driver update may add it",
+                0x887A0005 => "the graphics driver was reset while the call was running",
+                0x887A0006 => "the graphics driver stopped responding and was reset",
+                0x80070057 => "the description was rejected as invalid - this is a bug in TERN",
+                0x8007000E => "out of memory",
+                0x80070005 => "access was denied - a remote desktop session or a sandbox without GPU access looks like this",
+                _ => null,
+            } ?? string.Empty;
+        }
+
+        // Every Create* takes the interface id it should hand back and answers
+        // E_NOINTERFACE when it does not recognise the one it was given, so
+        // passing the device id to CreateCommandQueue fails on hardware. The
+        // ids below are the uuid() values from d3d12.idl and dxgi.idl, the same
+        // ones the native runtime carries in tern_d3d12.h; the mock driver
+        // checks them, which is how a wrong one is caught without a GPU.
         private static readonly Guid IidDevice =
-            Guid.Of(0x189819f1, 0x1b6b, 0x4ec5, 0xba, 0xaf, 0x95, 0xa3, 0x7f, 0x9e, 0x51, 0x55);
+            Guid.Of(0x189819f1, 0x1db6, 0x4b57, 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7);
+
+        private static readonly Guid IidCommandQueue =
+            Guid.Of(0x0ec870a6, 0x5d7e, 0x4c22, 0x8c, 0xfc, 0x5b, 0xaa, 0xe0, 0x76, 0x16, 0xed);
+
+        private static readonly Guid IidCommandAllocator =
+            Guid.Of(0x6102dee4, 0xaf59, 0x4b09, 0xb9, 0x99, 0xb4, 0x4d, 0x73, 0xf0, 0x9b, 0x24);
+
+        private static readonly Guid IidGraphicsCommandList =
+            Guid.Of(0x5b160d0f, 0xac1b, 0x4185, 0x8b, 0xa8, 0xb3, 0xae, 0x42, 0xa5, 0xa4, 0x55);
+
+        private static readonly Guid IidDescriptorHeap =
+            Guid.Of(0x8efb471d, 0x616c, 0x4f49, 0x90, 0xf7, 0x12, 0x7b, 0xb7, 0x63, 0xfa, 0x51);
+
+        private static readonly Guid IidResource =
+            Guid.Of(0x696442be, 0xa72e, 0x4059, 0xbc, 0x79, 0x5b, 0x5c, 0x98, 0x04, 0x0f, 0xad);
+
+        private static readonly Guid IidFence =
+            Guid.Of(0x0a753dcf, 0xc4d8, 0x4b91, 0xad, 0xf6, 0xbe, 0x5a, 0x60, 0xd9, 0x5a, 0x76);
+
+        private static readonly Guid IidRootSignature =
+            Guid.Of(0xc54a6b66, 0x72df, 0x4ee8, 0x8b, 0xe5, 0xa9, 0x46, 0xa1, 0x42, 0x92, 0x14);
+
+        private static readonly Guid IidPipelineState =
+            Guid.Of(0x765a30f3, 0xf624, 0x4c6f, 0xa8, 0x28, 0xac, 0xe9, 0x48, 0x62, 0x24, 0x45);
 
         private static readonly Guid IidFactory1 =
             Guid.Of(0x770aae78, 0xf26f, 0x4dba, 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87);
@@ -758,8 +823,12 @@ namespace TERN.Builtins
                     var hr = _createDevice(IntPtr.Zero, FeatureLevel11, iid, out var device);
                     if (hr < 0 || device == IntPtr.Zero)
                     {
+                        var reason = Explain(hr);
+                        var detail = reason.Length > 0
+                            ? $": {reason} (0x{(uint)hr:X8})"
+                            : $" (0x{(uint)hr:X8})";
                         throw vm.Error("D3D12Error",
-                            $"Direct3D 12 is not available on this system: D3D12CreateDevice failed (0x{(uint)hr:X8})");
+                            $"Direct3D 12 is not available on this system: D3D12CreateDevice failed{detail}");
                     }
 
                     return device;
@@ -875,99 +944,98 @@ namespace TERN.Builtins
 
             private void Prepare(VM vm)
             {
-                var iid = IidDevice.Allocate();
+                var queueDesc = new CommandQueueDesc { Type = CommandListTypeDirect };
+                var queueDescPointer = Marshal.AllocHGlobal(Marshal.SizeOf<CommandQueueDesc>());
                 try
                 {
-                    var queueDesc = new CommandQueueDesc { Type = CommandListTypeDirect };
-                    var queueDescPointer = Marshal.AllocHGlobal(Marshal.SizeOf<CommandQueueDesc>());
-                    try
+                    Marshal.StructureToPtr(queueDesc, queueDescPointer, false);
+                    if (IidCommandQueue.With(iid =>
+                        Slot<CreateCommandQueueFn>(_device, 8)(_device, queueDescPointer, iid, out _queue)) < 0)
                     {
-                        Marshal.StructureToPtr(queueDesc, queueDescPointer, false);
-                        if (Slot<CreateCommandQueueFn>(_device, 8)(_device, queueDescPointer, iid, out _queue) < 0)
-                        {
-                            throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a command queue could not be created");
-                        }
-                    }
-                    finally
-                    {
-                        Marshal.FreeHGlobal(queueDescPointer);
-                    }
-
-                    if (Slot<CreateCommandAllocatorFn>(_device, 9)(_device, CommandListTypeDirect, iid, out _allocator) < 0)
-                    {
-                        throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a command allocator could not be created");
-                    }
-
-                    if (Slot<CreateCommandListFn>(_device, 12)(_device, CommandListTypeDirect, 0, _allocator, IntPtr.Zero, iid, out _list) < 0)
-                    {
-                        throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a command list could not be created");
-                    }
-
-                    Slot<CloseListFn>(_list, 9)(_list);
-
-                    var heapDesc = new DescriptorHeapDesc { Type = DescriptorHeapTypeRtv, NumDescriptors = 1 };
-                    if (Slot<CreateDescriptorHeapFn>(_device, 14)(_device, ref heapDesc, iid, out _heap) < 0)
-                    {
-                        throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a descriptor heap could not be created");
-                    }
-
-                    Slot<GetCpuHandleFn>(_heap, 9)(_heap, out _rtv);
-
-                    var texture = new ResourceDesc
-                    {
-                        Dimension = DimensionTexture2D,
-                        Width = (ulong)Width,
-                        Height = (uint)Height,
-                        DepthOrArraySize = 1,
-                        MipLevels = 1,
-                        Format = FormatRgba8,
-                        SampleDesc = new SampleDesc { Count = 1 },
-                        Flags = (int)ResourceFlagAllowRenderTarget,
-                    };
-
-                    var heap = new HeapProperties { Type = HeapTypeDefault, CreationNodeMask = 1 };
-                    if (Slot<CreateCommittedResourceFn>(_device, 27)(_device, ref heap, 0, ref texture, StateCommon, IntPtr.Zero, iid, out _texture) < 0)
-                    {
-                        throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a render target could not be created");
-                    }
-
-                    Slot<CreateRenderTargetViewFn>(_device, 20)(_device, _texture, IntPtr.Zero, _rtv);
-
-                    // Ask the device for the layout rather than guessing the pitch.
-                    Slot<GetCopyableFootprintsFn>(_device, 38)(
-                        _device, ref texture, 0, 1, 0, out var layout, out _, out _, out _totalBytes);
-                    _rowPitch = layout.Footprint.RowPitch;
-                    if (_rowPitch == 0)
-                    {
-                        _rowPitch = ((ulong)Width * 4 + 255) & ~255ul;
-                        _totalBytes = _rowPitch * (ulong)Height;
-                    }
-
-                    var buffer = new ResourceDesc
-                    {
-                        Dimension = DimensionBuffer,
-                        Width = _totalBytes,
-                        Height = 1,
-                        DepthOrArraySize = 1,
-                        MipLevels = 1,
-                        SampleDesc = new SampleDesc { Count = 1 },
-                        Layout = 1,
-                    };
-
-                    var readbackHeap = new HeapProperties { Type = HeapTypeReadback };
-                    if (Slot<CreateCommittedResourceFn>(_device, 27)(_device, ref readbackHeap, 0, ref buffer, StateCopyDest, IntPtr.Zero, iid, out _readback) < 0)
-                    {
-                        throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a readback buffer could not be created");
-                    }
-
-                    if (Slot<CreateFenceFn>(_device, 36)(_device, 0, 0, iid, out _fence) < 0)
-                    {
-                        throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a fence could not be created");
+                        throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a command queue could not be created");
                     }
                 }
                 finally
                 {
-                    Marshal.FreeHGlobal(iid);
+                    Marshal.FreeHGlobal(queueDescPointer);
+                }
+
+                if (IidCommandAllocator.With(iid =>
+                    Slot<CreateCommandAllocatorFn>(_device, 9)(_device, CommandListTypeDirect, iid, out _allocator)) < 0)
+                {
+                    throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a command allocator could not be created");
+                }
+
+                if (IidGraphicsCommandList.With(iid =>
+                    Slot<CreateCommandListFn>(_device, 12)(_device, CommandListTypeDirect, 0, _allocator, IntPtr.Zero, iid, out _list)) < 0)
+                {
+                    throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a command list could not be created");
+                }
+
+                Slot<CloseListFn>(_list, 9)(_list);
+
+                var heapDesc = new DescriptorHeapDesc { Type = DescriptorHeapTypeRtv, NumDescriptors = 1 };
+                if (IidDescriptorHeap.With(iid =>
+                    Slot<CreateDescriptorHeapFn>(_device, 14)(_device, ref heapDesc, iid, out _heap)) < 0)
+                {
+                    throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a descriptor heap could not be created");
+                }
+
+                Slot<GetCpuHandleFn>(_heap, 9)(_heap, out _rtv);
+
+                var texture = new ResourceDesc
+                {
+                    Dimension = DimensionTexture2D,
+                    Width = (ulong)Width,
+                    Height = (uint)Height,
+                    DepthOrArraySize = 1,
+                    MipLevels = 1,
+                    Format = FormatRgba8,
+                    SampleDesc = new SampleDesc { Count = 1 },
+                    Flags = (int)ResourceFlagAllowRenderTarget,
+                };
+
+                var heap = new HeapProperties { Type = HeapTypeDefault, CreationNodeMask = 1 };
+                if (IidResource.With(iid =>
+                    Slot<CreateCommittedResourceFn>(_device, 27)(_device, ref heap, 0, ref texture, StateCommon, IntPtr.Zero, iid, out _texture)) < 0)
+                {
+                    throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a render target could not be created");
+                }
+
+                Slot<CreateRenderTargetViewFn>(_device, 20)(_device, _texture, IntPtr.Zero, _rtv);
+
+                // Ask the device for the layout rather than guessing the pitch.
+                Slot<GetCopyableFootprintsFn>(_device, 38)(
+                    _device, ref texture, 0, 1, 0, out var layout, out _, out _, out _totalBytes);
+                _rowPitch = layout.Footprint.RowPitch;
+                if (_rowPitch == 0)
+                {
+                    _rowPitch = ((ulong)Width * 4 + 255) & ~255ul;
+                    _totalBytes = _rowPitch * (ulong)Height;
+                }
+
+                var buffer = new ResourceDesc
+                {
+                    Dimension = DimensionBuffer,
+                    Width = _totalBytes,
+                    Height = 1,
+                    DepthOrArraySize = 1,
+                    MipLevels = 1,
+                    SampleDesc = new SampleDesc { Count = 1 },
+                    Layout = 1,
+                };
+
+                var readbackHeap = new HeapProperties { Type = HeapTypeReadback };
+                if (IidResource.With(iid =>
+                    Slot<CreateCommittedResourceFn>(_device, 27)(_device, ref readbackHeap, 0, ref buffer, StateCopyDest, IntPtr.Zero, iid, out _readback)) < 0)
+                {
+                    throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a readback buffer could not be created");
+                }
+
+                if (IidFence.With(iid =>
+                    Slot<CreateFenceFn>(_device, 36)(_device, 0, 0, iid, out _fence)) < 0)
+                {
+                    throw vm.Error("D3D12Error", "Direct3D 12 is not available on this system: a fence could not be created");
                 }
             }
 
@@ -1056,21 +1124,15 @@ namespace TERN.Builtins
                 {
                     var length = (IntPtr)(int)Slot<GetBufferSizeFn>(blob, 4)(blob);
                     var bytes = Slot<GetBufferPointerFn>(blob, 3)(blob);
-                    var iid = IidDevice.Allocate();
-                    try
+                    var signature = IntPtr.Zero;
+                    hr = IidRootSignature.With(iid =>
+                        Slot<CreateRootSignatureFn>(_device, 16)(_device, 0, bytes, length, iid, out signature));
+                    if (hr < 0 || signature == IntPtr.Zero)
                     {
-                        hr = Slot<CreateRootSignatureFn>(_device, 16)(_device, 0, bytes, length, iid, out var signature);
-                        if (hr < 0 || signature == IntPtr.Zero)
-                        {
-                            throw vm.Error("D3D12Error", $"the root signature could not be created (0x{(uint)hr:X8})");
-                        }
+                        throw vm.Error("D3D12Error", $"the root signature could not be created (0x{(uint)hr:X8})");
+                    }
 
-                        return signature;
-                    }
-                    finally
-                    {
-                        Marshal.FreeHGlobal(iid);
-                    }
+                    return signature;
                 }
                 finally
                 {
@@ -1132,24 +1194,18 @@ namespace TERN.Builtins
                             SampleDesc = new SampleDesc { Count = 1 },
                         };
 
-                        var iid = IidDevice.Allocate();
-                        try
+                        var pipeline = IntPtr.Zero;
+                        var hr = IidPipelineState.With(iid =>
+                            Slot<CreateGraphicsPipelineStateFn>(_device, 10)(_device, ref description, iid, out pipeline));
+                        if (hr < 0 || pipeline == IntPtr.Zero)
                         {
-                            var hr = Slot<CreateGraphicsPipelineStateFn>(_device, 10)(_device, ref description, iid, out var pipeline);
-                            if (hr < 0 || pipeline == IntPtr.Zero)
-                            {
-                                throw vm.Error("D3D12Error", $"the pipeline state could not be created (0x{(uint)hr:X8})");
-                            }
+                            throw vm.Error("D3D12Error", $"the pipeline state could not be created (0x{(uint)hr:X8})");
+                        }
 
-                            _pipelines.Add(pipeline);
-                            _signatures.Add(signature);
-                            signature = IntPtr.Zero;   // owned by the target now
-                            return _pipelines.Count;
-                        }
-                        finally
-                        {
-                            Marshal.FreeHGlobal(iid);
-                        }
+                        _pipelines.Add(pipeline);
+                        _signatures.Add(signature);
+                        signature = IntPtr.Zero;   // owned by the target now
+                        return _pipelines.Count;
                     }
                     finally
                     {
@@ -1250,40 +1306,33 @@ namespace TERN.Builtins
                     Layout = 1,
                 };
 
-                var iid = IidDevice.Allocate();
-                try
+                var resource = IntPtr.Zero;
+                var hr = IidResource.With(iid => Slot<CreateCommittedResourceFn>(_device, 27)(
+                    _device, ref heap, 0, ref buffer, StateGenericRead, IntPtr.Zero, iid, out resource));
+                if (hr < 0 || resource == IntPtr.Zero)
                 {
-                    var hr = Slot<CreateCommittedResourceFn>(_device, 27)(
-                        _device, ref heap, 0, ref buffer, StateGenericRead, IntPtr.Zero, iid, out var resource);
-                    if (hr < 0 || resource == IntPtr.Zero)
-                    {
-                        throw vm.Error("D3D12Error", $"the vertex buffer could not be created (0x{(uint)hr:X8})");
-                    }
-
-                    var range = new Range { Begin = 0, End = 0 };
-                    hr = Slot<MapFn>(resource, 8)(resource, 0, ref range, out var data);
-                    if (hr < 0 || data == IntPtr.Zero)
-                    {
-                        Release(resource);
-                        throw vm.Error("D3D12Error", $"the vertex buffer could not be mapped (0x{(uint)hr:X8})");
-                    }
-
-                    Marshal.Copy(vertices, 0, data, vertices.Length);
-                    Slot<UnmapFn>(resource, 9)(resource, 0, ref range);
-
-                    Release(_vertexBuffer);
-                    _vertexBuffer = resource;
-                    return new VertexBufferView
-                    {
-                        BufferLocation = (ulong)Slot<GetGpuAddressFn>(resource, 11)(resource).ToInt64(),
-                        SizeInBytes = bytes,
-                        StrideInBytes = VertexFloats * sizeof(float),
-                    };
+                    throw vm.Error("D3D12Error", $"the vertex buffer could not be created (0x{(uint)hr:X8})");
                 }
-                finally
+
+                var range = new Range { Begin = 0, End = 0 };
+                hr = Slot<MapFn>(resource, 8)(resource, 0, ref range, out var data);
+                if (hr < 0 || data == IntPtr.Zero)
                 {
-                    Marshal.FreeHGlobal(iid);
+                    Release(resource);
+                    throw vm.Error("D3D12Error", $"the vertex buffer could not be mapped (0x{(uint)hr:X8})");
                 }
+
+                Marshal.Copy(vertices, 0, data, vertices.Length);
+                Slot<UnmapFn>(resource, 9)(resource, 0, ref range);
+
+                Release(_vertexBuffer);
+                _vertexBuffer = resource;
+                return new VertexBufferView
+                {
+                    BufferLocation = (ulong)Slot<GetGpuAddressFn>(resource, 11)(resource).ToInt64(),
+                    SizeInBytes = bytes,
+                    StrideInBytes = VertexFloats * sizeof(float),
+                };
             }
 
             private void Reset()

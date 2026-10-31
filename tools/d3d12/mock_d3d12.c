@@ -23,6 +23,78 @@
 
 typedef struct { uint32_t a; uint16_t b, c; unsigned char d[8]; } Guid;
 
+// ------------------------------------------------------------ interface ids
+//
+// Windows answers E_NOINTERFACE when a Create* is handed the id of an interface
+// it is not creating, and TERN was handing `IID_ID3D12Device` to all of them.
+// This mock used to ignore the id entirely, so every test passed and the first
+// real GPU returned 0x80004002 from D3D12CreateDevice. It checks them now.
+//
+// The ids are the uuid() values from d3d12.idl and dxgi.idl. They are the
+// check's own copy on purpose: a typo in tern_d3d12.h or D3D12.cs has to
+// disagree with something that was not typed in the same edit.
+
+#define E_NOINTERFACE_ 0x80004002L
+#define E_INVALIDARG_ 0x80070057L
+
+static const Guid IID_ID3D12Device_ = {
+    0x189819f1, 0x1db6, 0x4b57, { 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7 }
+};
+static const Guid IID_ID3D12CommandQueue_ = {
+    0x0ec870a6, 0x5d7e, 0x4c22, { 0x8c, 0xfc, 0x5b, 0xaa, 0xe0, 0x76, 0x16, 0xed }
+};
+static const Guid IID_ID3D12CommandAllocator_ = {
+    0x6102dee4, 0xaf59, 0x4b09, { 0xb9, 0x99, 0xb4, 0x4d, 0x73, 0xf0, 0x9b, 0x24 }
+};
+static const Guid IID_ID3D12GraphicsCommandList_ = {
+    0x5b160d0f, 0xac1b, 0x4185, { 0x8b, 0xa8, 0xb3, 0xae, 0x42, 0xa5, 0xa4, 0x55 }
+};
+static const Guid IID_ID3D12DescriptorHeap_ = {
+    0x8efb471d, 0x616c, 0x4f49, { 0x90, 0xf7, 0x12, 0x7b, 0xb7, 0x63, 0xfa, 0x51 }
+};
+static const Guid IID_ID3D12Resource_ = {
+    0x696442be, 0xa72e, 0x4059, { 0xbc, 0x79, 0x5b, 0x5c, 0x98, 0x04, 0x0f, 0xad }
+};
+static const Guid IID_ID3D12Fence_ = {
+    0x0a753dcf, 0xc4d8, 0x4b91, { 0xad, 0xf6, 0xbe, 0x5a, 0x60, 0xd9, 0x5a, 0x76 }
+};
+static const Guid IID_ID3D12RootSignature_ = {
+    0xc54a6b66, 0x72df, 0x4ee8, { 0x8b, 0xe5, 0xa9, 0x46, 0xa1, 0x42, 0x92, 0x14 }
+};
+static const Guid IID_ID3D12PipelineState_ = {
+    0x765a30f3, 0xf624, 0x4c6f, { 0xa8, 0x28, 0xac, 0xe9, 0x48, 0x62, 0x24, 0x45 }
+};
+static const Guid IID_IDXGIFactory1_ = {
+    0x770aae78, 0xf26f, 0x4dba, { 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87 }
+};
+
+/// The message a wrong id gets, naming the call so the failure is actionable.
+static void mock_wrong_iid(const char *call, const Guid *iid) {
+    fprintf(stderr,
+            "mock_d3d12: %s was given interface id "
+            "{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}; Windows answers "
+            "E_NOINTERFACE here\n",
+            call, (unsigned)iid->a, (unsigned)iid->b, (unsigned)iid->c,
+            iid->d[0], iid->d[1], iid->d[2], iid->d[3],
+            iid->d[4], iid->d[5], iid->d[6], iid->d[7]);
+}
+
+/// Compares an id the way Windows does: byte for byte.
+static int mock_iid_is(const Guid *iid, const Guid *expected) {
+    return iid && memcmp(&iid->a, &expected->a, sizeof iid->a) == 0 &&
+           iid->b == expected->b && iid->c == expected->c &&
+           memcmp(iid->d, expected->d, sizeof iid->d) == 0;
+}
+
+#define CHECK_IID(call, expected)                       \
+    do {                                                \
+        if (!mock_iid_is(iid, &(expected))) {           \
+            mock_wrong_iid((call), iid);                \
+            return E_NOINTERFACE_;                      \
+        }                                               \
+    } while (0)
+
+
 typedef struct { int type, cpu_page_property, memory_pool_preference; unsigned node_mask, visible; } HeapProps;
 typedef struct { unsigned count, quality; } SampleDesc;
 typedef struct {
@@ -363,7 +435,8 @@ long D3D12SerializeRootSignature(const void *description, int version, void **bl
 
 static long device_create_root_signature(void *self, unsigned node_mask, const void *blob,
                                          size_t length, const Guid *iid, void **signature) {
-    (void)self; (void)node_mask; (void)blob; (void)length; (void)iid;
+    (void)self; (void)node_mask; (void)blob; (void)length;
+    CHECK_IID("CreateRootSignature", IID_ID3D12RootSignature_);
     *signature = mock_new((void **)1);
     ((MockObject *)*signature)->vtbl = resource_vtbl;
     return 0;
@@ -371,7 +444,8 @@ static long device_create_root_signature(void *self, unsigned node_mask, const v
 
 static long device_create_pipeline_state(void *self, const void *description, const Guid *iid,
                                          void **pipeline) {
-    (void)self; (void)description; (void)iid;
+    (void)self; (void)description;
+    CHECK_IID("CreateGraphicsPipelineState", IID_ID3D12PipelineState_);
     *pipeline = mock_new((void **)1);
     ((MockObject *)*pipeline)->vtbl = resource_vtbl;
     return 0;
@@ -393,20 +467,23 @@ static void *fence_vtbl[11] = {
 static MockResource *mock_target;   // the render target the list draws into
 
 static long device_create_command_queue(void *self, const void *desc, const Guid *iid, void **out) {
-    (void)self; (void)desc; (void)iid;
+    (void)self; (void)desc;
+    CHECK_IID("CreateCommandQueue", IID_ID3D12CommandQueue_);
     *out = mock_new(queue_vtbl);
     return 0;
 }
 
 static long device_create_command_allocator(void *self, int type, const Guid *iid, void **out) {
-    (void)self; (void)type; (void)iid;
+    (void)self; (void)type;
+    CHECK_IID("CreateCommandAllocator", IID_ID3D12CommandAllocator_);
     *out = mock_new(allocator_vtbl);
     return 0;
 }
 
 static long device_create_command_list(void *self, int type, int flags, void *allocator,
                                        void *state, const Guid *iid, void **out) {
-    (void)self; (void)type; (void)flags; (void)allocator; (void)state; (void)iid;
+    (void)self; (void)type; (void)flags; (void)allocator; (void)state;
+    CHECK_IID("CreateCommandList", IID_ID3D12GraphicsCommandList_);
     MockList *list = (MockList *)calloc(1, sizeof(MockList));
     list->vtbl = list_vtbl;
     *out = list;
@@ -414,7 +491,8 @@ static long device_create_command_list(void *self, int type, int flags, void *al
 }
 
 static long device_create_descriptor_heap(void *self, const void *desc, const Guid *iid, void **out) {
-    (void)self; (void)desc; (void)iid;
+    (void)self; (void)desc;
+    CHECK_IID("CreateDescriptorHeap", IID_ID3D12DescriptorHeap_);
     *out = mock_new(heap_vtbl);
     return 0;
 }
@@ -422,6 +500,7 @@ static long device_create_descriptor_heap(void *self, const void *desc, const Gu
 static long device_create_committed_resource(void *self, const HeapProps *heap, unsigned flags,
                                              const ResourceDesc *desc, int state, const void *clear,
                                              const Guid *iid, void **out) {
+    CHECK_IID("CreateCommittedResource", IID_ID3D12Resource_);
     (void)self; (void)heap; (void)flags; (void)state; (void)clear; (void)iid;
     MockResource *resource = (MockResource *)calloc(1, sizeof(MockResource));
     resource->vtbl = resource_vtbl;
@@ -450,6 +529,7 @@ static void device_create_rtv(void *self, void *resource, const void *desc, CpuH
 
 static long device_create_fence(void *self, unsigned long long value, unsigned flags,
                                 const Guid *iid, void **out) {
+    CHECK_IID("CreateFence", IID_ID3D12Fence_);
     (void)self; (void)flags; (void)iid;
     MockFence *fence = (MockFence *)calloc(1, sizeof(MockFence));
     fence->vtbl = fence_vtbl;
@@ -597,13 +677,21 @@ static void *factory_vtbl[14] = {
 // The exported entry points.
 
 long D3D12CreateDevice(void *adapter, int feature_level, const Guid *iid, void **device) {
-    (void)adapter; (void)feature_level; (void)iid;
+    (void)adapter;
+    CHECK_IID("D3D12CreateDevice", IID_ID3D12Device_);
+    if (feature_level != 0xB000) {
+        // 11_0 is what the runtime asks for; Windows rejects anything it does
+        // not know with E_INVALIDARG.
+        fprintf(stderr, "mock_d3d12: D3D12CreateDevice feature level %#x is not 11_0\n",
+                (unsigned)feature_level);
+        return E_INVALIDARG_;
+    }
     *device = mock_new(device_vtbl);
     return 0;
 }
 
 long CreateDXGIFactory1(const Guid *iid, void **factory) {
-    (void)iid;
+    CHECK_IID("CreateDXGIFactory1", IID_IDXGIFactory1_);
     *factory = mock_new(factory_vtbl);
     return 0;
 }

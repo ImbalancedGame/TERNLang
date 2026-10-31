@@ -411,6 +411,26 @@ def test_graphics(checks):
         payloads = {open(os.path.join(work, name), "rb").read() for name in written}
         checks.check("the frames differ", len(payloads) == 3)
 
+    # The Direct3D 12 path, against the mock that now checks every interface id
+    # the way Windows does. This is the half of the example that cannot run on
+    # Linux for real, and the half that reported "map has no method" and then
+    # 0x80004002 from a user's machine.
+    d3d = os.path.join(work, "libd3d12.so")
+    build_d3d = subprocess.run([os.environ.get("CC", "cc"), "-shared", "-fPIC", "-o", d3d,
+                                os.path.join(ROOT, "tools", "d3d12", "mock_d3d12.c")],
+                               cwd=ROOT, capture_output=True, text=True)
+    checks.check("the mock Direct3D 12 driver builds", build_d3d.returncode == 0,
+                 build_d3d.stderr[-400:])
+    if build_d3d.returncode == 0:
+        environment_d3d = dict(os.environ, TERN_D3D12_LIBRARY=d3d, TERN_DXGI_LIBRARY=d3d,
+                               TERN_D3DCOMPILER_LIBRARY=d3d)
+        direct = subprocess.run(CLI + [example, "--frames", "2", "--out", os.path.join(work, "d3d")],
+                                cwd=ROOT, capture_output=True, text=True, env=environment_d3d)
+        checks.check("the cube renders through Direct3D 12", direct.returncode == 0
+                     and "with d3d12" in direct.stdout, (direct.stderr or direct.stdout)[-400:])
+        checks.check("every Direct3D interface id is the one Windows expects",
+                     "E_NOINTERFACE" not in direct.stderr, direct.stderr[-400:])
+
     # Point the driver at something that is not a driver: the availability probe
     # itself throws, and the example still has to finish with its text frames.
     broken = subprocess.run(CLI + [example, "--frames", "1", "--out", os.path.join(work, "broken")],
