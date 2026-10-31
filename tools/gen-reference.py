@@ -20,7 +20,6 @@ work left to do.
 
 import json
 import os
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -28,6 +27,8 @@ ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "docs", "msdn")
 
 sys.path.insert(0, os.path.join(HERE, "reference"))
+sys.path.insert(0, ROOT)
+from tools import runner    # noqa: E402
 import annotations          # noqa: E402
 import annotations_core     # noqa: E402
 import annotations_methods  # noqa: E402
@@ -52,9 +53,8 @@ TYPE_TITLES = {
 
 def catalogue():
     """The engine's own description of the standard library."""
-    result = subprocess.run(
-        [os.path.join(ROOT, "tools", "tern"), "docs", "--json"],
-        cwd=ROOT, capture_output=True, text=True, check=True)
+    result = runner.run(ROOT, ["docs", "--json"],
+                        cwd=ROOT, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
 
 

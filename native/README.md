@@ -188,9 +188,35 @@ runs scripts; only `{"tls": true}` fails, with `TLS support is not available on
 this system`. SFTP runs the OpenSSH `sftp` client in batch mode from a
 `fork`/`exec` pair, so it needs `sftp` on the PATH and key-based authentication.
 
-## Windows builds
+## Building on Windows
 
-The same bytecode can be built for Windows from any machine:
+`ternc.py` works the same way there, and finds the pieces itself:
+
+```bat
+E:\Repo\TERNLang> pip install ziglang
+E:\Repo\TERNLang> python native\ternc.py examples\wordcount.tern -o wordcount.exe
+E:\Repo\TERNLang> wordcount.exe notes.txt
+```
+
+The compiler is discovered, not assumed: `--cc` first, then `TERN_CC`, then
+`cc`/`gcc`/`clang` on the PATH, then `zig cc`. The runtime is GCC C —
+`__builtin_add_overflow`, `__builtin_unwind_init`, `__attribute__` throughout
+`tern_rt.c` — so **MSVC cannot compile it**, and `cl` is rejected with that
+explanation rather than four hundred syntax errors. On Windows the zero-friction
+compiler is Zig: `pip install ziglang` is a complete clang with no administrator
+rights and no Visual Studio. MinGW-w64 works too if it is already there.
+
+`-o app` gains `.exe` automatically on Windows, and the launcher the other tools
+use knows where the interpreter is (`tools/tern.cmd` beside the bash `tools/tern`,
+or `dotnet build\TERN.Runner.dll` directly — see `tools/runner.py`), so
+
+```bat
+tools\tern.cmd run examples\wordcount.tern notes.txt
+```
+
+is the same command the README gives for Unix.
+
+The same bytecode can also be built for Windows from any machine:
 
 ```bash
 pip install ziglang                        # once; provides the cross compiler

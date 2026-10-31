@@ -24,23 +24,64 @@ WINDOWS = os.name == "nt"
 sys.path.insert(0, str(ROOT))
 
 
-def find_python():
+def search_roots(invoked_from=None):
+    """Directories a virtualenv might be in, nearest first.
+
+    The repository root, then the directory the launcher was invoked from and
+    its parents. The second part is not decoration: `cd tools` then
+    `python -m venv .venv` puts the environment in `tools\.venv`, and a
+    launcher that only looked at the root would tell someone their perfectly
+    good install did not exist.
+    """
+    # The invocation directory and its parents first, nearest first, then the
+    # repository root: somebody who made the virtualenv where they were standing
+    # meant that one.
+    order = []
+    if invoked_from is not None:
+        try:
+            start = invoked_from.resolve()
+            order.extend([start, *list(start.parents)[:4]])
+        except OSError:
+            pass
+    order.append(ROOT)
+
+    roots = []
+    for directory in order:
+        if directory not in roots:
+            roots.append(directory)
+    return roots
+
+
+def venv_pythons(invoked_from=None):
+    """Every interpreter a virtualenv in the search roots would have."""
+    found = []
+    for root in search_roots(invoked_from):
+        for name in (".venv", "venv"):
+            for folder in ("Scripts", "bin"):
+                for executable in ("python.exe", "python"):
+                    candidate = root / name / folder / executable
+                    if candidate.exists() and str(candidate) not in found:
+                        found.append(str(candidate))
+    return found
+
+
+def find_python(invoked_from=None):
     """An interpreter with PySide6, or None.
 
-    The launcher is itself running on one, so it is tried first; then the usual
-    places a virtualenv can be, which differ between platforms.
+    The launcher is itself running on one, so it is tried first; then every
+    virtualenv in the search roots, which is where a deliberate install lives;
+    then whatever `python3` and `python` resolve to. Each candidate is asked to
+    import PySide6, because the name of the directory is not proof of anything.
     """
-    candidates = [sys.executable]
-    for name in (".venv", "venv"):
-        for folder in ("bin", "Scripts"):
-            candidate = ROOT / name / folder / ("python.exe" if WINDOWS else "python")
-            if candidate.exists():
-                candidates.append(str(candidate))
-    candidates.extend(["/tmp/qtenv/bin/python", shutil.which("python3") or "", shutil.which("python") or ""])
+    candidates = [sys.executable, *venv_pythons(invoked_from)]
+    candidates.extend(["/tmp/qtenv/bin/python", shutil.which("python3") or "",
+                       shutil.which("python") or ""])
 
+    seen = set()
     for candidate in candidates:
-        if not candidate or not os.path.exists(candidate):
+        if not candidate or candidate in seen or not os.path.exists(candidate):
             continue
+        seen.add(candidate)
         try:
             result = subprocess.run([candidate, "-c", "import PySide6"], capture_output=True)
         except OSError:
@@ -51,6 +92,7 @@ def find_python():
 
 
 def install_hint():
+    """The two commands to run, for this platform, from this directory."""
     if WINDOWS:
         return ("    python -m venv .venv\n"
                 "    .venv\\Scripts\\pip install \"PySide6-Essentials==6.9.3\"\n")
@@ -102,23 +144,42 @@ def build_if_needed():
                 return False
         return True
 
-    print("cannot build: no toolchain and no `dotnet` SDK on PATH.\n"
-          "Install the .NET 8 SDK, or run tools/setup-toolchain.sh where a shell\n"
-          "and a C compiler are available.", file=sys.stderr)
+    if WINDOWS:
+        print("cannot build: `dotnet` was not found on PATH.\n\n"
+              "Studio needs the .NET 8 SDK to build the syntax server and the\n"
+              "debugger:\n\n"
+              "    winget install Microsoft.DotNet.SDK.8\n\n"
+              "then close and reopen the terminal so PATH is picked up, and run\n"
+              "this launcher again.", file=sys.stderr)
+    else:
+        print("cannot build: no toolchain and no `dotnet` SDK on PATH.\n\n"
+              "Either install the .NET 8 SDK, or bootstrap the sandbox toolchain:\n\n"
+              "    bash tools/setup-toolchain.sh\n", file=sys.stderr)
     return False
 
 
-def prepare_environment(argv):
+def prepare_environment(argv, python=None):
     """Qt on a headless machine, and DOTNET_ROOT when the runtime is bundled."""
     if "--screenshot" in argv or "--offscreen" in argv:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        stubs = ROOT / "build" / "qt-stubs"
-        if not stubs.exists() and not WINDOWS:
-            subprocess.run([sys.executable, str(ROOT / "tools" / "ide" / "qt_stubs.py")],
-                           capture_output=True)
-        if stubs.exists():
-            existing = os.environ.get("LD_LIBRARY_PATH", "")
-            os.environ["LD_LIBRARY_PATH"] = str(stubs) + (os.pathsep + existing if existing else "")
+        if not WINDOWS:
+            stubs = ROOT / "build" / "qt-stubs"
+            # The generator asks PySide6 which libraries Qt links, so it has to
+            # run under the interpreter that has PySide6 — not whichever one
+            # started this launcher. An existing but empty directory does not
+            # count as built.
+            if not any(stubs.glob("libGL*")):
+                subprocess.run([python or sys.executable,
+                                str(ROOT / "tools" / "ide" / "qt_stubs.py")],
+                               capture_output=True)
+            if any(stubs.glob("libGL*")):
+                existing = os.environ.get("LD_LIBRARY_PATH", "")
+                os.environ["LD_LIBRARY_PATH"] = (str(stubs)
+                                                 + (os.pathsep + existing if existing else ""))
+            else:
+                print("warning: could not build the Qt stand-ins for a headless run;\n"
+                      "         if Qt fails to load libGL, run this with a display instead.",
+                      file=sys.stderr)
 
     sys.path.insert(0, str(ROOT))
     from ide.Studio.runtime import environment
@@ -128,17 +189,28 @@ def prepare_environment(argv):
 
 
 def main(argv):
+    # Where the launcher was called from, before changing directory: a
+    # virtualenv made there is as real as one at the root.
+    invoked_from = Path.cwd()
     os.chdir(ROOT)
 
-    python = find_python()
+    python = find_python(invoked_from)
     if python is None:
-        print("TERN Studio needs PySide6:\n\n" + install_hint(), file=sys.stderr)
+        searched = [str(root / name)
+                    for root in search_roots(invoked_from)
+                    for name in (".venv", "venv")]
+        print("TERN Studio needs PySide6.\n\n"
+              + install_hint()
+              + "\nLooked for a virtualenv in:\n"
+              + "".join(f"    {path}\n" for path in searched[:8])
+              + f"\nand for PySide6 in {sys.executable} and on PATH.",
+              file=sys.stderr)
         return 1
 
     if not build_if_needed():
         return 1
 
-    prepare_environment(argv)
+    prepare_environment(argv, python)
 
     # Re-enter the app under the interpreter that has PySide6, keeping this
     # process as a thin parent so Ctrl+C and exit codes behave.

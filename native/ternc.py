@@ -12,6 +12,7 @@ every opcode a few statements - there is no dispatch loop at run time.
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,13 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 RUNTIME = os.path.join(HERE, "runtime")
+
+# The CLI is reached through tools/runner.py rather than by running tools/tern
+# directly: that is a bash script, and CreateProcess cannot execute one, which
+# on Windows is `OSError: [WinError 193] %1 is not a valid Win32 application`.
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+from tools import runner  # noqa: E402
 
 
 class CodegenError(Exception):
@@ -941,29 +949,77 @@ def find_zig():
         return found
     try:
         import ziglang
-
-        candidate = os.path.join(os.path.dirname(ziglang.__file__), "zig")
+    except ImportError:
+        return None
+    # The wheel ships the binary as `zig`, except on Windows where it is
+    # `zig.exe` — the reason `pip install ziglang` used to be no help there.
+    for name in ("zig", "zig.exe"):
+        candidate = os.path.join(os.path.dirname(ziglang.__file__), name)
         if os.path.exists(candidate):
             return candidate
-    except ImportError:
-        pass
     return None
+
+
+# The runtime is GCC C: `__builtin_add_overflow`, `__builtin_unwind_init` and
+# `__attribute__` throughout tern_rt.c. Clang and mingw-w64 implement all of
+# them; MSVC implements none, so `cl` is not a candidate however installed it is.
+GCC_COMPATIBLE = ("cc", "gcc", "clang")
+MSVC_NAMES = {"cl", "cl.exe"}
+
+
+def find_cc(requested):
+    """The C compiler to build with, as an argv prefix, or None.
+
+    `--cc` wins, then `TERN_CC`, then the usual GCC-compatible names on PATH,
+    then `zig cc` — Zig ships a complete clang, and on Windows it is the one
+    compiler that is a single pip install away with no administrator rights.
+    """
+    if requested:
+        return shlex.split(requested, posix=os.name != "nt")
+    configured = os.environ.get("TERN_CC")
+    if configured:
+        return shlex.split(configured, posix=os.name != "nt")
+    for name in GCC_COMPATIBLE:
+        found = shutil.which(name)
+        if found:
+            return [found]
+    zig = find_zig()
+    if zig:
+        return [zig, "cc"]
+    return None
+
+
+def compiler_hint():
+    """What to install, per platform, when there is no usable C compiler."""
+    if os.name == "nt":
+        return ("\n  Install one of these and run again:\n"
+                "\n    pip install ziglang              # a complete clang, no admin rights\n"
+                "\n    winget install MSYS2.MSYS2       # then: pacman -S mingw-w64-ucrt-x86_64-gcc\n")
+    return ("\n  Install one of these and run again:\n"
+            "\n    apt install gcc        (or your system's equivalent)\n"
+            "\n    pip install ziglang    # a complete clang, no root needed\n")
 
 
 def main(argv):
     parser = argparse.ArgumentParser(description="Compile TERN bytecode to C/native.")
     parser.add_argument("input", help="bytecode JSON (from `tern emit`) or a .tern script")
     parser.add_argument("-o", "--output", help="output file (.c, or a binary when given a .tern script)")
-    parser.add_argument("--cc", default="cc", help="C compiler (default: cc)")
+    parser.add_argument("--cc", default=None,
+                        help="C compiler (default: TERN_CC, then cc/gcc/clang, then `zig cc`)")
     parser.add_argument("--cflags", default="-O2", help="extra compiler flags")
     parser.add_argument("--keep-c", action="store_true", help="keep generated C next to the binary")
     parser.add_argument("--target", default="native",
                         help="'native' compiles for this machine with --cc; 'windows' cross builds a "
                              ".exe with Zig's mingw-w64 toolchain (pip install ziglang)")
     parser.add_argument("--no-traces", action="store_true",
-                        help="drop call-stack bookkeeping (about 10% faster on call-heavy code; "
+                        help="drop call-stack bookkeeping (about 10%% faster on call-heavy code; "
                              "uncaught errors then report a single line)")
     args = parser.parse_args(argv)
+
+    # A Windows binary without the suffix cannot be started by name, and the
+    # extension is not something a user should have to remember.
+    if args.output and os.name == "nt" and not os.path.splitext(args.output)[1]:
+        args.output += ".exe"
 
     source = args.input
     temporary = None
@@ -972,10 +1028,8 @@ def main(argv):
         import tempfile
         handle, temporary = tempfile.mkstemp(suffix=".json")
         os.close(handle)
-        emit = subprocess.run(
-            [os.path.join(REPO, "tools", "tern"), "emit", source, "-o", temporary],
-            capture_output=True, text=True,
-        )
+        emit = runner.run(REPO, ["emit", source, "-o", temporary],
+                          capture_output=True, text=True)
         if emit.returncode != 0:
             sys.stderr.write(emit.stderr or emit.stdout)
             return emit.returncode
@@ -1014,7 +1068,21 @@ def main(argv):
             command = [zig, "cc", "-target", "x86_64-windows-gnu", "-O2", "-I", RUNTIME]
             command += args.cflags.split() + [c_path, "-o", args.output]
         else:
-            command = [args.cc, "-O2", "-I", RUNTIME] + args.cflags.split() + [c_path, "-o", args.output, "-lm"]
+            compiler = find_cc(args.cc)
+            if compiler is None:
+                sys.stderr.write(
+                    "ternc: no C compiler found.\n" + compiler_hint())
+                return 1
+            if os.path.basename(compiler[0]).lower() in MSVC_NAMES:
+                sys.stderr.write(
+                    "ternc: `cl` cannot compile the TERN runtime: it uses GCC\n"
+                    "builtins and attributes that MSVC does not implement.\n"
+                    + compiler_hint())
+                return 1
+            command = [*compiler, "-O2", "-I", RUNTIME] + args.cflags.split()
+            command += [c_path, "-o", args.output]
+            if os.name != "nt":
+                command.append("-lm")
         result = subprocess.run(command)
         if result.returncode != 0:
             return result.returncode

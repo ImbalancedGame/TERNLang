@@ -71,8 +71,10 @@ bash tools/ide.sh --theme light                   # Darcula is the default
 bash tools/ide.sh --screenshot /tmp/studio.png    # render once, headless
 ```
 
-`tools/studio.py` finds a Python with PySide6 (this one, then `.venv` or `venv`
-with either layout, then `/tmp/qtenv`, then `python3`), builds the runner,
+`tools/studio.py` finds a Python with PySide6 (this one, then `.venv` or
+`venv` with either layout — searched in the directory the launcher was run from
+and its parents as well as the repository root, so a virtualenv made after
+`cd tools` still counts — then `/tmp/qtenv`, then `python3`), builds the runner,
 syntax server and debugger if any is missing — Run and Debug are part of the
 IDE, so they are built together on a first launch rather than failing later —
 and sets `DOTNET_ROOT` only when the runtime is the bundled one, since a system
@@ -339,7 +341,7 @@ Both halves are covered, and both are part of `tools/test.sh`:
 ```bash
 bash tools/test-ide.sh                                   # 39 assertions, protocol only
 python3 tools/debug_test.py                              # 41 checks, debugger only
-LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 89 checks, real window
+LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 100 checks, real window
 ```
 
 `tools/test-ide.sh` drives `TERN.Ide.dll` over stdio with no UI at all: framing,

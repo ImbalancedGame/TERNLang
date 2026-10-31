@@ -19,7 +19,11 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-TERN = os.path.join(REPO, "tools", "tern")
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+from tools import runner  # noqa: E402
+
+TERN = runner.command(REPO)
 
 # Scripts that exercise the compiler's diagnostics instead of running.
 COMPILER_ONLY = {"12_lint", "24_parse_errors"}
@@ -46,9 +50,15 @@ def scripts():
     return [path for path in found if os.path.exists(path)]
 
 
+# The script `tools/tern` used to set DOTNET_ROOT itself; running the assembly
+# directly means doing it here.
+ENVIRONMENT = {**os.environ, **runner.environment(REPO, TERN)}
+
+
 def run(command, cwd):
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True,
-                          encoding="utf-8", errors="surrogateescape", timeout=120)
+                          encoding="utf-8", errors="surrogateescape", timeout=120,
+                          env=ENVIRONMENT)
 
 
 def main(argv):
@@ -71,7 +81,8 @@ def main(argv):
     with tempfile.TemporaryDirectory() as scratch:
         for source in chosen:
             label = os.path.relpath(source, REPO)
-            binary = os.path.join(build_root, os.path.basename(source)[:-5])
+            binary = os.path.join(build_root, os.path.basename(source)[:-5]
+                                  + (".exe" if os.name == "nt" else ""))
             build = subprocess.run(
                 [sys.executable, os.path.join(HERE, "ternc.py"), source, "-o", binary],
                 capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
@@ -86,7 +97,7 @@ def main(argv):
             # cannot disturb the repository, and sees the same paths either way.
             for name in os.listdir(scratch):
                 os.remove(os.path.join(scratch, name))
-            interpreted = run([TERN, "run", source], scratch)
+            interpreted = run([*TERN, "run", source], scratch)
             for name in os.listdir(scratch):
                 os.remove(os.path.join(scratch, name))
             compiled = run([binary], scratch)

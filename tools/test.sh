@@ -59,6 +59,19 @@ if [[ -d "$HERE/docs/msdn" ]]; then
   fi
 fi
 
+# How the command line is started, which is where a Windows first run died:
+# `tools/tern` is bash, and CreateProcess cannot execute it.
+if [[ $UPDATE -eq 0 && -f "$HERE/tools/test_runner.py" ]]; then
+  if runner_output="$(cd "$HERE" && timeout 300 python3 "$HERE/tools/test_runner.py" 2>&1)"; then
+    echo "ok    runner      $(tail -1 <<<"$runner_output")"
+    pass=$((pass+1))
+  else
+    echo "FAIL runner"
+    tail -20 <<<"$runner_output" | sed 's/^/      /'
+    fail=$((fail+1)); failed_names+=("runner")
+  fi
+fi
+
 # The IDE: the syntax server speaks the protocol correctly, and the window
 # drives that server. Both are skipped cleanly when their prerequisites are
 # absent, so a bare checkout can still run the language tests.
