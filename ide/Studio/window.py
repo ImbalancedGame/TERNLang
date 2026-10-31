@@ -270,8 +270,11 @@ class StudioWindow(QMainWindow):
             "step_over": self._action("Step Over", "F8", self.debug_step_over),
             "step_into": self._action("Step Into", "F7", self.debug_step_into),
             "step_out": self._action("Step Out", "Shift+F8", self.debug_step_out),
+            "add_watch": self._action("Add Watch...", "Ctrl+Shift+F7", lambda: self.add_watch()),
             "toggle_breakpoint": self._action("Toggle Breakpoint", "Ctrl+F8",
                                               self.toggle_breakpoint),
+            "breakpoint_condition": self._action("Set Breakpoint Condition...", "Ctrl+Shift+F8",
+                                                 lambda: self.set_breakpoint_condition()),
             "debug_window": self._action("Debug", "Alt+5",
                                          lambda: self._show_dock(self.debug_dock)),
             # Wrapped: QAction.triggered passes `checked`, which would land in
@@ -374,6 +377,8 @@ class StudioWindow(QMainWindow):
         run_menu.addAction(a["step_out"])
         run_menu.addSeparator()
         run_menu.addAction(a["toggle_breakpoint"])
+        run_menu.addAction(a["breakpoint_condition"])
+        run_menu.addAction(a["add_watch"])
         run_menu.addSeparator()
         run_menu.addAction(a["check"])
 
@@ -1299,6 +1304,33 @@ class StudioWindow(QMainWindow):
         if self.debug_session is not None and self.debug_session.running:
             self.debug_session.set_breakpoints(sorted(editor.breakpoints))
 
+    def set_breakpoint_condition(self, line0=None, condition=None):
+        """Attaches a condition to the breakpoint on the caret line.
+
+        Rider offers this from the gutter and from the Breakpoints dialog; the
+        menu entry is the same thing without a dialog to build. Passing a
+        condition directly (an empty string included) skips the prompt.
+        """
+        editor = self._editor()
+        if editor is None:
+            return None
+        if line0 is None:
+            line0 = editor.textCursor().blockNumber()
+
+        if condition is None:
+            current = editor.breakpoint_conditions.get(line0 + 1, "")
+            condition = QInputDialog.getText(
+                self, "Breakpoint Condition",
+                f"Stop at line {line0 + 1} only when:", text=current)[0]
+
+        condition = editor.set_breakpoint_condition(line0, condition)
+        self.status_problems.setText(
+            f"Breakpoint at line {line0 + 1}: {condition}" if condition
+            else f"Breakpoint at line {line0 + 1} is unconditional")
+        if self.debug_session is not None and self.debug_session.running:
+            self.debug_session.set_breakpoints(editor.breakpoint_specs())
+        return condition
+
     def debug_current(self):
         """Starts the debugger on the current file, if it is not already going."""
         editor = self._editor()
@@ -1314,7 +1346,7 @@ class StudioWindow(QMainWindow):
 
         # Every open file's breakpoints go with the session, so a breakpoint set
         # in a helper file the script imports is honoured too.
-        breakpoints = sorted(editor.breakpoints)
+        breakpoints = editor.breakpoint_specs()
         session = DebugSession(editor.path, breakpoints, self.install, self)
         session.started.connect(lambda: self._debug_event("Debugger attached", None))
         session.stopped.connect(self._debug_stopped)
@@ -1345,6 +1377,7 @@ class StudioWindow(QMainWindow):
             editor.set_stopped_line(line)
         self._show_dock(self.debug_dock)
         self._show_frame_variables(self.debug_panel.current_frame() or 0)
+        self._refresh_watches()
 
     def _show_frame_variables(self, frame):
         if self.debug_session is None:
@@ -1352,6 +1385,32 @@ class StudioWindow(QMainWindow):
         index = 0 if frame is None else int(frame)
         self.debug_session.variables(
             index, lambda response: self.debug_panel.set_variables(response.get("variables", [])))
+
+    def _refresh_watches(self):
+        """Re-evaluates every watch at the current stop.
+
+        The server answers one expression at a time, so each answer is filed
+        against the expression that asked for it rather than by arrival order.
+        """
+        if self.debug_session is None:
+            return
+        for expression in self.debug_panel.watch_expressions():
+            self.debug_session.evaluate(
+                expression,
+                lambda response, name=expression: self.debug_panel.set_watch_value(
+                    name, response.get("value", "")))
+
+    def add_watch(self, expression=None):
+        """Adds a watch and evaluates it if the program is paused."""
+        if expression is None:
+            expression = QInputDialog.getText(self, "Add Watch", "Expression:")[0]
+        expression = (expression or "").strip()
+        if not expression:
+            return None
+        self.debug_panel.add_watch(expression)
+        self._show_dock(self.debug_dock)
+        self._refresh_watches()
+        return expression
 
     def _evaluate_expression(self, expression):
         if self.debug_session is None or not expression.strip():

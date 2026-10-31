@@ -25,9 +25,9 @@ caveats below.
 | `d3d12` (device, target, HLSL, PSO, draw) | complete against a mock driver | `tools/test-d3d12.sh` |
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
-| Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (36) |
-| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, debugging | `tools/ide/ui_test.py` (65) |
-| Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints, stepping, stack, locals, evaluate | `tools/debug_test.py` (35) |
+| Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging | `tools/ide/ui_test.py` (89) |
+| Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
@@ -40,8 +40,8 @@ bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
 bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
-bash tools/test-ide.sh                                36 passed
-python3 tools/debug_test.py                           35 passed
+bash tools/test-ide.sh                                39 passed
+python3 tools/debug_test.py                           41 passed
 python3 tools/gen-reference.py --check                278 pages up to date
 ```
 
@@ -106,8 +106,9 @@ what `tools/tern run` reports.
   and nothing this way. Interpreter only; the compiled backend has no VM to
   hook.
 * **Not there**: a project model beyond "a directory", multi-file *background*
-  analysis, conditional breakpoints and watch expressions. None of these are
-  blocked by the sandbox; they are simply not written.
+  analysis, calls or arithmetic inside a breakpoint condition, and editing
+  values while paused. None of these are blocked by the sandbox; they are
+  simply not written.
 
 ## What still needs fixing
 

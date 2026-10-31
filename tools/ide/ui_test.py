@@ -279,7 +279,7 @@ def main():
                 "undo", "redo", "select_all", "cut", "copy", "paste", "exit",
                 "goto_file", "goto_line", "docs", "about", "keymap", "goto_symbol",
                 "goto_symbol_in_file", "find_usages", "rename", "check", "debug",
-                "compile", "run_in_terminal"}
+                "compile", "run_in_terminal", "breakpoint_condition", "add_watch"}
     raised = []
     for name, action in window.actions_map.items():
         if name in blocking or not action.shortcut().toString():
@@ -503,10 +503,24 @@ def main():
                  and 2 not in debug_editor.breakpoints, str(debug_editor.breakpoints))
     debug_editor.toggle_breakpoint(1)
 
+    # A condition on the breakpoint, set through the window: still a stop at
+    # line 2, but only when the argument is 3 or more. A watch rides along.
+    debug_window.set_breakpoint_condition(1, "n > 2")
+    checks.check("a condition can be attached to a breakpoint",
+                 debug_editor.breakpoint_conditions.get(2) == "n > 2",
+                 str(debug_editor.breakpoint_conditions))
+    checks.check("the breakpoint spec carries the condition",
+                 {"line": 2, "condition": "n > 2"} in debug_editor.breakpoint_specs(),
+                 str(debug_editor.breakpoint_specs()))
+
     debug_window.debug_current()
     pump(app, 3000)
 
     checks.check("Debug starts a session", debug_window.debug_session is not None)
+    checks.check("the condition held on the first stop (n > 2 means n is 3)",
+                 "n" in {debug_window.debug_panel.variables.topLevelItem(i).text(0)
+                         for i in range(debug_window.debug_panel.variables.topLevelItemCount())},
+                 "no n")
     checks.check("the program stops at the breakpoint",
                  debug_window.debug_panel.state.text().startswith("Paused on breakpoint"),
                  debug_window.debug_panel.state.text())
@@ -523,6 +537,13 @@ def main():
     values = variable_map()
     checks.check("the Debug window shows the parameters", values.get("n") in ("1", "2", "3"),
                  str(values))
+
+    debug_window.add_watch("n")
+    debug_window.debug_panel.set_watch_values({})
+    debug_window._refresh_watches()
+    pump(app, 600)
+    watch_value = debug_window.debug_panel.watches.topLevelItem(0).text(1)
+    checks.check("a watch is evaluated at the stop", watch_value == "3", watch_value)
 
     debug_window.debug_step_over()
     pump(app, 900)
@@ -549,6 +570,10 @@ def main():
     if shots:
         os.makedirs(os.path.join(ROOT, "docs", "ide", "img"), exist_ok=True)
         debug_editor.toggle_breakpoint(1) if 2 not in debug_editor.breakpoints else None
+        # A conditioned breakpoint and a watch, so the picture shows both.
+        debug_window.set_breakpoint_condition(1, "n > 2")
+        debug_window.add_watch("n")
+        debug_window.add_watch("twice")
         debug_window.debug_current()
         pump(app, 3000)
         debug_window._show_dock(debug_window.debug_dock)

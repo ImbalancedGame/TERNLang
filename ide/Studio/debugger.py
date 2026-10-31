@@ -15,6 +15,25 @@ import os
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 
+def _specs(breakpoints):
+    """Breakpoints as the server wants them: dicts with a line and a condition.
+
+    A bare line number is accepted too, so a caller that only cares about lines
+    (and every test written before conditions existed) keeps working.
+    """
+    specs = []
+    for entry in breakpoints:
+        if isinstance(entry, dict):
+            spec = {"line": int(entry["line"])}
+            condition = (entry.get("condition") or "").strip()
+            if condition:
+                spec["condition"] = condition
+            specs.append(spec)
+        else:
+            specs.append({"line": int(entry)})
+    return specs
+
+
 class DebugSession(QObject):
     """One debugged program: start it, drive it, tear it down."""
 
@@ -28,7 +47,7 @@ class DebugSession(QObject):
     def __init__(self, program, breakpoints, root, parent=None):
         super().__init__(parent)
         self.program = os.path.abspath(program)
-        self.breakpoints = list(breakpoints)
+        self.breakpoints = _specs(breakpoints)
         self.root = root
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.SeparateChannels)
@@ -77,7 +96,7 @@ class DebugSession(QObject):
 
         self._alive = True
         self.request("launch", program=self.program,
-                     breakpoints=[{"line": line} for line in self.breakpoints])
+                     breakpoints=self.breakpoints)
         return True
 
     def stop(self):
@@ -189,5 +208,5 @@ class DebugSession(QObject):
         self.send("evaluate", callback, expression=expression)
 
     def set_breakpoints(self, breakpoints):
-        self.breakpoints = list(breakpoints)
-        self.request("breakpoints", breakpoints=[{"line": line} for line in self.breakpoints])
+        self.breakpoints = _specs(breakpoints)
+        self.request("breakpoints", breakpoints=self.breakpoints)

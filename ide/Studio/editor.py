@@ -198,6 +198,7 @@ class Editor(QPlainTextEdit):
         self.setPlainText(text)
 
         self.gutter = LineNumberArea(self)
+        self.breakpoint_conditions = {}     # line -> condition expression
         self.strip = ErrorStrip(self)
         self.popup = CompletionPopup(self)
 
@@ -265,10 +266,18 @@ class Editor(QPlainTextEdit):
             if block.isVisible() and bottom >= event.rect().top():
                 line = number
                 if line + 1 in self.breakpoints:
-                    painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(self.theme.get("error", "#cc4444")))
-                    painter.drawEllipse(4, int(top + (bottom - top - 2 * radius) / 2),
-                                        2 * radius, 2 * radius)
+                    left = 4
+                    top_of_dot = int(top + (bottom - top - 2 * radius) / 2)
+                    if self.breakpoint_conditions.get(line + 1):
+                        # A ring, as Rider draws one: this stop has a condition.
+                        painter.setBrush(Qt.NoBrush)
+                        painter.setPen(QPen(QColor(self.theme.get("error", "#cc4444")), 2))
+                        painter.drawEllipse(left, top_of_dot, 2 * radius, 2 * radius)
+                        painter.setPen(Qt.NoPen)
+                    else:
+                        painter.setPen(Qt.NoPen)
+                        painter.setBrush(QColor(self.theme.get("error", "#cc4444")))
+                        painter.drawEllipse(left, top_of_dot, 2 * radius, 2 * radius)
                     painter.setBrush(Qt.NoBrush)
                 if line == self.stopped_line:
                     painter.setPen(Qt.NoPen)
@@ -744,6 +753,28 @@ class Editor(QPlainTextEdit):
 
     # --------------------------------------------------------------- problems
 
+    def set_breakpoint_condition(self, line0, condition):
+        """Attaches a condition to the breakpoint on a line, setting one first.
+
+        An empty condition removes it, which is what clearing the field in
+        Rider's dialog does.
+        """
+        line = line0 + 1
+        self.breakpoints.add(line)
+        condition = (condition or "").strip()
+        if condition:
+            self.breakpoint_conditions[line] = condition
+        else:
+            self.breakpoint_conditions.pop(line, None)
+        self.gutter.update()
+        self.breakpointsChanged.emit(sorted(self.breakpoints))
+        return condition
+
+    def breakpoint_specs(self):
+        """Breakpoints with their conditions, as the debug server wants them."""
+        return [{"line": line, "condition": self.breakpoint_conditions.get(line, "")}
+                for line in sorted(self.breakpoints)]
+
     def toggle_breakpoint(self, line0):
         """Adds or removes a breakpoint on a 0-based line. True if one is set now.
 
@@ -753,6 +784,8 @@ class Editor(QPlainTextEdit):
         line = line0 + 1
         if line in self.breakpoints:
             self.breakpoints.discard(line)
+            # A condition belongs to the breakpoint it was written for.
+            self.breakpoint_conditions.pop(line, None)
             present = False
         else:
             self.breakpoints.add(line)

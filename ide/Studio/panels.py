@@ -715,6 +715,19 @@ class DebugPanel(QWidget):
         self.variables.setColumnWidth(2, 70)
         layout.addWidget(self.variables, 1)
 
+        # Watches, as Rider has them under the variables: expressions kept
+        # across stops, re-evaluated every time the program pauses.
+        self.watch_field = QLineEdit()
+        self.watch_field.setPlaceholderText("Add a watch, then press Enter")
+        self.watches = QTreeWidget()
+        self.watches.setHeaderLabels(["Watch", "Value"])
+        self.watches.setRootIsDecorated(False)
+        self.watches.setColumnWidth(0, 160)
+        self.watches.setMaximumHeight(110)
+        self.watch_field.returnPressed.connect(self._add_watch)
+        layout.addWidget(self.watches)
+        layout.addWidget(self.watch_field)
+
         self.evaluate_field = QLineEdit()
         self.evaluate_field.setPlaceholderText("Evaluate an expression")
         self.evaluate_field.returnPressed.connect(self._evaluate)
@@ -729,10 +742,13 @@ class DebugPanel(QWidget):
         self.state.setStyleSheet(
             f"color: {theme['fg_dim']}; padding: 4px 8px;"
             f" border-bottom: 1px solid {theme['border']};")
-        for tree in (self.frames, self.variables):
+        for tree in (self.frames, self.variables, self.watches):
             tree.setStyleSheet(
                 f"QTreeWidget {{ background: {theme['panel']}; color: {theme['fg']}; border: none; }}"
                 f"QTreeWidget::item:selected {{ background: {theme['accent']}; color: #ffffff; }}")
+        self.watch_field.setStyleSheet(
+            f"background: {theme['bg']}; color: {theme['fg']};"
+            f" border: 1px solid {theme['border']}; padding: 3px 6px;")
         self.evaluate_field.setStyleSheet(
             f"background: {theme['bg']}; color: {theme['fg']};"
             f" border: 1px solid {theme['border']}; padding: 3px 6px;")
@@ -751,6 +767,7 @@ class DebugPanel(QWidget):
         self.frames.clear()
         self.variables.clear()
         self._frames = []
+        self.set_watch_values({})
 
     def set_stopped(self, message, frames):
         """Shows where the program stopped and asks the window for the variables."""
@@ -763,6 +780,53 @@ class DebugPanel(QWidget):
             self.frames.addTopLevelItem(item)
         if self.frames.topLevelItemCount():
             self.frames.setCurrentItem(self.frames.topLevelItem(0))
+
+    # -------------------------------------------------------------- watches
+
+    def _add_watch(self):
+        expression = self.watch_field.text().strip()
+        if not expression:
+            return
+        self.add_watch(expression)
+        self.watch_field.clear()
+
+    def add_watch(self, expression):
+        """Adds a watch expression, ignoring one that is already there."""
+        for item in self._watch_items():
+            if item.data(0, Qt.UserRole) == expression:
+                return item
+        item = QTreeWidgetItem([expression, ""])
+        item.setData(0, Qt.UserRole, expression)
+        self.watches.addTopLevelItem(item)
+        if hasattr(self, "watch_added") and self.watch_added is not None:
+            self.watch_added(expression)
+        return item
+
+    def _watch_items(self):
+        return [self.watches.topLevelItem(index) for index in range(self.watches.topLevelItemCount())]
+
+    def watch_expressions(self):
+        return [item.data(0, Qt.UserRole) for item in self._watch_items()]
+
+    def set_watch_value(self, expression, value):
+        for item in self._watch_items():
+            if item.data(0, Qt.UserRole) == expression:
+                item.setText(1, str(value))
+                item.setToolTip(1, str(value))
+                return
+
+    def set_watch_values(self, values):
+        """values maps expression -> text; anything missing is cleared."""
+        for item in self._watch_items():
+            expression = item.data(0, Qt.UserRole)
+            item.setText(1, str(values.get(expression, "")))
+
+    def remove_watch(self, expression):
+        for index, item in enumerate(self._watch_items()):
+            if item.data(0, Qt.UserRole) == expression:
+                self.watches.takeTopLevelItem(index)
+                return True
+        return False
 
     def set_variables(self, variables):
         self.variables.clear()
