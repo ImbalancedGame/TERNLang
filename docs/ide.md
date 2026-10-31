@@ -123,10 +123,17 @@ is no virtualenv to activate first, which is the point.
 ```bat
 dotnet build                       :: the three .NET assemblies
 tools\ide.cmd                        :: once, to make sure it runs
-.venv\Scripts\pip install pyinstaller
-.venv\Scripts\python tools\package.py
+.venv\Scripts\python -m pip install pyinstaller
+tools\package.cmd                    :: or .venv\Scripts\python tools\package.py
 dist\TERN Studio\TERN Studio.exe
 ```
+
+`tools\package.cmd` is the same script with the venv's interpreter already
+chosen. That matters: PyInstaller has to run inside the Python that can import
+PySide6, and the usual failure is a `pip install pyinstaller` that landed in a
+different Python from the one that runs the build — the bundle then starts and
+dies on the missing Qt. If PyInstaller is missing, `package.py` names the exact
+interpreter to install it into.
 
 The build copies `build\*.dll` next to the executable, under a `build\`
 folder, because that is where `runtime.assembly()` looks — the assemblies are
@@ -198,6 +205,16 @@ means crisp at any scaling factor, and nothing binary is committed.
 Everything else is derived: hover and pressed colours are computed from the
 palette by `theme.blend()`, so a theme is a table of about twenty colours and no
 per-widget hand-tuning.
+
+The five entries under **View → Theme** are one exclusive `QActionGroup`, so the
+menu behaves like a radio list — ticking one unticks the rest, and clicking the
+current theme does not switch theming off. That is worth stating because it was
+not true: the actions were independent checkboxes, and the slot they called took
+a parameter that Qt fills with the *checked flag*, so every click ticked another
+entry and `set_theme` was handed `True`, refused it as an unknown palette, and
+returned. The window did not change, the menu said it had. `tools/ide/ui_test.py`
+now clicks the actions rather than calling `set_theme`, which is the difference
+between testing the palette table and testing the menu.
 
 ### Stopping things
 
@@ -416,9 +433,13 @@ Both halves are covered, and both are part of `tools/test.sh`:
 ```bash
 bash tools/test-ide.sh                                   # 39 assertions, protocol only
 python3 tools/debug_test.py                              # 41 checks, debugger only
-LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 128 checks, real window
-.venv/bin/python tools/test_package.py                   # 12 checks, packaging
+LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 133 checks, real window
+.venv/bin/python tools/test_package.py                   # 15 checks, packaging
 ```
+
+`tools/test_runner.py` (21 checks) and `tools/test_sources.py` (4) cover what
+neither half can: how the CLI is started on a platform that is not this one, and
+the source defects no run would reveal.
 
 `tools/test-ide.sh` drives `TERN.Ide.dll` over stdio with no UI at all: framing,
 `initialize` capabilities, didOpen/didChange, diagnostics for a parse error and

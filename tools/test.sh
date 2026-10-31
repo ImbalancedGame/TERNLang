@@ -72,6 +72,20 @@ if [[ $UPDATE -eq 0 && -f "$HERE/tools/test_runner.py" ]]; then
   fi
 fi
 
+# The source itself: a docstring with an escape Python does not know is a wall of
+# SyntaxWarnings on 3.13, and a Windows path written with a *known* escape is a
+# tab character that no test would ever notice.
+if [[ $UPDATE -eq 0 && -f "$HERE/tools/test_sources.py" ]]; then
+  if source_output="$(cd "$HERE" && timeout 120 python3 "$HERE/tools/test_sources.py" 2>&1)"; then
+    echo "ok    sources     $(tail -1 <<<"$source_output")"
+    pass=$((pass+1))
+  else
+    echo "FAIL sources"
+    tail -20 <<<"$source_output" | sed 's/^/      /'
+    fail=$((fail+1)); failed_names+=("sources")
+  fi
+fi
+
 # Everything that needs PySide6 uses the same interpreter, found once.
 IDE_PYTHON=""
 if [[ $UPDATE -eq 0 ]]; then

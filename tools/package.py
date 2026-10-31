@@ -70,7 +70,13 @@ def check_prerequisites():
     try:
         import PyInstaller  # noqa: F401
     except ImportError:
-        print("packaging needs PyInstaller:\n\n    pip install pyinstaller\n", file=sys.stderr)
+        # `sys.executable`, not `pip`: the venv is often not activated, and the
+        # one thing that must not happen is installing into a different Python
+        # from the one about to run the build.
+        print("packaging needs PyInstaller, in the same Python that runs this:\n\n"
+              f'    "{sys.executable}" -m pip install pyinstaller\n\n'
+              "    (on Windows that is .venv\\Scripts\\python, or run tools\\package.cmd)\n",
+              file=sys.stderr)
         return False
     missing = [name for name in ASSEMBLIES if name.endswith(".dll")
                and not os.path.exists(os.path.join(BUILD, name))]

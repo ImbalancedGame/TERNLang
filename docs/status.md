@@ -26,7 +26,7 @@ caveats below.
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 278 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
-| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (128) |
+| TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (133) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
@@ -35,9 +35,9 @@ Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       41 passed
-python3 tools/test_runner.py                          19 passed
-python3 tools/test_package.py                         12 passed
+./tools/test.sh                                       42 passed
+python3 tools/test_runner.py                          21 passed
+python3 tools/test_package.py                         15 passed
 python3 native/run_tests.py                           32 passed
 python3 native/parity.py                              42 compared, 0 differing
 bash tools/test-gl.sh                                 ok

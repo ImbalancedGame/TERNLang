@@ -154,6 +154,18 @@ def main(argv):
                  os.path.abspath(studio_main.default_project()) == os.path.abspath(ROOT),
                  studio_main.default_project())
 
+    # The wrapper the documentation tells Windows users to run, and which has
+    # to pick the venv's Python rather than whatever `python` is first on PATH.
+    wrapper = os.path.join(HERE, "package.cmd")
+    checks.check("there is a double-clickable packaging command for Windows",
+                 os.path.exists(wrapper))
+    if os.path.exists(wrapper):
+        with open(wrapper, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        checks.check("it prefers the virtualenv's interpreter",
+                     ".venv\\Scripts\\python.exe" in text)
+        checks.check("it passes flags through", "%*" in text and "package.py" in text)
+
     print()
     print(f"passed: {checks.passed}  failed: {len(checks.failed)}")
     for name in checks.failed:

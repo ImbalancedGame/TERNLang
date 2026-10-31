@@ -349,8 +349,8 @@ typedef long (*PfnMap)(void *, unsigned, const D3D12_RANGE *, void **);
 typedef void (*PfnUnmap)(void *, unsigned, const D3D12_RANGE *);
 typedef void (*PfnSetName)(void *, const wchar_t *);
 
-typedef void *(*PfnD3D12CreateDevice)(void *, int, const TernGuid *, void **);
-typedef void *(*PfnCreateDXGIFactory1)(const TernGuid *, void **);
+typedef long (*PfnD3D12CreateDevice)(void *, int, const TernGuid *, void **);
+typedef long (*PfnCreateDXGIFactory1)(const TernGuid *, void **);
 typedef void (*PfnGetDesc1)(void *, void *);
 
 // --- the loaded library ----------------------------------------------------
@@ -551,8 +551,8 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     }
     memset(target, 0, sizeof *target);
 
-    long hr = (long)driver->create_device(NULL, D3D_FEATURE_LEVEL_11_0_,
-                                          &TERN_IID_ID3D12Device, &target->device);
+    long hr = driver->create_device(NULL, D3D_FEATURE_LEVEL_11_0_,
+                                    &TERN_IID_ID3D12Device, &target->device);
     if (hr < 0 || !target->device) {
         tern_panic("D3D12Error",
                    "Direct3D 12 is not available on this system: D3D12CreateDevice failed (0x%08lx)",
@@ -1027,7 +1027,7 @@ static Value n_d3d12_info(int argc, Value *argv) {
 
     if (driver->create_factory) {
         void *factory = NULL;
-        if ((long)driver->create_factory(&TERN_IID_IDXGIFactory1, &factory) >= 0 && factory) {
+        if (driver->create_factory(&TERN_IID_IDXGIFactory1, &factory) >= 0 && factory) {
             void *adapter = NULL;
             long hr = ((long (*)(void *, unsigned, void **))TERN_SLOT(factory, 12))(
                 factory, 0, &adapter);
