@@ -62,6 +62,11 @@ check_states() {
         grep "DRAW WITHOUT" "$1" | head -5 >&2
         exit 1
     fi
+    if grep -q "BACK-FACING TRIANGLE" "$1"; then
+        echo "d3d12: a triangle faces away from the camera, which can paint over a near one" >&2
+        grep "BACK-FACING TRIANGLE" "$1" | head -5 >&2
+        exit 1
+    fi
     if grep -q "COPY ARGUMENT MISMATCH" "$1"; then
         echo "d3d12: a copy call does not match the documented signature" >&2
         grep "COPY ARGUMENT MISMATCH" "$1" | head -5 >&2
@@ -202,6 +207,9 @@ echo "d3d12: both back ends presented the same frames"
 # The rotating cube drives the same code with five renderers and far more
 # transitions than the probe, so it gets its own turn.
 echo "d3d12: rendering the cube through the same mock"
+# The cube is a solid: every triangle it submits should face the camera, since
+# there is no depth buffer to stop a back face painting over a front one.
+export TERN_D3D12_CHECK_WINDING=1
 python3 native/ternc.py examples/rotating_cube.tern -o "$WORK/cube" > "$WORK/cube_build.txt" 2>&1 || {
     echo "d3d12: the cube did not build" >&2
     sed -n 1,20p "$WORK/cube_build.txt" >&2
@@ -220,6 +228,48 @@ grep -q "with d3d12" "$WORK/cube.txt" || {
     exit 1
 }
 echo "d3d12: the cube keeps every resource state consistent"
+
+# A cube shows at most three of its six faces. Each face is one flat colour, so
+# a frame that contains more than three colours has a face in it that the solid
+# should be hiding - which is what a back face painted over a front one looks
+# like. This is the bug the culling in examples/rotating_cube.tern fixes: with
+# no depth buffer the draw order is the paint order, and sorting a cube by
+# average depth puts a back face in front at some angles.
+if ! python3 - "$WORK/cube_frames" <<'PY'
+import struct, sys, zlib, glob
+
+def colours(path):
+    data = open(path, "rb").read()
+    offset, idat, size = 8, b"", None
+    while offset < len(data):
+        length, kind = struct.unpack(">I4s", data[offset:offset + 8])
+        body = data[offset + 8:offset + 8 + length]
+        if kind == b"IHDR":
+            size = struct.unpack(">II", body[:8])
+        elif kind == b"IDAT":
+            idat += body
+        offset += 12 + length
+    width, height = size
+    raw = zlib.decompress(idat)
+    stride = width * 4 + 1
+    found = set()
+    for row in range(height):
+        base = row * stride + 1
+        for column in range(width):
+            found.add(raw[base + column * 4:base + column * 4 + 4])
+    return found
+
+frames = sorted(glob.glob(sys.argv[1] + "/frame-*.png"))
+assert frames, "no frames were written"
+for frame in frames:
+    seen = colours(frame)
+    assert len(seen) <= 3, (frame, len(seen), seen)
+print("d3d12: every frame shows only the faces that face the camera")
+PY
+then
+    echo "d3d12: a cube frame contains a face that should be hidden" >&2
+    exit 1
+fi
 
 # And the cube in a window, in both back ends: the thing a person sees when they
 # run it on Windows, minus the window.
@@ -253,7 +303,10 @@ if ! diff -u "$WORK/cube_window_interp.out" "$WORK/cube_window.out"; then
     exit 1
 fi
 echo "d3d12: the cube animates in both back ends"
+check_states "$WORK/cube_window.err"
+check_states "$WORK/cube_window_interp.err"
 unset TERN_D3D12_WINDOW
+unset TERN_D3D12_CHECK_WINDING
 
 # ------------------------------------------------------------------ diagnose
 #

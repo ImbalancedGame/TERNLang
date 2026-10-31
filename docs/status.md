@@ -175,22 +175,31 @@ Ordered by what would bite a user first.
    creates an upload-heap buffer and waits for the GPU. A ring of persistently
    mapped buffers is the next step, and it needs the fence work that goes with
    it.
-6. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
+6. **Neither renderer has a depth buffer.** `d3d12.draw` and `gl.draw` take a
+   clip-space position and a colour per vertex and nothing else, so everything
+   is at the same depth and the order the triangles arrive in is the order they
+   paint. A scene that is not a convex solid - or one where two visible
+   triangles overlap - needs the caller to sort them, which the example does and
+   which the example also gets wrong for part of a turn, which is why it culls
+   back faces instead. The general answer is a depth-stencil target, a depth
+   test in the pipeline state and a `z` on the vertex, and that is a change to
+   the vertex format both modules share.
+7. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
    `TlsError: server TLS is not supported`: a script can be a TLS client but not
    a TLS server. Both back ends would need the other half of the handshake
    (OpenSSL's `SSL_accept`, .NET's `SslStream` on the accepted socket).
-7. **Map writes are memory bound, not compute bound.** Not a correctness
+8. **Map writes are memory bound, not compute bound.** Not a correctness
    problem; listed because it is the one benchmark where compiling buys nothing
    and it will not improve until the table's layout does (a bucket array with
    inline keys, or a chunked table that avoids the doubling rehash).
-8. **Small allocation churn.** The native collector is conservative: an integer
+9. **Small allocation churn.** The native collector is conservative: an integer
    that happens to look like an object address can keep an object alive, and the
    heap floor is 16 MiB, so a tiny program's RSS is not tiny. The interpreter
    leaves that to .NET.
-9. **`fs` error text differs slightly.** A compiled binary names the path as the
+10. **`fs` error text differs slightly.** A compiled binary names the path as the
    script wrote it; the interpreter reports the resolved absolute path. Same
    error kind, different text, which `parity.py` tolerates and a user might not.
-10. **Diagnostics in compiled binaries.** Compiler warnings from
+11. **Diagnostics in compiled binaries.** Compiler warnings from
    `./tools/tern check` are not emitted by binaries, and there is no sandbox:
    `--no-fs`, `--no-net`, `engine.AllowFileSystem` and `engine.AllowNetwork`
    belong to the interpreter, since a binary has no engine to configure.
@@ -200,6 +209,23 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **The cube's faces broke up for part of the turn.** Neither renderer has a
+  depth buffer - the vertex format is a clip-space position and a colour, with
+  no depth anywhere - so the order the triangles are submitted in is the order
+  they paint. The example sorted them far to near by average depth, which is the
+  usual shortcut and is not a valid painter's order even for a cube: at some
+  angles a back face's average lands nearer than a front face's, it paints over
+  it, and the solid looks broken for a few degrees of the turn. It was found by
+  computing the ordering over a full turn rather than by eye: 74 triangle pairs
+  on 360 sampled angles are painted in the wrong order.
+  `examples/rotating_cube.tern` now culls back faces - the solid is convex and
+  opaque, so a face pointing away from the camera is completely hidden and the
+  paint order stops mattering. The sort stays for scenes that are not convex.
+  The mock can check the same thing: with `TERN_D3D12_CHECK_WINDING=1` it
+  computes each triangle's projected winding and fails the run if any faces away
+  from the camera, which is what `tools/test-d3d12.sh` does for the cube. The
+  frames are also checked for containing at most three face colours - a cube
+  shows three sides at once, so a fourth colour is a face that should be hidden.
 * **The window opened, showed the clear colour, and no cube.** Direct3D 12 has
   no default viewport: until `RSSetViewports` is called the viewport list is
   empty and the rasteriser discards every triangle, while
