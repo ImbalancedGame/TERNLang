@@ -1184,6 +1184,16 @@ namespace TERN.Compiler
             {
                 PushScope();
 
+                // Two names is the most a loop can bind - an index and a value -
+                // and a third used to be declared and then never assigned, which
+                // reads as nil for the whole loop rather than as a mistake.
+                if (statement.Names.Count > 2)
+                {
+                    Module.Error("TRN0214",
+                        $"a for loop binds at most two names (a, b); this one has {statement.Names.Count}",
+                        statement);
+                }
+
                 CompileExpression(statement.Iterable);
                 Emit(Op.IterNew, 0, 0, 0, pop: 1, push: 1);
 

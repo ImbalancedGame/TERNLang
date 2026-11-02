@@ -36,6 +36,15 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `type` | `type(arg)` | The type name of a value. |
 | `values` | `values(arg)` | Values of a map. |
 
+## `cli`
+
+| Name | Signature | Notes |
+| ---- | --------- | ----- |
+| `args` | `args()` | The arguments that were not options, from the last parse. |
+| `has` | `has(arg)` | True when the argument was typed at all. |
+| `pair` | `pair(arg, [arg])` | Splits "320x240" into [320, 240]. |
+| `parse` | `parse(arg, [arg])` | Reads the arguments against a schema of defaults; nil after printing --help. |
+
 ## `d3d12`
 
 | Name | Signature | Notes |
@@ -256,6 +265,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 
 ## `std:` modules
 
+* `std:cli`
 * `std:d3d12`
 * `std:fs`
 * `std:gl`

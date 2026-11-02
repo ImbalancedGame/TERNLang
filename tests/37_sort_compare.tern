@@ -1,0 +1,32 @@
+// A comparator has to answer with a number. It used to be that a predicate -
+// the shape every other language's sort asks for - was silently read as 1 or 0,
+// so a list came out sorted backwards and nothing said why. Now it is a
+// TypeError that shows the two comparators side by side.
+
+// Constant predicates, so the message - which quotes the value it got - reads
+// the same whichever pair the sort happens to compare first. The two back ends
+// use different sort algorithms; the error is what has to match, not the order
+// of the comparisons that reach it.
+fn outcome(answer) {
+    try {
+        if (answer) { println([3, 1, 2].sort(fn(a, b) => true)); }
+        if (!answer) { println([3, 1, 2].sort(fn(a, b) => false)); }
+        return "no error";
+    } catch (error) {
+        return str(error);
+    }
+}
+
+// The number comparator is the contract, and it still works: ascending,
+// descending, and a tie broken by a second key.
+println([3, 1, 2].sort(fn(a, b) => a - b));
+println([3, 1, 2].sort(fn(a, b) => b - a));
+println(["bb", "a", "cc"].sort(fn(a, b) => a.length - b.length));
+println([1.5, -2.0, 0.0].sort(fn(a, b) => a - b));
+
+// A predicate has to say so, and the message has to say what to write instead.
+println(outcome(true));
+println(outcome(false));
+
+// The message quotes the value it got, so "returned false" and "returned true"
+// are both reachable and neither is mistaken for the other.

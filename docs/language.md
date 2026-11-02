@@ -537,8 +537,8 @@ top level bindings available.
 
 Standard modules: `std:math`, `std:json`, `std:fs`, `std:os`, `std:time`,
 `std:random`, `std:text`, `std:lists`, `std:net`, `std:http`, `std:rcon`,
-`std:sftp`. Their members are also exposed as namespaces (`math.sqrt`,
-`json.parse`, ...), so importing is optional.
+`std:sftp`, `std:cli`, `std:gl`, `std:d3d12`. Their members are also exposed as
+namespaces (`math.sqrt`, `json.parse`, ...), so importing is optional.
 
 ```tern
 import "std:json";
@@ -546,6 +546,54 @@ let data = json.parse("{\"n\": 3}");
 println(data.n);
 println(json.stringify([1, 2], 2));
 ```
+
+### Options, in one call
+
+`std:cli` reads the script's arguments against a schema of defaults, so an
+option's name, type and documentation are one line instead of four. `false` is a
+switch, a number takes a number, anything else takes text; `--help` prints the
+table below from the schema and the descriptions, and answers `nil`.
+
+```tern
+import "std:cli";
+
+fn main() {
+    let options = cli.parse({
+        "out": "picture.png",
+        "size": "320x240",
+        "samples": 1,
+        "ascii": false,
+    }, {
+        "out": "where the picture goes",
+        "size": "WIDTHxHEIGHT",
+        "samples": "rays per pixel",
+        "ascii": "print a text preview as well",
+    });
+    if (options == nil) { return; }    // --help already printed
+
+    let size = cli.pair(options["size"], "--size");
+    println(options["out"], size[0], size[1], options["samples"]);
+}
+
+main();
+```
+
+```
+$ tern run shot.tern --help
+usage: <script> [options]
+
+options:
+  --out TEXT           default "picture.png"   where the picture goes
+  --size TEXT          default "320x240"       WIDTHxHEIGHT
+  --samples N          default 1               rays per pixel
+  --ascii              default false           print a text preview as well
+  --help               this text
+```
+
+A typo is a `UsageError` that names the nearest option rather than a silent
+default: `unknown option '--samplse'; did you mean '--samples'?`. Leftover
+positional arguments come back from `cli.args()`, `cli.has("samples")` says
+whether it was typed at all, and `--` ends the options.
 
 ---
 

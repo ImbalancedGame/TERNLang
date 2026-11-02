@@ -1588,7 +1588,7 @@ namespace TERN.Runtime
                             var iterator = _stack[--_sp].AsIterator();
                             var bindings = instruction.B;
 
-                            if (!iterator.Next(out var first, out var second))
+                            if (!iterator.Next(bindings, out var first, out var second))
                             {
                                 ip = instruction.A;
                                 break;

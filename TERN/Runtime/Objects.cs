@@ -768,6 +768,7 @@ namespace TERN.Runtime
         public IteratorKind Kind;
         public Value Target;
         public int Index;
+        public int Chars;
         public long RangeValue;
         public long RangeEnd;
         public long RangeStep;
@@ -792,9 +793,31 @@ namespace TERN.Runtime
             RangeInclusive = range.Inclusive,
         };
 
-        public bool Next(out Value first, out Value second)
+        /// <summary>
+        /// The next item, or false at the end.
+        ///
+        /// <paramref name="bindings"/> is 1 for <c>for x in ...</c> and 2 for
+        /// <c>for a, b in ...</c>. The second name is what changes with it, never
+        /// the first, so adding an index to an existing loop cannot change what
+        /// the loop variable means:
+        ///
+        /// <code>
+        /// list, one name    x = item          map, one name    x = value
+        /// list, two names   a = index, b = item
+        /// map, two names    a = key, b = value
+        /// range, one name   x = number        text, one name   c = character
+        /// range, two names  a = index, b = number
+        /// text, two names   a = code point position, c = character
+        /// </code>
+        ///
+        /// Before this, a list always answered <c>first</c> = item and left
+        /// <c>second</c> nil, so <c>for i, x in [10, 20]</c> counted i through
+        /// the values and gave x nothing - it parsed, ran, and was wrong.
+        /// </summary>
+        public bool Next(int bindings, out Value first, out Value second)
         {
             second = Value.Nil;
+            var pairs = bindings > 1;
 
             switch (Kind)
             {
@@ -805,6 +828,13 @@ namespace TERN.Runtime
                     {
                         first = Value.Nil;
                         return false;
+                    }
+
+                    if (pairs)
+                    {
+                        first = new Value(Index);
+                        second = list[Index++];
+                        return true;
                     }
 
                     first = list[Index++];
@@ -839,8 +869,16 @@ namespace TERN.Runtime
 
                     // One character per step, never half of a surrogate pair.
                     var width = Text.Width(text, Index);
-                    first = Value.Str(text.Substring(Index, width));
+                    var character = Value.Str(text.Substring(Index, width));
                     Index += width;
+                    if (pairs)
+                    {
+                        first = new Value(Chars++);
+                        second = character;
+                        return true;
+                    }
+
+                    first = character;
                     return true;
                 }
 
@@ -854,6 +892,17 @@ namespace TERN.Runtime
                     {
                         first = Value.Nil;
                         return false;
+                    }
+
+                    if (pairs)
+                    {
+                        // The index counts iterations, not steps: for a range
+                        // that goes by threes the second value is 3, 6, 9 and
+                        // the first is 1, 2, 3.
+                        first = new Value(Chars++);
+                        second = new Value(RangeValue);
+                        RangeValue += RangeStep;
+                        return true;
                     }
 
                     first = new Value(RangeValue);

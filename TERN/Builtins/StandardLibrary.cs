@@ -24,6 +24,7 @@ namespace TERN.Builtins
             InstallJson(engine);
             InstallFileSystem(engine);
             InstallOs(engine);
+            Cli.Install(engine);
             InstallTime(engine);
             InstallRandom(engine);
             InstallText(engine);
@@ -1331,6 +1332,10 @@ namespace TERN.Builtins
         private static void Add(TernMap map, string name, int min, int max, NativeFn function,
             string? documentation = null) =>
             map.Set(Value.Str(name), Value.Of(new TernNative(name, function, min, max, documentation)));
+
+        /// <summary>The same, for the namespaces that live in their own file.</summary>
+        internal static void AddPublic(TernMap map, string name, int min, int max, NativeFn function,
+            string? documentation = null) => Add(map, name, min, max, function, documentation);
     }
 
     /// <summary>Minimal JSON reader producing TERN values (ints stay integers).</summary>

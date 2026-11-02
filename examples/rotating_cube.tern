@@ -37,6 +37,7 @@ import "std:gl";
 import "std:fs";
 import "std:os";
 import "std:time";
+import "std:cli";
 
 // ---------------------------------------------------------------- 3D vectors
 //
@@ -398,19 +399,6 @@ fn close_surface(surface) {
 
 // ------------------------------------------------------------------- the CLI
 
-fn usage() {
-    println("usage: tern run examples/rotating_cube.tern [options]");
-    println("");
-    println("  --window          open a window and animate until it is closed (the default)");
-    println("  --seconds N       stop the window after N seconds");
-    println("  --ascii           only draw the cube as text");
-    println("  --debug           ask the driver to validate every call and report problems");
-    println("  --frames N        write N PNG frames instead of opening a window (default 12)");
-    println("  --out DIR         where to put them (default cube_frames)");
-    println("  --size WIDTHxHEIGHT  text grid (default 72x36)");
-    println("  --help            this text");
-}
-
 // ------------------------------------------------------------- the window
 //
 // The first frame is drawn before the window exists, so the window never opens
@@ -465,56 +453,44 @@ fn run_window(seconds) {
 }
 
 fn main() {
-    let arguments = os.args();
-    let text_only = false;
-    let window_only = false;
-    let validate = false;
-    let seconds = 0;
-    let frames_given = false;
-    // Twelve is a half turn in 30-degree steps: enough to see the cube move,
-    // and at 640x480 about 14 MB of PNG, because the writer stores pixels
-    // rather than compressing them.
-    let frames = 12;
-    let out = "cube_frames";
-    let width = 72;
-    let height = 36;
+    // The options, their types and their defaults, in one place. cli.parse
+    // reads them, rejects what it does not recognise (suggesting the nearest
+    // name), and answers nil after printing --help - which is why this program
+    // says what it does with every option without carrying a parser or a usage
+    // screen of its own. `cli.has` answers whether one was actually typed,
+    // which --frames needs: a default is not the same thing as a request.
+    let options = cli.parse({
+        "ascii": false,
+        "window": false,
+        "debug": false,
+        "seconds": 0,
+        // Twelve is a half turn in 30-degree steps: enough to see the cube
+        // move, and at 640x480 about 14 MB of PNG, because the writer stores
+        // pixels rather than compressing them.
+        "frames": 12,
+        "out": "cube_frames",
+        "size": "72x36",
+    }, {
+        "ascii": "text frames only, no window and no PNGs",
+        "window": "a window and nothing else; without one, say so",
+        "debug": "turn the Direct3D 12 validation layer on",
+        "seconds": "close the window after this long (0 is until closed)",
+        "frames": "write this many PNG frames (a half turn at 30 degrees)",
+        "out": "where the PNGs go",
+        "size": "text grid, WIDTHxHEIGHT",
+    });
+    if (options == nil) { return; }
 
-    let index = 0;
-    while (index < len(arguments)) {
-        let argument = arguments[index];
-        if (argument == "--ascii") {
-            text_only = true;
-        } else if (argument == "--window") {
-            window_only = true;
-        } else if (argument == "--debug") {
-            // Validation, for when a frame fails on a machine nobody can log in
-            // to: the driver then names the call instead of dropping the device.
-            validate = true;
-        } else if (argument == "--seconds" && index + 1 < len(arguments)) {
-            index += 1;
-            seconds = int(arguments[index]);
-        } else if (argument == "--frames" && index + 1 < len(arguments)) {
-            index += 1;
-            frames = int(arguments[index]);
-            frames_given = true;
-        } else if (argument == "--out" && index + 1 < len(arguments)) {
-            index += 1;
-            out = arguments[index];
-        } else if (argument == "--size" && index + 1 < len(arguments)) {
-            index += 1;
-            let parts = arguments[index].split("x");
-            width = int(parts[0]);
-            height = int(parts[1]);
-        } else if (argument == "--help" || argument == "-h") {
-            usage();
-            return;
-        } else {
-            println("unknown option: " + argument);
-            usage();
-            return;
-        }
-        index += 1;
-    }
+    let text_only = options["ascii"];
+    let window_only = options["window"];
+    let validate = options["debug"];
+    let seconds = options["seconds"];
+    let frames = options["frames"];
+    let out = options["out"];
+    let size = cli.pair(options["size"], "--size");
+    let width = size[0];
+    let height = size[1];
+    let frames_given = cli.has("frames");
 
     if (validate && d3d12.available()) {
         println("validation: " + str(d3d12.debug(true)));

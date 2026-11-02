@@ -1,0 +1,12 @@
+defaults: picture.png 1 1.5 false
+typed: false false
+positional: []
+pair: 320x240
+pair: [640, 480]
+pair: [640, 480]
+'320' for --size is not a size: write WIDTHxHEIGHT, such as 320x240
+'320x0' for --size is not a size: both numbers have to be at least 1
+'320x240x1' for --size is not a size: write WIDTHxHEIGHT, such as 320x240
+'-8x-8' is not a size: both numbers have to be at least 1
+parse() expects a map of option names to defaults, not string
+has() expects an option name, not int

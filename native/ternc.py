@@ -761,7 +761,7 @@ class Generator:
             # The iterator value is consumed: one stack slot is popped whatever
             # happens, the bindings are pushed only when there is a next item.
             line("{ Value iterator = st[--sp], first, second;")
-            line("  if (!tern_iter_next(iterator, &first, &second)) goto L%d;" % a)
+            line("  if (!tern_iter_next(iterator, %d, &first, &second)) goto L%d;" % (b, a))
             line("  st[sp++] = first;")
             if b > 1:
                 line("  st[sp++] = second; }")

@@ -859,6 +859,17 @@ namespace TERN.Builtins
             }
         }
 
+        /// <summary>
+        /// One sentence, shared word for word with native/runtime/tern_rt.c, so
+        /// the same mistake reads the same way in both back ends.
+        /// </summary>
+        internal static string SortComparatorMessage(string returned) =>
+            "sort() needs a comparator that returns a number: negative when the first argument " +
+            $"sorts first, positive when the second does, zero when they are equal. This one returned {returned}. " +
+            "A test is not a comparator - 'fn(a, b) { return a < b; }' sorts nothing; " +
+            "use 'fn(a, b) { return a - b; }', or for values that cannot be subtracted, " +
+            "'fn(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }'";
+
         internal static Value Sort(VM vm, ReadOnlySpan<Value> a)
         {
             var list = a[0].AsList();
@@ -885,6 +896,16 @@ namespace TERN.Builtins
                         arguments[0] = left;
                         arguments[1] = right;
                         var result = vm.CallValue(callback, arguments.AsSpan(0, 2));
+                        if (result.Kind == ValueKind.Bool)
+                        {
+                            // `fn(a, b) { return a < b; }` is the shape a
+                            // comparator takes in most modern APIs and it is a
+                            // predicate, not a comparator: true means 1, which
+                            // means "a sorts after b", so the list comes out
+                            // backwards. It used to do that without a word.
+                            throw vm.Error("TypeError", SortComparatorMessage(result.ToDisplayString()));
+                        }
+
                         return result.Kind == ValueKind.Int
                             ? (int)Math.Sign(result.AsInt())
                             : (int)Math.Sign(result.AsDouble());
