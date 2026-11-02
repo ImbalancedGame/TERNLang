@@ -151,6 +151,27 @@ x++;              // increment/decrement on a bare variable
 * Assigning to a `const` is `TRN0202`.
 * A declaration without an initializer is `nil`: `let pending;`.
 
+### Declaring by pattern
+
+`let` and `const` take the same patterns `match` tests with, which turns the
+usual unpack-a-result dance into one line:
+
+```tern
+let [quotient, remainder] = divide(17, 5);
+let {"status": status, "body": body} = response;   // other keys are ignored
+let [head, ...tail] = lines;
+const [width, height] = [640, 480];
+
+for [key, value] in pairs { println("${key}: ${value}"); }
+```
+
+The subject is evaluated once and then matched: a list pattern needs a list of
+exactly that length (use `...rest` to take a prefix), and a map pattern needs
+each key it names, with any other keys ignored. A subject that does not fit is a
+`TypeError` naming both sides - `[a, b] does not match [1, 2, 3]` - rather than a
+declaration that quietly binds `nil`. Every name in a pattern has to be
+different (`TRN0216`), and a pattern needs an initializer (`TRN0215`).
+
 ---
 
 ## 4. Operators
@@ -217,6 +238,67 @@ println("nested: ${ ["a"].map(fn(s) => "${s}!") }");
 `\n` `\t` `\r` `\\` `\"` `\'` `\0` `\u{1F600}` (braced) and `\uFFFF`.
 
 Unknown escapes produce warning `TRN0009` and are kept verbatim.
+
+### Raw and multi-line text
+
+Three quotes start a **raw** string: what is between them is the text, with no
+escapes at all, and it may span lines. That is what an embedded shader, SQL
+statement, JSON document or Windows path needs, because in those a backslash is
+a backslash.
+
+```tern
+let vertex = """
+    struct Vertex { float3 position : POSITION; };
+    float4 main(Vertex input) : SV_Position {
+        return float4(input.position, 1.0);
+    }
+    """;
+```
+
+The indentation every line shares is removed, so the text can be indented with
+the code around it and still come out at column zero; the line break after the
+opening quotes and the whitespace before the closing quotes are not part of the
+value either. `${}` still interpolates. The only thing that needs escaping is
+`${` itself, written `$${`:
+
+```tern
+println("""a $${template} b""");   // a ${template} b
+```
+
+A raw string ends at the first `"""`, so a document that must contain one is the
+one case where an ordinary string is the answer.
+
+### Formatting
+
+`text.format` (and `"...".format`) fills placeholders, and a placeholder can say
+how the value is written. This is the difference between a column that lines up
+and a `padStart` on every line:
+
+```tern
+println(format("{:>8.2f}|", 3.14159));      //     3.14|
+println(format("{:,} bytes, {:.1%}", 1234567, 0.1234));
+                                             // 1,234,567 bytes, 12.3%
+println(format("{:08.3f}", -3.14159));      // -003.142
+println(format("{:x} {:b}", 48879, 10));    // beef 1010
+println(format("{:*^9}|", "mid"));          // ***mid***|
+```
+
+The specification is `{[[fill]align][sign][0][width][,][.precision][type]}`:
+
+| Part | Meaning |
+| --- | --- |
+| `align` | `<` left, `>` right, `^` centre. Numbers right by default, text left. |
+| `fill` | Padding character, before an align: `{:*^9}`. |
+| `sign` | `+` always shows a sign; a space reserves one for positives. |
+| `0` | Zero padding to the width, after the sign. |
+| `width` | Minimum width. |
+| `,` | Thousands grouping. |
+| `.precision` | Decimals for `f`/`e`/`%`, a maximum length for text. |
+| `type` | `d` `f` `e` `x` `X` `o` `b` `%` `s`. |
+
+With no type the value prints exactly as `str` would, so a width never changes
+the digits. A type that cannot fit the value is an error rather than a quiet
+conversion: `{:d}` on `3.9` says to use `{:.0f}` or `int()`.
 
 ### Methods
 
@@ -1126,7 +1208,7 @@ statement      = decl | fnDecl | structDecl | importDecl | exprStmt
                | ifStmt | whileStmt | loopStmt | forStmt | doWhileStmt
                | returnStmt | breakStmt | continueStmt | throwStmt
                | tryStmt | block ;
-decl           = ("let" | "const") IDENT ("=" expression)? ";"? ;
+decl           = ("let" | "const") (IDENT | pattern) ("=" expression)? ";"? ;
 fnDecl         = "fn" IDENT "(" params? ")" block ;
 params         = param ("," param)* ;
 param          = IDENT ("=" expression)? | "..." IDENT ;
@@ -1136,7 +1218,7 @@ importDecl     = "import" STRING ("as" IDENT)? ";"? ;
 ifStmt         = "if" expression block ("else" (ifStmt | block))? ;
 whileStmt      = "while" expression block ;
 loopStmt       = "loop" block ;
-forStmt        = "for" (IDENT ",")? IDENT "in" expression block ;
+forStmt        = "for" ((IDENT ("," IDENT)?) | pattern) "in" expression block ;
 doWhileStmt    = "do" block "while" expression ";"? ;
 tryStmt        = "try" block ("catch" ("(" IDENT ")")? block)? ("finally" block)? ;
 throwStmt      = "throw" expression ";"? ;
@@ -1168,6 +1250,13 @@ compilation fails.
 | `TRN01xx` | parser |
 | `TRN02xx` | compiler (scoping, constness, struct rules, arity) |
 | `TRN03xx` | linter (warnings only) |
+
+Codes worth recognising, because the message alone does not say where to look:
+`TRN0206` undefined name, `TRN0207` too many arguments, `TRN0210` invalid
+assignment target, `TRN0212` unsupported assignment operator, `TRN0213`
+unbounded range outside a slice, `TRN0214` more than two names in a `for`,
+`TRN0215` a pattern declaration with no initializer, `TRN0216` a name bound
+twice in one pattern.
 
 ### The linter
 

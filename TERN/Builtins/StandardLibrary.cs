@@ -474,8 +474,18 @@ namespace TERN.Builtins
                     }
 
                     var specifier = template.Substring(index + 1, close - index - 1).Trim();
+
+                    // `{0:.2f}` is an index and a spec; `{:.2f}` is a spec alone;
+                    // `{}` is the next argument with no spec at all.
+                    var colon = specifier.IndexOf(':');
+                    var position = (colon < 0 ? specifier : specifier[..colon]).Trim();
+
+                    // The spec keeps its spaces: `{: d}` is the space sign, and the
+                    // space is the whole specification.
+                    var spec = colon < 0 ? string.Empty : specifier[(colon + 1)..];
+
                     Value value;
-                    if (specifier.Length == 0)
+                    if (position.Length == 0)
                     {
                         if (argument >= arguments.Length)
                         {
@@ -484,22 +494,23 @@ namespace TERN.Builtins
 
                         value = arguments[argument++];
                     }
-                    else if (int.TryParse(specifier, out var position))
+                    else if (int.TryParse(position, out var explicitPosition))
                     {
-                        if (first + position >= arguments.Length)
+                        if (first + explicitPosition >= arguments.Length)
                         {
-                            throw vm.Error("FormatError", $"format argument {{{position}}} is missing");
+                            throw vm.Error("FormatError", $"format argument {{{explicitPosition}}} is missing");
                         }
 
-                        value = arguments[first + position];
-                        argument = Math.Max(argument, first + position + 1);
+                        value = arguments[first + explicitPosition];
+                        argument = Math.Max(argument, first + explicitPosition + 1);
                     }
                     else
                     {
-                        throw vm.Error("FormatError", $"unsupported format specifier '{{{specifier}}}'");
+                        throw vm.Error("FormatError",
+                            $"unsupported format specifier '{{{specifier}}}'; the shape is {{index:spec}}, such as {{0:.2f}} or {{:>8}}");
                     }
 
-                    builder.Append(value.ToDisplayString());
+                    builder.Append(spec.Length == 0 ? value.ToDisplayString() : FormatSpec.Render(vm, value, spec));
                     index = close + 1;
                     continue;
                 }

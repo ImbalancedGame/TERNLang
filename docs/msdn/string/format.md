@@ -23,18 +23,19 @@ string.format(values...)
 
 ## Remarks
 
-The same rules as `text.format`: `{}` takes the next argument and `{0}` indexes explicitly.
+The same rules as `text.format`: `{}` takes the next argument, `{0}` indexes explicitly, and either may carry a specification such as `{:>8.2f}`.
 
 ## Errors
 
 | Error | Raised when |
 | --- | --- |
-| `ArgumentError` | A placeholder has no argument. |
+| `FormatError` | A placeholder has no argument, or its specification is not one. |
+| `TypeError` | A numeric type was given something that is not a number. |
 
 ## Example
 
 ```tern
-println("{}: {}".format("port", 8080));
+println("{:>6}: {:08.2f}".format("port", 8080));
 ```
 
 ## See also

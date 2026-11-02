@@ -274,7 +274,15 @@ namespace TERN.Syntax
 
                 if (c == '"')
                 {
-                    LexString(start, startLine, startColumn);
+                    if (Peek() == '"' && Peek(2) == '"')
+                    {
+                        LexRawString(start, startLine, startColumn);
+                    }
+                    else
+                    {
+                        LexString(start, startLine, startColumn);
+                    }
+
                     continue;
                 }
 
@@ -559,53 +567,8 @@ namespace TERN.Syntax
                     Advance();
 
                     var exprStart = _offset;
-                    var depth = 1;
-                    while (!AtEnd && depth > 0)
+                    if (!SkipToInterpolationEnd(start, line, column))
                     {
-                        var inner = Current;
-
-                        if (inner == '"')
-                        {
-                            // Skip a nested string literal wholesale.
-                            Advance();
-                            while (!AtEnd && Current != '"')
-                            {
-                                if (Current == '\\')
-                                {
-                                    Advance();
-                                }
-
-                                Advance();
-                            }
-
-                            if (!AtEnd)
-                            {
-                                Advance();
-                            }
-
-                            continue;
-                        }
-
-                        if (inner == '{')
-                        {
-                            depth++;
-                        }
-                        else if (inner == '}')
-                        {
-                            depth--;
-                            if (depth == 0)
-                            {
-                                break;
-                            }
-                        }
-
-                        Advance();
-                    }
-
-                    if (AtEnd || depth != 0)
-                    {
-                        _diagnostics.Error("TRN0007", "unterminated string interpolation",
-                            new SourcePosition(start, line, column), _name);
                         break;
                     }
 
@@ -632,6 +595,369 @@ namespace TERN.Syntax
             }
 
             Emit(TokenKind.String, Slice(start), start, line, column, null, parts);
+        }
+
+        /// <summary>
+        /// Moves the cursor to just past the <c>}</c> that closes an interpolation,
+        /// leaving it at the brace so the caller can report its position. Nested
+        /// braces and nested string literals are skipped, so
+        /// <c>${ {"a": "}"}["a"] }</c> is one interpolation.
+        /// </summary>
+        private bool SkipToInterpolationEnd(int start, int line, int column)
+        {
+            var depth = 1;
+            while (!AtEnd && depth > 0)
+            {
+                var inner = Current;
+
+                if (inner == '"')
+                {
+                    // Skip a nested string literal wholesale.
+                    Advance();
+                    while (!AtEnd && Current != '"')
+                    {
+                        if (Current == '\\')
+                        {
+                            Advance();
+                        }
+
+                        Advance();
+                    }
+
+                    if (!AtEnd)
+                    {
+                        Advance();
+                    }
+
+                    continue;
+                }
+
+                if (inner == '{')
+                {
+                    depth++;
+                }
+                else if (inner == '}')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        break;
+                    }
+                }
+
+                Advance();
+            }
+
+            if (AtEnd || depth != 0)
+            {
+                _diagnostics.Error("TRN0007", "unterminated string interpolation",
+                    new SourcePosition(start, line, column), _name);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// A triple-quoted string: the text is raw (a backslash is a backslash,
+        /// including in a Windows path or a regular expression), it may span lines,
+        /// and the indentation shared by every line is removed so an embedded
+        /// document can be indented with the code around it.
+        ///
+        /// <code>
+        /// let shader = """
+        ///     float4 main() : SV_Target {
+        ///         return 1.0;
+        ///     }
+        ///     """;
+        /// </code>
+        ///
+        /// <c>${...}</c> still interpolates, and <c>$${</c> writes a literal
+        /// <c>${</c> - the one piece of syntax a raw string needs to escape,
+        /// because otherwise it could not hold one of its own delimiters.
+        /// </summary>
+        private void LexRawString(int start, int line, int column)
+        {
+            Advance();
+            Advance();
+            Advance();
+
+            var bodyStart = _offset;
+            var bodyEnd = bodyStart;
+            var terminated = false;
+
+            while (!AtEnd)
+            {
+                if (Current == '"' && Peek() == '"' && Peek(2) == '"')
+                {
+                    bodyEnd = _offset;
+                    Advance();
+                    Advance();
+                    Advance();
+                    terminated = true;
+                    break;
+                }
+
+                if (Current == '$' && Peek() == '{')
+                {
+                    Advance();
+                    Advance();
+                    if (!SkipToInterpolationEnd(start, line, column))
+                    {
+                        break;
+                    }
+
+                    Advance(); // closing brace
+                    continue;
+                }
+
+                Advance();
+            }
+
+            if (!terminated)
+            {
+                _diagnostics.Error("TRN0008", "unterminated triple-quoted string literal",
+                    new SourcePosition(start, line, column), _name);
+                bodyEnd = _offset;
+            }
+
+            var body = _source.Substring(bodyStart, bodyEnd - bodyStart);
+            var stripped = StripRawIndentation(body);
+            var parts = SplitRawParts(stripped.Text, stripped.LineStarts, stripped.LineOffsets, bodyStart);
+            Emit(TokenKind.String, Slice(start), start, line, column, null, parts);
+        }
+
+        /// <summary>The result of removing a raw string's incidental indentation.</summary>
+        private readonly struct StrippedText
+        {
+            public StrippedText(string text, int[] lineStarts, int[] lineOffsets)
+            {
+                Text = text;
+                LineStarts = lineStarts;
+                LineOffsets = lineOffsets;
+            }
+
+            /// <summary>The text with the shared indentation removed.</summary>
+            public string Text { get; }
+
+            /// <summary>Where each line starts inside <see cref="Text"/>.</summary>
+            public int[] LineStarts { get; }
+
+            /// <summary>Where each line's first kept character is in the source.</summary>
+            public int[] LineOffsets { get; }
+        }
+
+        /// <summary>
+        /// Removes the indentation every line of a raw string shares, plus the line
+        /// break that follows the opening quotes and the whitespace before the
+        /// closing ones. Tabs count as one character, which is all it takes to make
+        /// tabs and spaces line up as the author typed them.
+        /// </summary>
+        private static StrippedText StripRawIndentation(string body)
+        {
+            var lines = new List<string>();
+            var starts = new List<int>();
+
+            var index = 0;
+            while (index <= body.Length)
+            {
+                if (index == body.Length && lines.Count > 0)
+                {
+                    break;
+                }
+
+                var lineStart = index;
+                while (index < body.Length && body[index] != '\n')
+                {
+                    index++;
+                }
+
+                var line = body.Substring(lineStart, index - lineStart);
+                if (line.EndsWith("\r", StringComparison.Ordinal))
+                {
+                    line = line[..^1];
+                }
+
+                lines.Add(line);
+                starts.Add(lineStart);
+
+                if (index >= body.Length)
+                {
+                    break;
+                }
+
+                index++; // the newline
+            }
+
+            // The opening line break, and the whitespace that precedes the closing
+            // quotes, are layout rather than content.
+            var first = 0;
+            var last = lines.Count;
+            if (last > 0 && lines[0].Trim().Length == 0)
+            {
+                first = 1;
+            }
+
+            if (last > first && lines[last - 1].Trim().Length == 0)
+            {
+                last--;
+            }
+
+            var indent = int.MaxValue;
+            for (var i = first; i < last; i++)
+            {
+                if (lines[i].Trim().Length == 0)
+                {
+                    continue;
+                }
+
+                indent = Math.Min(indent, LeadingWhitespace(lines[i]));
+            }
+
+            if (indent == int.MaxValue)
+            {
+                indent = 0;
+            }
+
+            var text = new StringBuilder();
+            var lineStarts = new List<int>();
+            var lineOffsets = new List<int>();
+            for (var i = first; i < last; i++)
+            {
+                var line = lines[i];
+                var keep = line.Trim().Length == 0 ? line.Length : Math.Min(indent, LeadingWhitespace(line));
+                if (i > first)
+                {
+                    text.Append('\n');
+                }
+
+                lineStarts.Add(text.Length);
+                lineOffsets.Add(starts[i] + keep);
+                text.Append(keep >= line.Length ? string.Empty : line[keep..]);
+            }
+
+            return new StrippedText(text.ToString(), lineStarts.ToArray(), lineOffsets.ToArray());
+        }
+
+        private static int LeadingWhitespace(string line)
+        {
+            var count = 0;
+            while (count < line.Length && (line[count] == ' ' || line[count] == '\t'))
+            {
+                count++;
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// Splits stripped raw text into literal and <c>${...}</c> parts. A doubled
+        /// <c>$</c> before a brace is a literal <c>${</c>.
+        /// </summary>
+        private static List<StringPart> SplitRawParts(string text, int[] lineStarts, int[] lineOffsets, int bodyStart)
+        {
+            var parts = new List<StringPart>();
+            var builder = new StringBuilder();
+            var partStart = 0;
+
+            int SourceOffset(int index)
+            {
+                // The line the index falls on decides the correction for the
+                // indentation that was cut from the lines above it.
+                var low = 0;
+                var high = lineStarts.Length - 1;
+                while (low < high)
+                {
+                    var middle = (low + high + 1) / 2;
+                    if (lineStarts[middle] <= index)
+                    {
+                        low = middle;
+                    }
+                    else
+                    {
+                        high = middle - 1;
+                    }
+                }
+
+                return lineStarts.Length == 0
+                    ? bodyStart + index
+                    : lineOffsets[low] + (index - lineStarts[low]);
+            }
+
+            var index = 0;
+            while (index < text.Length)
+            {
+                var c = text[index];
+
+                if (c == '$' && index + 1 < text.Length && text[index + 1] == '$' &&
+                    index + 2 < text.Length && text[index + 2] == '{')
+                {
+                    builder.Append("${");
+                    index += 3;
+                    continue;
+                }
+
+                if (c == '$' && index + 1 < text.Length && text[index + 1] == '{')
+                {
+                    if (builder.Length > 0)
+                    {
+                        parts.Add(new StringPart(builder.ToString(), false, SourceOffset(partStart)));
+                        builder.Clear();
+                    }
+
+                    var exprStart = index + 2;
+                    var depth = 1;
+                    var scan = exprStart;
+                    while (scan < text.Length && depth > 0)
+                    {
+                        var inner = text[scan];
+                        if (inner == '"' || inner == '\'')
+                        {
+                            var quote = inner;
+                            scan++;
+                            while (scan < text.Length && text[scan] != quote)
+                            {
+                                if (text[scan] == '\\')
+                                {
+                                    scan++;
+                                }
+
+                                scan++;
+                            }
+                        }
+                        else if (inner == '{')
+                        {
+                            depth++;
+                        }
+                        else if (inner == '}')
+                        {
+                            depth--;
+                            if (depth == 0)
+                            {
+                                break;
+                            }
+                        }
+
+                        scan++;
+                    }
+
+                    var exprText = scan > exprStart ? text[exprStart..Math.Min(scan, text.Length)] : string.Empty;
+                    parts.Add(new StringPart(exprText, true, SourceOffset(exprStart)));
+                    index = Math.Min(scan + 1, text.Length);
+                    partStart = index;
+                    continue;
+                }
+
+                builder.Append(c);
+                index++;
+            }
+
+            if (builder.Length > 0)
+            {
+                parts.Add(new StringPart(builder.ToString(), false, SourceOffset(partStart)));
+            }
+
+            return parts;
         }
 
         private void AppendEscape(StringBuilder builder, int start, int line, int column)

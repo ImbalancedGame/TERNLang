@@ -191,10 +191,13 @@ METHODS = {
         "summary": "Formats the string as a template.",
         "params": [("values", "any", "Values for the placeholders.")],
         "returns": ("string", "The filled text."),
-        "errors": [("ArgumentError", "A placeholder has no argument.")],
-        "remarks": "The same rules as `text.format`: `{}` takes the next argument and `{0}` "
-                   "indexes explicitly.",
-        "example": ['println("{}: {}".format("port", 8080));'],
+        "errors": [
+            ("FormatError", "A placeholder has no argument, or its specification is not one."),
+            ("TypeError", "A numeric type was given something that is not a number."),
+        ],
+        "remarks": "The same rules as `text.format`: `{}` takes the next argument, `{0}` "
+                   "indexes explicitly, and either may carry a specification such as `{:>8.2f}`.",
+        "example": ['println("{:>6}: {:08.2f}".format("port", 8080));'],
         "see": ["text.format"],
     },
     "string.toInt": {

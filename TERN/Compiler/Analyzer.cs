@@ -37,7 +37,11 @@ namespace TERN.Compiler
                 switch (statement)
                 {
                     case LetStmt declaration:
-                        scope.Bind(declaration.Name, declaration);
+                        foreach (var name in declaration.Names)
+                        {
+                            scope.Bind(name, declaration);
+                        }
+
                         break;
 
                     case FunctionDeclStmt function when function.Function.Name is { } name:
@@ -299,7 +303,10 @@ namespace TERN.Compiler
                 {
                     if (statement is LetStmt declaration)
                     {
-                        CheckShadowing(declaration.Name, declaration);
+                        foreach (var name in declaration.Names)
+                        {
+                            CheckShadowing(name, declaration);
+                        }
                     }
                 }
 

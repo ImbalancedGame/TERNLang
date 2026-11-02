@@ -594,9 +594,13 @@ namespace TERN.Compiler
             {
                 switch (statement)
                 {
+                    case LetStmt { Pattern: not null } patterned:
+                        CompilePatternDeclaration(patterned, globals: true);
+                        return;
+
                     case LetStmt let:
                     {
-                        var slot = _scope.Declare(let.Name, let.IsConst, exported: true);
+                        var slot = _scope.Declare(let.Name!, let.IsConst, exported: true);
                         if (let.Initializer is null)
                         {
                             EmitLoadConstant(Value.Nil);
@@ -821,7 +825,13 @@ namespace TERN.Compiler
 
             private void CompileLetStatement(LetStmt let)
             {
-                var slot = DeclareLocal(let.Name, let.IsConst);
+                if (let.Pattern is not null)
+                {
+                    CompilePatternDeclaration(let, globals: false);
+                    return;
+                }
+
+                var slot = DeclareLocal(let.Name!, let.IsConst);
 
                 if (let.Initializer is null)
                 {
@@ -833,6 +843,64 @@ namespace TERN.Compiler
                 }
 
                 EmitStoreLocal(slot);
+            }
+
+            /// <summary>
+            /// <c>let [a, b] = ...</c> and <c>for [k, v] in ...</c>: evaluate the
+            /// subject once, test its shape, then bind the names.
+            ///
+            /// The test is the same one <c>match</c> runs, so the two agree about
+            /// what a list pattern means. It is not silent when it fails: a
+            /// declaration whose subject does not have the shape it names raises a
+            /// TypeError that shows both sides, because the alternative is a
+            /// program that carries on with nil.
+            /// </summary>
+            private void CompilePatternDeclaration(LetStmt let, bool globals)
+            {
+                var pattern = let.Pattern!;
+
+                // One slot for the subject: the test reads it once per element, and
+                // the initializer may have a side effect that must happen once.
+                var subject = ReserveSlot();
+                if (let.Initializer is null)
+                {
+                    EmitLoadConstant(Value.Nil);
+                }
+                else
+                {
+                    CompileExpression(let.Initializer);
+                }
+
+                EmitStoreLocalPlain(subject);
+
+                // A `const` pattern binds constants; a `let` pattern binds lets.
+                var failJumps = new List<int>();
+                EmitPatternTest(pattern, subject, failJumps);
+                BindPatternVariables(pattern, subject, globals, isConst: let.IsConst);
+                var done = Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0);
+
+                foreach (var jump in failJumps)
+                {
+                    PatchTo(jump, _code.Count);
+                }
+
+                // `<pattern> does not match <value>`: the two halves of the mistake,
+                // in the order that reads. `repr` rather than `str`, so a string
+                // subject shows its quotes and "12" is not mistaken for 12.
+                EmitConstantString(Patterns.Describe(pattern) + " does not match ");
+                CompileNameLoad("repr", let);
+                EmitLoadLocal(subject);
+                Emit(Op.Call, 1, 0, 0, pop: 1, push: 1);
+                Emit(Op.Concat, 2, 0, 0, pop: 2, push: 1);
+                Emit(Op.ThrowType, AddStringConstant("TypeError"), 0, 0, pop: 1, push: 0);
+
+                PatchTo(done, _code.Count);
+                ReleaseSlot(subject);
+            }
+
+            private void EmitConstantString(string text)
+            {
+                Emit(Op.LoadConst, AddStringConstant(text), 0, 0, pop: 0, push: 1);
             }
 
             /// <summary>Compiles an `if` statement in value position.</summary>
@@ -1212,7 +1280,7 @@ namespace TERN.Compiler
                 _loops.Add(loop);
 
                 PushScope();
-                var bindings = Math.Min(statement.Names.Count, 2);
+                var bindings = statement.Pattern is not null ? 1 : Math.Min(statement.Names.Count, 2);
                 foreach (var name in statement.Names)
                 {
                     DeclareLocal(name, isConst: true);
@@ -1221,13 +1289,23 @@ namespace TERN.Compiler
                 EmitLoadLocal(iteratorSlot);
                 var next = Emit(Op.IterNext, 0, bindings, 0, pop: 1, push: bindings);
 
-                // IterNext leaves the bindings on the stack; park them in their slots.
-                for (var i = bindings - 1; i >= 0; i--)
+                if (statement.Pattern is not null)
                 {
-                    var slot = FindLocalSlot(statement.Names[i]);
-                    var instruction = _code[^1];
-                    _code[^1] = instruction;
-                    Emit(Op.StoreLocal, slot, 0, 0, pop: 1, push: 0);
+                    // The element goes to a slot and the pattern binds from it, which
+                    // costs one store per iteration and keeps the loop a plain
+                    // IterNext rather than a special case in the runtime.
+                    var element = DeclareLocal("$element", isConst: true);
+                    EmitStoreLocalPlain(element);
+                    BindPatternVariables(statement.Pattern, element, globals: false);
+                }
+                else
+                {
+                    // IterNext leaves the bindings on the stack; park them in their slots.
+                    for (var i = bindings - 1; i >= 0; i--)
+                    {
+                        var slot = FindLocalSlot(statement.Names[i]);
+                        Emit(Op.StoreLocal, slot, 0, 0, pop: 1, push: 0);
+                    }
                 }
 
                 CompileStatement(statement.Body);
@@ -2881,7 +2959,7 @@ namespace TERN.Compiler
                     EmitPatternTest(arm.Pattern, subjectSlot, failJumps);
 
                     PushScope();
-                    BindPatternVariables(arm.Pattern, subjectSlot);
+                    BindPatternVariables(arm.Pattern, subjectSlot, globals: false);
 
                     if (arm.Guard is not null)
                     {
@@ -3075,20 +3153,28 @@ namespace TERN.Compiler
                 }
             }
 
-            private void BindPatternVariables(Pattern pattern, int subjectSlot)
+            /// <summary>
+            /// Stores the subject into the slots a pattern names, in the order the
+            /// pattern writes them. <paramref name="globals"/> decides where the names
+            /// live: a top-level declaration binds module globals, like any other
+            /// top-level <c>let</c>, so an importer and a later function see them.
+            /// </summary>
+            private void BindPatternVariables(Pattern pattern, int subjectSlot, bool globals, bool isConst = true)
             {
                 switch (pattern)
                 {
                     case BindingPattern binding:
-                        DeclareLocal(binding.Name, isConst: true);
+                    {
+                        var slot = DeclareBinding(binding.Name, globals, isConst);
                         EmitLoadLocal(subjectSlot);
-                        EmitStoreLocal(FindLocalSlot(binding.Name));
+                        EmitStoreInto(slot, globals);
                         return;
+                    }
 
                     case OrPattern or:
                         foreach (var alternative in or.Alternatives)
                         {
-                            BindPatternVariables(alternative, subjectSlot);
+                            BindPatternVariables(alternative, subjectSlot, globals);
                         }
 
                         return;
@@ -3100,15 +3186,16 @@ namespace TERN.Compiler
 
                             if (entry.Pattern is BindingPattern mapBinding)
                             {
-                                var slot = DeclareLocal(mapBinding.Name, isConst: true);
+                                var slot = DeclareBinding(mapBinding.Name, globals, isConst);
                                 EmitLoadLocal(subjectSlot);
                                 Emit(Op.LoadConst, keyConstant, 0, 0, pop: 0, push: 1);
                                 Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                                EmitStoreLocal(slot);
+                                EmitStoreInto(slot, globals);
                                 continue;
                             }
 
-                            if (entry.Pattern is not (ListPattern or MapPattern or OrPattern))
+                            // Only a pattern that binds something is worth the read.
+                            if (Patterns.Names(entry.Pattern).Count == 0)
                             {
                                 continue;
                             }
@@ -3117,8 +3204,8 @@ namespace TERN.Compiler
                             EmitLoadLocal(subjectSlot);
                             Emit(Op.LoadConst, keyConstant, 0, 0, pop: 0, push: 1);
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                            EmitStoreLocal(nested);
-                            BindPatternVariables(entry.Pattern, nested);
+                            EmitStoreLocalPlain(nested);
+                            BindPatternVariables(entry.Pattern, nested, globals, isConst);
                             ReleaseSlot(nested);
                         }
 
@@ -3130,18 +3217,18 @@ namespace TERN.Compiler
                             var element = listPattern.Elements[i];
                             if (element is BindingPattern elementBinding)
                             {
-                                var slot = DeclareLocal(elementBinding.Name, isConst: true);
+                                var slot = DeclareBinding(elementBinding.Name, globals, isConst);
                                 EmitLoadLocal(subjectSlot);
                                 Emit(Op.LoadInt, i, 0, 0, pop: 0, push: 1);
                                 Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                                EmitStoreLocal(slot);
+                                EmitStoreInto(slot, globals);
                                 continue;
                             }
 
                             // Nested patterns bind too: pull the element into a
                             // temporary and recurse, so `[[a, b], [c, d]]` declares
                             // all four names instead of only matching structurally.
-                            if (element is not (ListPattern or OrPattern))
+                            if (Patterns.Names(element).Count == 0)
                             {
                                 continue;
                             }
@@ -3150,8 +3237,8 @@ namespace TERN.Compiler
                             EmitLoadLocal(subjectSlot);
                             Emit(Op.LoadInt, i, 0, 0, pop: 0, push: 1);
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                            EmitStoreLocal(nested);
-                            BindPatternVariables(element, nested);
+                            EmitStoreLocalPlain(nested);
+                            BindPatternVariables(element, nested, globals, isConst);
                             ReleaseSlot(nested);
                         }
 
@@ -3159,7 +3246,7 @@ namespace TERN.Compiler
                         {
                             // `...rest` is a slice from the first unbound index to the
                             // end: indexing needs a single range value, not two integers.
-                            var slot = DeclareLocal(listPattern.RestName, isConst: true);
+                            var slot = DeclareBinding(listPattern.RestName, globals, isConst);
                             EmitLoadLocal(subjectSlot);
                             Emit(Op.LoadInt, listPattern.Elements.Count, 0, 0, pop: 0, push: 1);
                             EmitLoadLocal(subjectSlot);
@@ -3168,11 +3255,25 @@ namespace TERN.Compiler
                             Emit(Op.Sub, 0, 0, 0, pop: 2, push: 1);
                             Emit(Op.NewRange, 1, 0, 0, pop: 2, push: 1);
                             Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
-                            EmitStoreLocal(slot);
+                            EmitStoreInto(slot, globals);
                         }
 
                         return;
                 }
+            }
+
+            private int DeclareBinding(string name, bool globals, bool isConst = true) =>
+                globals ? _scope.Declare(name, isConst, exported: true) : DeclareLocal(name, isConst);
+
+            private void EmitStoreInto(int slot, bool globals)
+            {
+                if (globals)
+                {
+                    Emit(Op.StoreGlobal, slot, 0, 0, pop: 1, push: 0);
+                    return;
+                }
+
+                EmitStoreLocal(slot);
             }
 
             // ------------------------------------------------------ constant folding

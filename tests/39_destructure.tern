@@ -1,0 +1,98 @@
+// `let` and `for` bind by pattern, with the same patterns `match` tests. The
+// point is that a program that unpacks a pair needs no index reads and no
+// temporaries, and that a declaration whose subject has the wrong shape says so
+// instead of leaving the names nil.
+
+// --- lists ------------------------------------------------------------------
+let [a, b] = [1, 2];
+println("pair: ${a} ${b}");
+
+let [first, ...rest] = [10, 20, 30];
+println("rest: ${first} ${rest}");
+
+let [only, ...none] = [7];
+println("empty rest: ${only} ${none}");
+
+// Names bind left to right and nest.
+let [[l1, l2], [r1, r2]] = [[1, 2], [3, 4]];
+println("nested: ${l1} ${l2} ${r1} ${r2}");
+
+// --- maps -------------------------------------------------------------------
+// A map pattern is a subset test: keys it does not name are ignored, which is
+// what makes it useful for a response or an options map.
+let {"status": status, "body": body} = {"status": 200, "body": "ok", "headers": {}};
+println("response: ${status} ${body}");
+
+let {"user": {"name": who, "tags": [tag1, tag2]}} =
+    {"user": {"name": "ada", "tags": ["admin", "ops"]}};
+println("deep: ${who} ${tag1} ${tag2}");
+
+// --- const and mutation -----------------------------------------------------
+let [mutable, _] = [1, 2];
+mutable = 99;
+println("let binds a variable: ${mutable}");
+
+const [fixed, other] = [3, 4];
+println("const binds: ${fixed} ${other}");
+
+// --- in functions -----------------------------------------------------------
+fn divide(a, b) {
+    // A function result is usually a pair; naming both halves reads better than
+    // result[0] and result[1] at every use.
+    return [a / b, a % b];
+}
+fn describe(a, b) {
+    let [quotient, remainder] = divide(a, b);
+    return "${a} = ${quotient} * ${b} + ${remainder}";
+}
+println(describe(17, 5));
+
+// --- for loops --------------------------------------------------------------
+for [key, value] in [[1, "one"], [2, "two"]] {
+    println("entry: ${key} ${value}");
+}
+
+for {"id": id, "name": name} in [{"id": 1, "name": "ann"}, {"id": 2, "name": "bo"}] {
+    println("row: ${id} ${name}");
+}
+
+for [i, [x, y]] in [[0, [1.0, 2.0]], [1, [3.0, 4.0]]] {
+    println("point ${i}: ${x} ${y}");
+}
+
+// --- what a mismatch says ---------------------------------------------------
+// The declaration raises rather than carrying on with nil, and the message shows
+// the pattern and the value side by side.
+fn probe(what) {
+    if (what == "long") { return [1, 2, 3]; }
+    if (what == "short") { return [1]; }
+    if (what == "text") { return "text"; }
+    if (what == "map") { return {"x": 1}; }
+    return nil;
+}
+
+fn outcome(what) {
+    try {
+        let [p, q] = probe(what);
+        return "matched ${p} ${q}";
+    } catch (error) {
+        return str(error);
+    }
+}
+
+println(outcome("long"));
+println(outcome("short"));
+println(outcome("text"));
+println(outcome("map"));
+println(outcome("nil"));
+
+// A map pattern that names a key the subject does not have fails the same way.
+try {
+    let {"missing": lost} = {"present": 1};
+} catch (error) {
+    println(str(error));
+}
+
+// `_` names a slot that is deliberately ignored.
+let ["ignored", kept] = ["ignored", "kept"];
+println("kept: ${kept}");

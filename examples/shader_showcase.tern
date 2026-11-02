@@ -47,15 +47,17 @@ import "std:text";
 /// shader gets SV_Position, which is in pixels - the only coordinate a
 /// procedural shader needs.
 fn vertex_shader() {
-    return [
-        "struct Vertex {",
-        "    float3 position : POSITION;",
-        "    float4 colour : COLOR;",
-        "};",
-        "float4 main(Vertex input) : SV_Position {",
-        "    return float4(input.position, 1.0);",
-        "}",
-    ].join("\n");
+    // A triple-quoted string is raw and keeps its shape: what is between the
+    // quotes is what the compiler is handed, at the indentation it is written at.
+    return """
+        struct Vertex {
+            float3 position : POSITION;
+            float4 colour : COLOR;
+        };
+        float4 main(Vertex input) : SV_Position {
+            return float4(input.position, 1.0);
+        }
+        """;
 }
 
 /// Common helpers, prepended to every pixel shader once.
@@ -64,31 +66,31 @@ fn vertex_shader() {
 /// is pasted on the front. The resolution, the time and the aspect ratio come
 /// in as `static const` values, which the compiler folds into the code.
 fn shader_preamble(width, height, seconds) {
-    return [
-        "static const float RES_X = " + str(width) + ".0;",
-        "static const float RES_Y = " + str(height) + ".0;",
-        "static const float ASPECT = RES_X / RES_Y;",
-        "static const float TIME = " + str(seconds) + ";",
-        "",
-        "// Smoothstep, the version that reads as \"ramp from a to b\".",
-        "float ramp(float a, float b, float x) {",
-        "    float t = saturate((x - a) / (b - a));",
-        "    return t * t * (3.0 - 2.0 * t);",
-        "}",
-        "",
-        "// A palette that does not look like a fire engine: three phase-shifted",
-        "// cosines, the trick that turns any scalar into a pleasing colour.",
-        "float3 palette(float t, float3 a, float3 b, float3 c, float3 d) {",
-        "    return a + b * cos(6.28318 * (c * t + d));",
-        "}",
-        "",
-        "// The pixel shader's own coordinate, 0..1 across the target, with y up",
-        "// so that maths written on paper reads the same on screen.",
-        "float2 uv(float2 pixel) {",
-        "    return float2(pixel.x / RES_X, 1.0 - pixel.y / RES_Y);",
-        "}",
-        "",
-    ].join("\n");
+    return """
+        static const float RES_X = ${width}.0;
+        static const float RES_Y = ${height}.0;
+        static const float ASPECT = RES_X / RES_Y;
+        static const float TIME = ${seconds};
+
+        // Smoothstep, the version that reads as "ramp from a to b".
+        float ramp(float a, float b, float x) {
+            float t = saturate((x - a) / (b - a));
+            return t * t * (3.0 - 2.0 * t);
+        }
+
+        // A palette that does not look like a fire engine: three phase-shifted
+        // cosines, the trick that turns any scalar into a pleasing colour.
+        float3 palette(float t, float3 a, float3 b, float3 c, float3 d) {
+            return a + b * cos(6.28318 * (c * t + d));
+        }
+
+        // The pixel shader's own coordinate, 0..1 across the target, with y up
+        // so that maths written on paper reads the same on screen.
+        float2 uv(float2 pixel) {
+            return float2(pixel.x / RES_X, 1.0 - pixel.y / RES_Y);
+        }
+
+        """;
 }
 
 fn pixel_shader(name, width, height, seconds) {

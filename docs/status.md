@@ -13,8 +13,8 @@ caveats below.
 
 | Area | State | Verified by |
 | --- | --- | --- |
-| Language, interpreter | complete | 38 golden runs, `tools/test.sh` |
-| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (35), `native/parity.py` (48 programs) |
+| Language, interpreter | complete | 40 golden runs, `tools/test.sh` |
+| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (37), `native/parity.py` (50 programs) |
 | `math` `json` `os` `fs` `text` `lists` `time` `random` `cli` | complete, both back ends | golden tests, parity |
 | `net` (TCP, framing, tokens, frame ceiling, UDP, raw mode) | complete, both back ends | `tests/26_net.tern`, `tests/35_raw_bytes.tern`, `tools/test-tls.sh` |
 | `http` / `https` | complete, both back ends | `tests/28_http.tern`, `tools/test-tls.sh` |
@@ -36,11 +36,11 @@ Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       45 passed
+./tools/test.sh                                       47 passed
 python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
-python3 native/run_tests.py                           35 passed
-python3 native/parity.py                              48 compared, 0 differing
+python3 native/run_tests.py                           37 passed
+python3 native/parity.py                              50 compared, 0 differing
 python3 tools/test_examples.py                        91 passed
 python3 tools/test_namespaces.py                      24 passed
 bash tools/test-gl.sh                                 ok

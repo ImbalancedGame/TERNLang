@@ -1,0 +1,29 @@
+3.14
+    3.14|
+3.14    |
+  3.14  |
+-003.142
++2.5 -2.5
+ 7 -7
+1,234,567
+-1,234,567.89
+beef BEEF 10 1010
+12.3% 50.0% 75%
+1.234500e+03
+1.230e-04
+format type 'd' wants a whole number, and 3.9 is not one; use '{:.0f}' to round it or int() to cut off the fraction
+    ab|ab    |  ab  |
+***mid***|
+tru
+42
+a then b then a
+   x
+1.0 and 2.0
+{literal} 3
+3.0 |      3.0
+3 |        3
+unknown format type 'q' in '{q}'; the types are d, f, e, x, X, o, b, %, s
+format type 'd' wants a number, not "abc"
+the precision in '{.f}' needs a number, as in '.2f'
+format width 99999 is too wide; the limit is 4096
+unsupported format specifier '{nope}'; the shape is {index:spec}, such as {0:.2f} or {:>8}

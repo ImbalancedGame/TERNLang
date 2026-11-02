@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace TERN.Syntax
@@ -242,6 +243,144 @@ namespace TERN.Syntax
         public required List<MapPatternEntry> Entries { get; init; }
     }
 
+    /// <summary>The names a pattern binds, and how to write it back down.</summary>
+    public static class Patterns
+    {
+        /// <summary>Every name the pattern binds, left to right, without repeats.</summary>
+        public static List<string> Names(Pattern? pattern)
+        {
+            var names = new List<string>();
+            if (pattern is not null)
+            {
+                CollectNames(pattern, names);
+            }
+
+            return names;
+        }
+
+        private static void CollectNames(Pattern pattern, List<string> names)
+        {
+            switch (pattern)
+            {
+                // Every occurrence, repeats included: `let [a, a] = ...` binds one
+                // name twice, and the parser has to be able to see that.
+                case BindingPattern binding:
+                    names.Add(binding.Name);
+                    return;
+
+                case OrPattern or:
+                    foreach (var alternative in or.Alternatives)
+                    {
+                        CollectNames(alternative, names);
+                    }
+
+                    return;
+
+                case ListPattern list:
+                    foreach (var element in list.Elements)
+                    {
+                        CollectNames(element, names);
+                    }
+
+                    if (list.RestName is { } rest)
+                    {
+                        names.Add(rest);
+                    }
+
+                    return;
+
+                case MapPattern map:
+                    foreach (var entry in map.Entries)
+                    {
+                        CollectNames(entry.Pattern, names);
+                    }
+
+                    return;
+            }
+        }
+
+        /// <summary>
+        /// The pattern as source would write it, for the "does not match" message:
+        /// a reader who sees <c>[a, b] does not match [1, 2, 3]</c> knows which
+        /// declaration failed without a line number.
+        /// </summary>
+        public static string Describe(Pattern pattern)
+        {
+            switch (pattern)
+            {
+                case BindingPattern binding:
+                    return binding.Name;
+
+                case WildcardPattern:
+                    return "_";
+
+                case LiteralPattern literal:
+                    return DescribeLiteral(literal.Value);
+
+                case RangePattern range:
+                    return $"{DescribeExpression(range.Start)}..{(range.Inclusive ? "" : "<")}{DescribeExpression(range.End)}";
+
+                case ListPattern list:
+                {
+                    var parts = new List<string>();
+                    foreach (var element in list.Elements)
+                    {
+                        parts.Add(Describe(element));
+                    }
+
+                    if (list.RestName is { } rest)
+                    {
+                        parts.Add("..." + rest);
+                    }
+
+                    return "[" + string.Join(", ", parts) + "]";
+                }
+
+                case MapPattern map:
+                {
+                    var parts = new List<string>();
+                    foreach (var entry in map.Entries)
+                    {
+                        parts.Add($"{entry.Key}: {Describe(entry.Pattern)}");
+                    }
+
+                    return "{" + string.Join(", ", parts) + "}";
+                }
+
+                case OrPattern or:
+                {
+                    var parts = new List<string>();
+                    foreach (var alternative in or.Alternatives)
+                    {
+                        parts.Add(Describe(alternative));
+                    }
+
+                    return string.Join(" | ", parts);
+                }
+
+                default:
+                    return "_";
+            }
+        }
+
+        private static string DescribeExpression(Expr expression) => expression switch
+        {
+            LiteralExpr literal => DescribeLiteral(literal.Value),
+            IdentifierExpr identifier => identifier.Name,
+            _ => "...",
+        };
+
+        private static string DescribeLiteral(object? value) => value switch
+        {
+            null => "nil",
+            bool flag => flag ? "true" : "false",
+            string text => $"\"{text}\"",
+            long number => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            double number => number.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            _ => "...",
+        };
+    }
+
     // ----------------------------------------------------------------- functions
 
     public sealed class Parameter
@@ -271,9 +410,33 @@ namespace TERN.Syntax
 
     public sealed class LetStmt : Stmt
     {
-        public required string Name { get; init; }
+        /// <summary>The declared name, for a plain <c>let x = ...</c>.</summary>
+        public string? Name { get; init; }
+
+        /// <summary>
+        /// The pattern, for <c>let [a, b] = ...</c> and <c>let {"x": x} = ...</c>.
+        /// The initializer is evaluated once and the pattern then binds every name
+        /// it mentions; a subject of the wrong shape raises rather than leaving the
+        /// names nil.
+        /// </summary>
+        public Pattern? Pattern { get; init; }
+
         public required bool IsConst { get; init; }
         public required Expr? Initializer { get; init; }
+
+        /// <summary>Every name the declaration binds, in source order.</summary>
+        public IReadOnlyList<string> Names
+        {
+            get
+            {
+                if (Pattern is not null)
+                {
+                    return Patterns.Names(Pattern);
+                }
+
+                return Name is { } name ? new[] { name } : Array.Empty<string>();
+            }
+        }
     }
 
     public sealed class FunctionDeclStmt : Stmt
@@ -327,6 +490,14 @@ namespace TERN.Syntax
     public sealed class ForInStmt : Stmt
     {
         public required List<string> Names { get; init; }
+
+        /// <summary>
+        /// Set for <c>for [k, v] in pairs</c>: the element is matched against a
+        /// pattern instead of being bound to a name, so a loop over pairs needs no
+        /// temporary and no index arithmetic.
+        /// </summary>
+        public Pattern? Pattern { get; init; }
+
         public required Expr Iterable { get; init; }
         public required Stmt Body { get; init; }
     }

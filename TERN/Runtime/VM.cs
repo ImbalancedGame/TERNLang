@@ -1615,13 +1615,20 @@ namespace TERN.Runtime
                             break;
 
                         case Op.Throw:
+                        case Op.ThrowType:
                         {
+                            // The two share a body on purpose: this is the hottest
+                            // switch in the runtime, and one more case in it costs the
+                            // neighbouring opcodes real time. Only the error built on
+                            // the way out differs, and only when nothing catches it.
                             var value = _stack[--_sp];
                             frame.Ip = ip;
 
                             if (!DispatchThrow(value, frame, ip))
                             {
-                                throw BuildError(value);
+                                throw instruction.Op == Op.ThrowType
+                                    ? TypedError(value, instruction.A, constants)
+                                    : BuildError(value);
                             }
 
                             goto nextFrame;
@@ -2275,6 +2282,21 @@ namespace TERN.Runtime
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Builds the uncaught error for <see cref="Op.ThrowType"/>: the operand
+        /// names the category ("TypeError", "RangeError"), the payload carries the
+        /// message, and a <c>catch (e)</c> binds the payload just as it does for
+        /// <see cref="Op.Throw"/>.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private TernError TypedError(in Value payload, int typeConstant, Value[] constants)
+        {
+            var typeName = typeConstant >= 0 && typeConstant < constants.Length
+                ? constants[typeConstant].AsString()
+                : "Error";
+            return new TernError(typeName, payload.ToDisplayString(), CaptureTrace(), payload);
         }
 
         private TernError BuildError(in Value value)

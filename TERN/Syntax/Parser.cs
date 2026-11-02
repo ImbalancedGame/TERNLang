@@ -240,6 +240,35 @@ namespace TERN.Syntax
             var keyword = Advance();
             var isConst = keyword.Kind == TokenKind.Const;
 
+            // `let [a, b] = ...` / `let {"x": x} = ...`: the same patterns `match`
+            // uses, binding instead of testing. A declaration with no name is
+            // unambiguous, because `let` was always followed by an identifier.
+            if (Check(TokenKind.LeftBracket) || Check(TokenKind.LeftBrace))
+            {
+                var pattern = ParsePattern();
+
+                CheckDuplicateBindings(pattern);
+
+                if (!Match(TokenKind.Equal))
+                {
+                    Error($"a declaration with a pattern needs an initializer: '{keyword.Text} {Patterns.Describe(pattern)} = ...'",
+                        Current, "TRN0215");
+                    EndStatement();
+                    return new EmptyStmt { Offset = keyword.Offset, Line = keyword.Line };
+                }
+
+                var destructured = ParseExpression();
+                EndStatement();
+                return new LetStmt
+                {
+                    Pattern = pattern,
+                    IsConst = isConst,
+                    Initializer = destructured,
+                    Offset = keyword.Offset,
+                    Line = keyword.Line,
+                };
+            }
+
             if (!Check(TokenKind.Identifier))
             {
                 Error($"expected a variable name after '{keyword.Text}'", Current, "TRN0105");
@@ -268,6 +297,25 @@ namespace TERN.Syntax
                 Offset = keyword.Offset,
                 Line = keyword.Line,
             };
+        }
+
+        /// <summary>
+        /// Two of the same name in one pattern is a declaration that writes one of
+        /// them and never reads it: the later binding wins, and the earlier value is
+        /// lost without a word.
+        /// </summary>
+        private void CheckDuplicateBindings(Pattern pattern)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var bound in Patterns.Names(pattern))
+            {
+                if (!seen.Add(bound))
+                {
+                    Error($"the pattern binds '{bound}' twice; each name in a destructuring binding has to be different",
+                        Current, "TRN0216");
+                    return;
+                }
+            }
         }
 
         private Stmt ParseFunctionDeclaration()
@@ -502,6 +550,31 @@ namespace TERN.Syntax
             if (Check(TokenKind.LeftParen))
             {
                 return ParseCStyleFor(keyword);
+            }
+
+            // `for [k, v] in pairs` binds by pattern; a plain loop keeps its names
+            // so the primitive special case (a range or list with one or two names)
+            // stays a single IterNext with no pattern test per element.
+            if (Check(TokenKind.LeftBracket) || Check(TokenKind.LeftBrace))
+            {
+                var binding = ParsePattern();
+                CheckDuplicateBindings(binding);
+                Expect(TokenKind.In, "'in'");
+                var subjects = ParseExpression();
+
+                _loopDepth++;
+                var looped = ParseBodyStatement();
+                _loopDepth--;
+
+                return new ForInStmt
+                {
+                    Names = new List<string>(),
+                    Pattern = binding,
+                    Iterable = subjects,
+                    Body = looped,
+                    Offset = keyword.Offset,
+                    Line = keyword.Line,
+                };
             }
 
             var names = new List<string>();
