@@ -34,6 +34,13 @@ COMPILER_ONLY = {"12_lint", "24_parse_errors"}
 # servers and a mock driver, which is where their output is compared.
 RUNS_ELSEWHERE = {"http_server", "rcon", "sftp_deploy", "rotating_cube"}
 
+# Examples that print how long they took. The two back ends are meant to differ
+# there - that is the measurement - so comparing the text would fail every time
+# on a number that is supposed to move. What is compared instead is the file
+# they write: tools/test_examples.py traces the same scene in both back ends and
+# compares the PNG byte for byte, which is a stronger claim than the log line.
+TIMED = {"raytracer"}
+
 
 def scripts():
     """Every script to compare, in a stable order."""
@@ -47,7 +54,7 @@ def scripts():
     examples = os.path.join(REPO, "examples")
     if os.path.isdir(examples):
         for name in sorted(os.listdir(examples)):
-            if name.endswith(".tern") and name[:-5] not in RUNS_ELSEWHERE:
+            if name.endswith(".tern") and name[:-5] not in RUNS_ELSEWHERE and name[:-5] not in TIMED:
                 found.append(os.path.join(examples, name))
     # Extra differential sweeps live beside the harness as sweep*.tern.
     for name in sorted(os.listdir(HERE)):

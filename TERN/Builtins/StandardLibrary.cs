@@ -517,6 +517,35 @@ namespace TERN.Builtins
             return builder.ToString();
         }
 
+        /// <summary>
+        /// A list of 0..255 as a byte array, with the function's name in the
+        /// message. `Wire.FromList` does the same work for sockets but names
+        /// neither the caller nor the bounds, and a message a user cannot trace
+        /// back to a line is most of the cost of the error.
+        /// </summary>
+        private static byte[] ByteList(VM vm, in Value value, string function)
+        {
+            if (value.Kind != ValueKind.List)
+            {
+                throw vm.Error("TypeError", $"{function}() expects a list of bytes, not {vm.TypeName(value)}");
+            }
+
+            var list = value.AsList();
+            var bytes = new byte[list.Count];
+            for (var i = 0; i < list.Count; i++)
+            {
+                var item = list[i];
+                if (item.Kind != ValueKind.Int || item.AsInt() < 0 || item.AsInt() > 255)
+                {
+                    throw vm.Error("TypeError", $"byte {i} is not an integer in 0..255");
+                }
+
+                bytes[i] = (byte)item.AsInt();
+            }
+
+            return bytes;
+        }
+
         private static void InstallFileSystem(TernEngine engine)
         {
             var map = new TernMap();
@@ -562,6 +591,37 @@ namespace TERN.Builtins
                 });
                 return Value.Nil;
             }, "Appends text to a file.");
+            // Bytes go out as bytes. `fs.write` takes text and writes its UTF-8
+            // encoding, which is right for text and silently wrong for anything
+            // else: a string cannot hold 0x89 or 0xFF at all, so a PNG header
+            // handed to `write` arrives as U+FFFD three times. These two take a
+            // list of 0..255 and put it on disk unchanged, which is the other
+            // half of `readBytes`.
+            Add(map, "writeBytes", 2, 2, (vm, a) =>
+            {
+                var path = RequirePath(vm, a[0]);
+                var bytes = ByteList(vm, a[1], "writeBytes");
+                Io(vm, "write", path, () =>
+                {
+                    EnsureDirectory(path);
+                    File.WriteAllBytes(path, bytes);
+                    return true;
+                });
+                return new Value(bytes.LongLength);
+            }, "Writes a list of bytes to a file, replacing it.");
+            Add(map, "appendBytes", 2, 2, (vm, a) =>
+            {
+                var path = RequirePath(vm, a[0]);
+                var bytes = ByteList(vm, a[1], "appendBytes");
+                Io(vm, "write", path, () =>
+                {
+                    EnsureDirectory(path);
+                    using var stream = new FileStream(path, FileMode.Append, FileAccess.Write);
+                    stream.Write(bytes, 0, bytes.Length);
+                    return true;
+                });
+                return new Value(bytes.LongLength);
+            }, "Appends a list of bytes to a file.");
             Add(map, "exists", 1, 1, (vm, a) =>
             {
                 var path = RequirePath(vm, a[0]);

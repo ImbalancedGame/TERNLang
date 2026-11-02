@@ -102,8 +102,18 @@ Functions, structs and builtin namespaces print as `function`/struct name.
 
 ### Truthiness
 
-`false`, `nil`, `0`, `0.0`, `""` and empty lists/maps are **falsy**. Everything
-else is truthy. `bool(v)` converts explicitly.
+`false` and `nil` are **falsy**. Everything else is truthy, including `0`, `0.0`,
+`""`, and empty lists and maps. `bool(v)` converts explicitly and agrees with
+the `if` rule.
+
+This is not the Python rule and is worth knowing before writing `if (len(items))`
+in one language and reading it in the other: a count of zero is truthy here, so
+that test is always taken. Write `if (len(items) > 0)`, which says what it means
+in every language.
+
+The rule is checked in `tests/03_control.tern`, which pins all seven cases, and
+`tests/17_stdlib.tern` pins `bool("")`. This section used to claim `0`, `""` and
+the empty collections were falsy, which neither back end has ever done.
 
 ### Numeric behaviour
 
@@ -625,6 +635,14 @@ own neighbours without depending on where the caller was started. Before this
 rule the interpreter resolved `fs` paths against the script's directory while a
 compiled binary used the working directory, which made a script that passed its
 tests fail once it was run from another directory.
+
+`fs.writeBytes` and `fs.appendBytes` are the other half of `readBytes`: they
+take a list of `0..255` and put it on disk unchanged. `fs.write` cannot do that,
+because it takes text and writes its UTF-8 encoding, and a string cannot hold a
+byte such as `0x89` at all — `fs.write("out.bin", text.fromBytes([137]))` writes
+three bytes (`EF BF BD`), not one. A PNG begins with `0x89`, so
+`examples/raytracer.tern` builds its file as a list of bytes and writes it with
+`writeBytes`; the whole encoder is about sixty lines of TERN.
 
 `json.parse` raises a `JsonError` naming the problem and the offset in the text
 (`expected ':' at offset 4`); `json.tryParse` returns its fallback instead of

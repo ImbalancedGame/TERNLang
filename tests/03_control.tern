@@ -49,3 +49,24 @@ println(same_text("hel" + "lo", "hello"));
 println(same_text("help", "hello"));
 println(equal_text("hel" + "lo", "hello"));
 println(equal_text("help", "hello"));
+
+// --- truthiness --------------------------------------------------------------
+// Only false and nil are falsy. 0, 0.0, "" and the empty collections are
+// truthy, which is not the Python rule and is the one thing a reader arriving
+// from Python will assume the other way round, so it is pinned here rather
+// than only described in docs/language.md.
+fn truthy(value) {
+    if (value) { return "truthy"; }
+    return "falsy";
+}
+println("int 0:", truthy(0));
+println("float 0:", truthy(0.0));
+println("empty text:", truthy(""));
+println("empty list:", truthy([]));
+println("empty map:", truthy({}));
+println("nil:", truthy(nil));
+println("false:", truthy(false));
+println("true:", truthy(true));
+println("one:", truthy(1));
+// The same rule reached through `bool`, which has to agree with `if`.
+println("bool(0):", bool(0), "bool(\"\"):", bool(""), "bool([]):", bool([]));

@@ -44,6 +44,56 @@ println(fs.read(dir + "/a.txt"));
 println(fs.size(dir + "/a.txt"));
 println(fs.readBytes(dir + "/a.txt")[0..4]);
 
+// --- bytes out --------------------------------------------------------------
+// Every value a byte can hold, written and read back unchanged. Both ends of
+// the range matter: 0x00 is a NUL, which a text path might terminate on, and
+// 0xFF is not valid UTF-8 at all - `fs.write` turns it into U+FFFD (EF BF BD),
+// so this is the case that says whether bytes are really bytes.
+// Lists compare by identity, so the round trip is checked item by item.
+fn sameBytes(a, b) {
+    if (len(a) != len(b)) { return false; }
+    for i in range(0, len(a)) {
+        if (a[i] != b[i]) { return false; }
+    }
+    return true;
+}
+
+let all = range(0, 256).toList();
+println(fs.writeBytes(dir + "/bytes.bin", all));
+println(fs.size(dir + "/bytes.bin"));
+println(sameBytes(fs.readBytes(dir + "/bytes.bin"), all));
+// Appending must continue the file rather than start it again.
+println(fs.appendBytes(dir + "/bytes.bin", [0, 1, 255]));
+println(fs.size(dir + "/bytes.bin"));
+println(sameBytes(fs.readBytes(dir + "/bytes.bin")[256..259], [0, 1, 255]));
+// The one this cannot do with text, spelled out: a PNG signature through
+// `write` comes back different, through `writeBytes` it does not.
+let signature = [137, 80, 78, 71, 13, 10, 26, 10];
+fs.write(dir + "/text.bin", text.fromBytes(signature));
+fs.writeBytes(dir + "/signature.bin", signature);
+println(sameBytes(fs.readBytes(dir + "/text.bin"), signature));
+println(sameBytes(fs.readBytes(dir + "/signature.bin"), signature));
+// A byte outside 0..255 is refused, and a refused write leaves the old file
+// alone rather than truncating it first.
+fs.writeBytes(dir + "/guard.bin", [1, 2, 3]);
+try {
+    fs.writeBytes(dir + "/guard.bin", [1, 300]);
+    println("bad byte: no error");
+} catch (e) {
+    println("bad byte: " + str(e));
+}
+println(sameBytes(fs.readBytes(dir + "/guard.bin"), [1, 2, 3]));
+try {
+    fs.appendBytes(dir + "/guard.bin", "text");
+    println("text: no error");
+} catch (e) {
+    println("text: " + str(e));
+}
+fs.remove(dir + "/bytes.bin");
+fs.remove(dir + "/text.bin");
+fs.remove(dir + "/signature.bin");
+fs.remove(dir + "/guard.bin");
+
 fs.mkdir(dir + "/deep/er");
 fs.write(dir + "/deep/er/b.txt", "x");
 println(fs.list(dir));

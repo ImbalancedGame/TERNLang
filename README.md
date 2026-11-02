@@ -124,6 +124,9 @@ The examples are meant to be read:
 | `examples/sftp_deploy.tern` | A dry-run-first deploy over `std:sftp` (the OpenSSH client, no library) |
 | `examples/rotating_cube.tern` | a rotating cube in a real window through `d3d12`, plus PNG frames and a text rasteriser |
 | `examples/d3d12_diagnose.tern` | Direct3D 12 one call at a time: what each call did, and which build did it. Run this first when a Direct3D call fails; add `--debug` to the cube for the same validation |
+| `examples/raytracer.tern` | A CPU ray tracer: spheres, shadows, reflections, and a PNG writer built from CRC32, Adler32 and stored deflate blocks — no image library, no GPU |
+| `examples/d3d12_raytrace.tern` | The same scene traced in a pixel shader, with the HLSL generated from a scene written in TERN |
+| `examples/shader_showcase.tern` | Four procedural pixel shaders — plasma, Mandelbrot, a ray-marched distance field, Voronoi — with `--emit-hlsl` to see what was compiled |
 | `examples/inventory.tern`, `triage.tern`, `wordcount.tern`, `fizzbuzz.tern` | Structs, pattern matching, files and arguments |
 
 `python3 tools/test_examples.py` runs them against mock servers and a mock

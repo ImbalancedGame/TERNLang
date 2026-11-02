@@ -4845,6 +4845,56 @@ static Value fs_write_file(int argc, Value *argv, const char *mode) {
 static Value fs_write(int argc, Value *argv) { return fs_write_file(argc, argv, "wb"); }
 static Value fs_append(int argc, Value *argv) { return fs_write_file(argc, argv, "ab"); }
 
+/// fs.writeBytes(path, bytes) and fs.appendBytes(path, bytes): the list goes to
+/// disk unchanged, with no string in between.
+///
+/// `fs.write` takes text and writes its UTF-8 encoding, which is right for text
+/// and quietly destructive for anything else: a TERN string holds characters,
+/// and every byte that is not valid UTF-8 becomes U+FFFD on the way in and
+/// EF BF BD on the way out. A PNG starts with 0x89, so `write` cannot produce
+/// one. These two are the other half of `readBytes`.
+static Value fs_write_bytes(int argc, Value *argv, int append) {
+    const char *path = path_arg(argc, argv, 0);
+    if (!v_is_list(argv[1])) {
+        tern_panic("TypeError", "%s() expects a list of bytes, not %s",
+                   append ? "appendBytes" : "writeBytes", tern_type_name(argv[1]));
+    }
+    List *bytes = (List *)argv[1].as.o;
+    // Checked before the file is opened, so a bad list leaves the file alone
+    // rather than truncating it and then failing.
+    for (int i = 0; i < bytes->count; i++) {
+        Value item = bytes->items[i];
+        if (item.tag != T_INT || item.as.i < 0 || item.as.i > 255) {
+            tern_panic("TypeError", "byte %d is not an integer in 0..255", i);
+        }
+    }
+
+    if (!append) {
+        make_parent_dirs(path);
+    }
+    FILE *handle = fopen(path, append ? "ab" : "wb");
+    if (!handle) {
+        tern_panic("IOError", "cannot %s '%s'", append ? "append to" : "write", path);
+    }
+    unsigned char chunk[4096];
+    size_t filled = 0;
+    for (int i = 0; i < bytes->count; i++) {
+        chunk[filled++] = (unsigned char)bytes->items[i].as.i;
+        if (filled == sizeof chunk) {
+            fwrite(chunk, 1, filled, handle);
+            filled = 0;
+        }
+    }
+    if (filled > 0) {
+        fwrite(chunk, 1, filled, handle);
+    }
+    fclose(handle);
+    return v_int((int64_t)bytes->count);
+}
+
+static Value fs_writebytes(int argc, Value *argv) { return fs_write_bytes(argc, argv, 0); }
+static Value fs_appendbytes(int argc, Value *argv) { return fs_write_bytes(argc, argv, 1); }
+
 static Value fs_exists(int argc, Value *argv) {
     struct stat info;
     return v_bool(stat(path_arg(argc, argv, 0), &info) == 0);
@@ -9277,6 +9327,8 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("readBytes"), make_native_arity("readBytes", fs_readbytes, 1, 1));
         map_set(map, str_from_cstr("write"), make_native_arity("write", fs_write, 2, 2));
         map_set(map, str_from_cstr("append"), make_native_arity("append", fs_append, 2, 2));
+        map_set(map, str_from_cstr("writeBytes"), make_native_arity("writeBytes", fs_writebytes, 2, 2));
+        map_set(map, str_from_cstr("appendBytes"), make_native_arity("appendBytes", fs_appendbytes, 2, 2));
         map_set(map, str_from_cstr("exists"), make_native_arity("exists", fs_exists, 1, 1));
         map_set(map, str_from_cstr("size"), make_native_arity("size", fs_size, 1, 1));
         map_set(map, str_from_cstr("remove"), make_native_arity("remove", fs_remove, 1, 1));

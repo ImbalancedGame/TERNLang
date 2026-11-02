@@ -585,6 +585,29 @@ FUNCTIONS = {
         "example": ['println(fs.readBytes("logo.png")[0..4]);'],
         "see": ["fs.read", "fs.readAt"],
     },
+    "fs.writeBytes": {
+        "summary": "Writes a list of bytes, replacing the file and creating its directories.",
+        "remarks": "`fs.write` takes text and writes its UTF-8 encoding; a string cannot hold a "
+                   "byte such as 0x89 at all, so a binary format has to go through this one. "
+                   "Bytes reach the disk unchanged, which is the other half of `fs.readBytes`.",
+        "params": [("path", "string", "The file."),
+                   ("bytes", "list of int", "Values in 0..255.")],
+        "returns": ("int", "How many bytes were written."),
+        "errors": [("TypeError", "The list holds something that is not a byte."),
+                   ("IOError", "The file cannot be written.")],
+        "example": ['fs.writeBytes("logo.png", [137, 80, 78, 71, 13, 10, 26, 10]);'],
+        "see": ["fs.write", "fs.readBytes", "fs.appendBytes"],
+    },
+    "fs.appendBytes": {
+        "summary": "Appends a list of bytes to a file, creating it if it is missing.",
+        "params": [("path", "string", "The file."),
+                   ("bytes", "list of int", "Values in 0..255.")],
+        "returns": ("int", "How many bytes were appended."),
+        "errors": [("TypeError", "The list holds something that is not a byte."),
+                   ("IOError", "The file cannot be written.")],
+        "example": ['fs.appendBytes("frames.bin", [0, 161, 0, 0]);'],
+        "see": ["fs.writeBytes", "fs.append"],
+    },
     "fs.write": {
         "summary": "Writes text, replacing the file and creating its directories.",
         "params": [("path", "string", "The file."), ("text", "any", "Rendered with `str`.")],

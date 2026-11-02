@@ -1,0 +1,344 @@
+// A ray tracer that runs on the GPU, with the scene written in TERN.
+//
+//   tern run examples/d3d12_raytrace.tern                 # raytrace_gpu.png
+//   tern run examples/d3d12_raytrace.tern --size 1280x720
+//   tern run examples/d3d12_raytrace.tern --emit-hlsl shot.hlsl
+//   tern run examples/d3d12_raytrace.tern --ascii         # preview in the terminal
+//
+// The scene is a list of spheres in TERN. The pixel shader that traces it is
+// HLSL, and it is generated from that list: every sphere is baked into the
+// source as a row of a constant array, and the shader compiles at run time with
+// d3dcompiler_47.dll when the pipeline is built.
+//
+// That is what an empty root signature leaves you - no constant buffer to
+// upload, so the values have to be in the text. It is also the older way of
+// writing a shader: gen the program, compile it, run it. For a ray tracer it
+// costs nothing, because the scene does not change from frame to frame; for a
+// game it would be one compile per frame and much too slow.
+//
+// The same scene is traced on the CPU by examples/raytracer.tern, which is the
+// program to run beside this one: two implementations of the same maths, one in
+// TERN and one in HLSL, and the pictures should look like each other.
+
+import "std:d3d12";
+import "std:os";
+import "std:math";
+import "std:time";
+
+/// x, y, z, radius, r, g, b, mirror.
+fn make_scene() {
+    return [
+        [-1.10,  0.55,  0.10,  0.55,  0.90, 0.25, 0.20, 0.35],
+        [ 0.00,  0.45, -0.55,  0.45,  0.20, 0.55, 0.95, 0.10],
+        [ 1.15,  0.70,  0.05,  0.70,  0.95, 0.80, 0.25, 0.55],
+        [ 0.10,  0.30,  1.15,  0.30,  0.75, 0.75, 0.80, 0.05],
+    ];
+}
+
+fn usage() {
+    println("a ray tracer in a pixel shader, with the scene written in TERN");
+    println("  --out PATH        where to write the PNG (default raytrace_gpu.png)");
+    println("  --size WIDTHxHEIGHT  image size (default 640x480)");
+    println("  --emit-hlsl PATH  also write the generated shader source");
+    println("  --ascii           also print a preview in the terminal");
+    println("  --help            this text");
+}
+
+// --- generating the shader ---------------------------------------------------
+//
+// Shader source as a list of lines and a join, like the rest of the TERN
+// examples: a triple-quoted string would be easier to read and harder to
+// indent, and this file is mostly shader.
+
+fn hlsl_float(value) {
+    let text = str(value);
+    // HLSL wants a decimal point on every float literal: `1.0`, not `1`.
+    if (!text.contains(".") && !text.contains("e") && !text.contains("E")) {
+        text = text + ".0";
+    }
+    return text;
+}
+
+fn hlsl_scene(scene) {
+    let lines = [];
+    lines.push("static const float4 SPHERES[" + str(len(scene)) + "][2] = {");
+    for s in scene {
+        // Two float4s per sphere - centre and radius, colour and mirror -
+        // because a float4x4 row would waste a slot and an array of eight
+        // floats is not indexed as cheaply.
+        lines.push("    { float4(" + hlsl_float(s[0]) + ", " + hlsl_float(s[1]) + ", " +
+                   hlsl_float(s[2]) + ", " + hlsl_float(s[3]) + "),");
+        lines.push("      float4(" + hlsl_float(s[4]) + ", " + hlsl_float(s[5]) + ", " +
+                   hlsl_float(s[6]) + ", " + hlsl_float(s[7]) + ") },");
+    }
+    lines.push("};");
+    return lines;
+}
+
+fn hlsl_camera() {
+    return [
+        "static const float3 EYE = float3(0.0, 1.15, 4.20);",
+        "static const float3 LOOK_AT = float3(0.0, 0.75, 0.0);",
+        "static const float FIELD = 0.55;",
+        "static const float3 LIGHT = float3(-3.0, 4.0, 2.5);",
+        "static const float3 SKY_TOP = float3(0.08, 0.10, 0.20);",
+        "static const float3 SKY_HORIZON = float3(0.55, 0.62, 0.75);",
+    ];
+}
+
+fn vertex_shader() {
+    return [
+        "struct Vertex {",
+        "    float3 position : POSITION;",
+        "    float4 colour : COLOR;",
+        "};",
+        "float4 main(Vertex input) : SV_Position {",
+        "    return float4(input.position, 1.0);",
+        "}",
+    ].join("\n");
+}
+
+fn pixel_shader(width, height, scene) {
+    let lines = [];
+    lines.push("static const float RES_X = " + hlsl_float(width) + ";");
+    lines.push("static const float RES_Y = " + hlsl_float(height) + ";");
+    lines.push("static const float ASPECT = RES_X / RES_Y;");
+    for line in hlsl_camera() { lines.push(line); }
+    for line in hlsl_scene(scene) { lines.push(line); }
+    for line in [
+        "",
+        "// The distance to a sphere, or -1 for a miss. The quadratic assumes a",
+        "// unit direction: hand it a vector of length 1.08 and it returns a point",
+        "// that is not on the sphere, with no error to show for it.",
+        "float hit_sphere(float3 origin, float3 direction, float4 centre_radius) {",
+        "    float3 to_centre = origin - centre_radius.xyz;",
+        "    float b = dot(to_centre, direction);",
+        "    float c = dot(to_centre, to_centre) - centre_radius.w * centre_radius.w;",
+        "    float disc = b * b - c;",
+        "    if (disc < 0.0) { return -1.0; }",
+        "    float root = sqrt(disc);",
+        "    float near = -b - root;",
+        "    if (near > 0.0001) { return near; }",
+        "    float far = -b + root;",
+        "    if (far > 0.0001) { return far; }",
+        "    return -1.0;",
+        "}",
+        "",
+        "float hit_floor(float origin_y, float direction_y) {",
+        "    if (direction_y > -0.00001) { return -1.0; }",
+        "    float t = -origin_y / direction_y;",
+        "    return t > 0.0001 ? t : -1.0;",
+        "}",
+        "",
+        "// The sky, as a gradient. Both the miss path and the ambient term use it,",
+        "// so an object's dark side is the colour of the sky rather than black.",
+        "float3 sky(float up) {",
+        "    float t = saturate((up + 0.35) / 1.35);",
+        "    return lerp(SKY_HORIZON, SKY_TOP, t);",
+        "}",
+        "",
+        "// The colour arriving along one ray. depth is the reflection count:",
+        "// 0 for the primary ray, and a sphere with mirror > 0 sends one more.",
+        "float3 trace(float3 origin, float3 direction, int depth) {",
+        "    float nearest = -1.0;",
+        "    int which = -1;",
+        "    for (int i = 0; i < " + str(len(scene)) + "; i++) {",
+        "        float t = hit_sphere(origin, direction, SPHERES[i][0]);",
+        "        if (t > 0.0 && (nearest < 0.0 || t < nearest)) {",
+        "            nearest = t;",
+        "            which = i;",
+        "        }",
+        "    }",
+        "    float floor_t = hit_floor(origin.y, direction.y);",
+        "    bool on_floor = false;",
+        "    if (floor_t > 0.0 && (nearest < 0.0 || floor_t < nearest)) {",
+        "        nearest = floor_t;",
+        "        on_floor = true;",
+        "    }",
+        "    if (nearest < 0.0) {",
+        "        return sky(direction.y);",
+        "    }",
+        "",
+        "    float3 hit = origin + direction * nearest;",
+        "    float3 base;",
+        "    float3 normal;",
+        "    float mirror = 0.0;",
+        "    if (on_floor) {",
+        "        float squares = fmod(floor(hit.x) + floor(hit.z), 2.0);",
+        "        float tone = squares > 0.5 ? 0.45 : 0.72;",
+        "        float fade = 1.0 / (1.0 + nearest * 0.06);",
+        "        base = float3(tone * 0.9 * fade + 0.03,",
+        "                      tone * 0.9 * fade + 0.03,",
+        "                      tone * 0.95 * fade + 0.04);",
+        "        normal = float3(0.0, 1.0, 0.0);",
+        "        mirror = 0.18 * fade;",
+        "    } else {",
+        "        float4 centre_radius = SPHERES[which][0];",
+        "        base = SPHERES[which][1].rgb;",
+        "        mirror = SPHERES[which][1].a;",
+        "        normal = (hit - centre_radius.xyz) / centre_radius.w;",
+        "    }",
+        "    // Two-sided, so the inside of a sphere is lit rather than black.",
+        "    if (dot(direction, normal) > 0.0) { normal = -normal; }",
+        "",
+        "    float3 to_light = LIGHT - hit;",
+        "    float light_distance = length(to_light);",
+        "    to_light = to_light / light_distance;",
+        "",
+        "    // A shadow ray per sphere only: the floor is the only plane, and it",
+        "    // cannot shadow a point above it.",
+        "    float lit = 1.0;",
+        "    for (int j = 0; j < " + str(len(scene)) + "; j++) {",
+        "        float blocked = hit_sphere(hit + normal * 0.002, to_light, SPHERES[j][0]);",
+        "        if (blocked > 0.0 && blocked < light_distance) { lit = 0.12; }",
+        "    }",
+        "",
+        "    float diffuse = saturate(dot(normal, to_light));",
+        "    float3 halfway = normalize(to_light - direction);",
+        "    float specular = pow(saturate(dot(normal, halfway)), 48.0) * 0.55 * lit;",
+        "    float3 colour = base * (0.16 + diffuse * lit) + specular;",
+        "",
+        "    if (mirror > 0.01 && depth < 3) {",
+        "        float3 reflected = direction - 2.0 * dot(direction, normal) * normal;",
+        "        float3 bounce = trace(hit + normal * 0.002, reflected, depth + 1);",
+        "        colour = lerp(colour, bounce, mirror);",
+        "    }",
+        "    return colour;",
+        "}",
+        "",
+        "float4 main(float4 pixel : SV_Position) : SV_Target {",
+        "    // SV_Position is in pixels with y down; uv is 0..1 with y up.",
+        "    float2 p = float2(pixel.x / RES_X, 1.0 - pixel.y / RES_Y);",
+        "    float3 forward = normalize(LOOK_AT - EYE);",
+        "    float3 right = normalize(cross(float3(0.0, 1.0, 0.0), forward));",
+        "    float3 up = cross(forward, right);",
+        "    float3 direction = normalize(forward",
+        "        + right * (p.x - 0.5) * 2.0 * ASPECT * FIELD",
+        "        + up * (p.y - 0.5) * 2.0 * FIELD);",
+        "    float3 colour = trace(EYE, direction, 0);",
+        "    // Gamma: the shading above is linear, and a monitor is not.",
+        "    colour = pow(saturate(colour), 1.0 / 2.2);",
+        "    return float4(colour, 1.0);",
+        "}",
+        "",
+    ] { lines.push(line); }
+    return lines.join("\n");
+}
+
+// --- the screen --------------------------------------------------------------
+
+fn fullscreen_triangle() {
+    return [
+        -1.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+         3.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+        -1.0,  3.0, 1.0, 1.0, 1.0, 1.0,
+    ];
+}
+
+const RAMP = " .:-=+*#%@";
+
+fn ascii_preview(width, height, pixels, columns) {
+    let rows = max(1, int(columns * height / width / 2));
+    for row in range(0, rows) {
+        let line = "";
+        for column in range(0, columns) {
+            let x = int(column * width / columns);
+            // d3d12.pixels returns the bottom row first.
+            let y = height - 1 - int(row * height / rows);
+            let at = (y * width + x) * 4;
+            let luma = (pixels[at] * 0.299 + pixels[at + 1] * 0.587 + pixels[at + 2] * 0.114) / 255.0;
+            line = line + RAMP[int(luma * (len(RAMP) - 1))];
+        }
+        println(line);
+    }
+}
+
+fn main() {
+    let arguments = os.args();
+    let out = "raytrace_gpu.png";
+    let width = 640;
+    let height = 480;
+    let emit = "";
+    let show_ascii = false;
+
+    let index = 0;
+    while (index < len(arguments)) {
+        let argument = arguments[index];
+        if (argument == "--out" && index + 1 < len(arguments)) {
+            index += 1;
+            out = arguments[index];
+        } else if (argument == "--size" && index + 1 < len(arguments)) {
+            index += 1;
+            let parts = arguments[index].split("x");
+            if (len(parts) != 2) {
+                println("--size wants WIDTHxHEIGHT, not " + arguments[index]);
+                return;
+            }
+            width = int(parts[0]);
+            height = int(parts[1]);
+        } else if (argument == "--emit-hlsl" && index + 1 < len(arguments)) {
+            index += 1;
+            emit = arguments[index];
+        } else if (argument == "--ascii") {
+            show_ascii = true;
+        } else if (argument == "--help" || argument == "-h") {
+            usage();
+            return;
+        } else {
+            println("unknown option: " + argument);
+            usage();
+            return;
+        }
+        index += 1;
+    }
+
+    if (!d3d12.available()) {
+        println("Direct3D 12 is not available on this system, so the GPU ray tracer cannot run.");
+        println("the same scene traced on the CPU is examples/raytracer.tern, which needs no GPU.");
+        return;
+    }
+
+    let scene = make_scene();
+    let shader = pixel_shader(width, height, scene);
+    if (emit != "") {
+        fs.write(emit, shader);
+        println("wrote " + str(len(shader)) + " characters of HLSL to " + emit);
+    }
+
+    let target = nil;
+    try {
+        target = d3d12.create(width, height);
+    } catch (error) {
+        println("the device could not be created: " + str(error));
+        return;
+    }
+
+    let pipeline = nil;
+    try {
+        pipeline = d3d12.pipeline(target, vertex_shader(), shader);
+    } catch (error) {
+        // The compiler's message names the line in the generated source, which
+        // `--emit-hlsl` will have written out.
+        println("the shader did not compile: " + str(error));
+        d3d12.close(target);
+        return;
+    }
+
+    println("ray tracing " + str(width) + "x" + str(height) + " on " + d3d12.info()["name"] +
+            " with " + str(len(scene)) + " spheres.");
+
+    d3d12.clear(target, 0.0, 0.0, 0.0, 1);
+    let started = time.millis();
+    d3d12.draw(target, pipeline, fullscreen_triangle());
+    let written = d3d12.save(target, out);
+    let elapsed = time.millis() - started;
+
+    println("wrote " + out + ": " + str(written) + " bytes in " + str(elapsed) + " ms");
+    if (show_ascii) {
+        ascii_preview(width, height, d3d12.pixels(target), 72);
+    }
+    d3d12.close(target);
+    println("read the same scene traced on the CPU: tern run examples/raytracer.tern");
+}
+
+main();

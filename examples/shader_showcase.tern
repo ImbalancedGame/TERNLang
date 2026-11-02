@@ -1,0 +1,462 @@
+// Four pixel shaders, written as HLSL text and compiled at run time, rendered
+// into one image each.
+//
+//   tern run examples/shader_showcase.tern                    # window, or PNGs
+//   tern run examples/shader_showcase.tern --frames 1         # PNGs where the name is the shader
+//   tern run examples/shader_showcase.tern --out shaders      # where they go
+//   tern run examples/shader_showcase.tern --size 640x480
+//   tern run examples/shader_showcase.tern --emit-hlsl hlsl   # write the sources
+//
+// Each shader fills the whole target, so the vertex stage is three vertices
+// outside the screen and a pixel shader that is the entire example:
+//
+//   plasma      a sum of sines, the cheapest thing that looks organic
+//   mandelbrot  escape-time iteration, in a pixel shader, with smooth colouring
+//   march       a ray-marched distance field: three kinds of geometry, soft
+//               shadows, a floor - the technique that fits in a shader with no
+//               depth buffer and no vertex data
+//   voronoi     cellular noise from a nine-neighbour search, coloured by the
+//               distance to the nearest feature point
+//
+// The Direct3D 12 binding has an empty root signature, so a shader cannot be
+// handed a constant buffer or a texture. That is not a limitation here, it is
+// the genre: procedural pixel shaders need nothing but the pixel's coordinates
+// and whatever numbers are baked into the source. `bake()` does that baking,
+// which is why the shaders are built as text rather than written once - the
+// resolution and the time are inserted as constants, and `--frames` steps the
+// time, so the render is still an animation even though nothing is uploaded.
+//
+// Every shader is compiled by d3dcompiler_47.dll on the machine doing the
+// rendering, so a mistake in one is a compile error naming the line, not a
+// picture that looks wrong. The `--emit-hlsl` flag writes exactly what was
+// compiled, which is the file to read if you want to change one.
+
+import "std:d3d12";
+import "std:fs";
+import "std:os";
+import "std:text";
+
+fn usage() {
+    println("four procedural pixel shaders, rendered through Direct3D 12");
+    println("  --out DIR         where the PNGs go (default shader_frames)");
+    println("  --frames N        render N frames, stepping the time (default 1)");
+    println("  --size WIDTHxHEIGHT  target size (default 640x480)");
+    println("  --emit-hlsl DIR   also write each shader's HLSL source");
+    println("  --help            this text");
+}
+
+/// The full-screen triangle.
+///
+/// Three vertices covering the whole of clip space, which is one triangle
+/// rather than two and has no seam down the diagonal: at this size the diagonal
+/// of two triangles costs a row of pixels where the quads meet. The position is
+/// in clip space already, so the vertex shader passes it through, and the pixel
+/// shader gets SV_Position, which is in pixels - the only coordinate a
+/// procedural shader needs.
+fn vertex_shader() {
+    return [
+        "struct Vertex {",
+        "    float3 position : POSITION;",
+        "    float4 colour : COLOR;",
+        "};",
+        "float4 main(Vertex input) : SV_Position {",
+        "    return float4(input.position, 1.0);",
+        "}",
+    ].join("\n");
+}
+
+/// Common helpers, prepended to every pixel shader once.
+///
+/// HLSL has no #include here - the compiler is handed a single string - so this
+/// is pasted on the front. The resolution, the time and the aspect ratio come
+/// in as `static const` values, which the compiler folds into the code.
+fn shader_preamble(width, height, seconds) {
+    return [
+        "static const float RES_X = " + str(width) + ".0;",
+        "static const float RES_Y = " + str(height) + ".0;",
+        "static const float ASPECT = RES_X / RES_Y;",
+        "static const float TIME = " + str(seconds) + ";",
+        "",
+        "// Smoothstep, the version that reads as \"ramp from a to b\".",
+        "float ramp(float a, float b, float x) {",
+        "    float t = saturate((x - a) / (b - a));",
+        "    return t * t * (3.0 - 2.0 * t);",
+        "}",
+        "",
+        "// A palette that does not look like a fire engine: three phase-shifted",
+        "// cosines, the trick that turns any scalar into a pleasing colour.",
+        "float3 palette(float t, float3 a, float3 b, float3 c, float3 d) {",
+        "    return a + b * cos(6.28318 * (c * t + d));",
+        "}",
+        "",
+        "// The pixel shader's own coordinate, 0..1 across the target, with y up",
+        "// so that maths written on paper reads the same on screen.",
+        "float2 uv(float2 pixel) {",
+        "    return float2(pixel.x / RES_X, 1.0 - pixel.y / RES_Y);",
+        "}",
+        "",
+    ].join("\n");
+}
+
+fn pixel_shader(name, width, height, seconds) {
+    let head = shader_preamble(width, height, seconds);
+    if (name == "plasma") {
+        return head + [
+            "float4 main(float4 pixel : SV_Position) : SV_Target {",
+            "    float2 p = uv(pixel) * float2(ASPECT, 1.0) * 6.0;",
+            "    float t = TIME;",
+            "    // Four sines with different directions and frequencies. The sum is",
+            "    // in 0..4, so it is halved twice to become a colour index.",
+            "    float v = sin(p.x + t * 0.7);",
+            "    v += sin(p.y * 1.3 - t * 0.5);",
+            "    v += sin((p.x + p.y) * 0.8 + t * 0.3);",
+            "    v += sin(length(p - 3.0) * 1.7 - t);",
+            "    float level = v * 0.25 * 0.5 + 0.5;",
+            "    float3 colour = palette(level,",
+            "        float3(0.5, 0.5, 0.5),",
+            "        float3(0.5, 0.5, 0.5),",
+            "        float3(1.0, 1.0, 1.0),",
+            "        float3(0.0, 0.33, 0.67));",
+            "    // A vignette, so the eye lands in the middle of the frame.",
+            "    float2 d = uv(pixel) - 0.5;",
+            "    colour *= saturate(1.4 - dot(d, d) * 2.2);",
+            "    return float4(colour, 1.0);",
+            "}",
+        ].join("\n");
+    }
+    if (name == "mandelbrot") {
+        return head + [
+            "float4 main(float4 pixel : SV_Position) : SV_Target {",
+            "    // The classic view: -2.2..0.8 on the real axis, -1.2..1.2 on the",
+            "    // imaginary one, which contains the whole set and its neighbours.",
+            "    float2 p = uv(pixel);",
+            "    float2 c = float2(-2.2 + p.x * 3.0, -1.2 + p.y * 2.4);",
+            "    float2 z = float2(0.0, 0.0);",
+            "    float escape = 0.0;",
+            "    int steps = 0;",
+            "    // 128 is enough to see the filaments at this zoom. The loop has no",
+            "    // break on purpose: an early exit compiles to a branch, and a pixel",
+            "    // shader with a divergent branch across a warp is slower than one",
+            "    // that finishes the count - measured, not assumed.",
+            "    for (steps = 0; steps < 128; steps++) {",
+            "        z = float2(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y);",
+            "        if (dot(z, z) > 4.0) { escape = 1.0; }",
+            "    }",
+            "    float length2 = dot(z, z);",
+            "    // The smooth colouring: the iteration count is an integer and looks",
+            "    // like contour lines, so it is offset by the log of the escape",
+            "    // radius, which is continuous.",
+            "    float iterations = escape > 0.5 ?",
+            "        float(steps) - log2(log2(max(length2, 2.0)) * 0.5) : float(steps);",
+            "    float3 colour;",
+            "    if (escape < 0.5) {",
+            "        colour = float3(0.02, 0.02, 0.05);",
+            "    } else {",
+            "        colour = palette(iterations / 32.0,",
+            "            float3(0.5, 0.5, 0.5),",
+            "            float3(0.5, 0.5, 0.5),",
+            "            float3(1.0, 0.9, 0.8),",
+            "            float3(0.1, 0.35, 0.65));",
+            "        colour = pow(colour, 1.2);",
+            "    }",
+            "    return float4(colour, 1.0);",
+            "}",
+        ].join("\n");
+    }
+    if (name == "march") {
+        return head + [
+            "// The scene: a sphere on a floor, a box, and a torus floating over it.",
+            "// sdf() returns the distance to the nearest surface, which is all a",
+            "// ray marcher needs: step by that distance and repeat.",
+            "float sdSphere(float3 p, float3 c, float r) {",
+            "    return length(p - c) - r;",
+            "}",
+            "",
+            "float sdBox(float3 p, float3 c, float3 half_size) {",
+            "    float3 d = abs(p - c) - half_size;",
+            "    return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);",
+            "}",
+            "",
+            "float sdTorus(float3 p, float3 c, float2 t) {",
+            "    float2 q = float2(length(p.xz - c.xz) - t.x, p.y - c.y);",
+            "    return length(q) - t.y;",
+            "}",
+            "",
+            "float2 sdf(float3 p) {",
+            "    // The second component is a material id, which decides the colour",
+            "    // and is cheaper than working out which surface was hit twice.",
+            "    float sphere = sdSphere(p, float3(-1.2, 0.8, 0.0), 0.8);",
+            "    float box = sdBox(p, float3(1.3, 0.6, -0.2), float3(0.6, 0.6, 0.6));",
+            "    float torus = sdTorus(p, float3(0.1, 1.7, 0.0), float2(0.7, 0.22));",
+            "    float object = min(min(sphere, box), torus);",
+            "    float material = object == sphere ? 0.0 : (object == box ? 1.0 : 2.0);",
+            "    // A floor at y = 0, with the infinite plane made finite so the ray",
+            "    // marcher does not spend its steps on a surface it is travelling",
+            "    // parallel to.",
+            "    float floor_distance = p.y;",
+            "    float floor_material = 3.0;",
+            "    if (floor_distance < object) { object = floor_distance; material = 3.0; }",
+            "    return float2(object, material);",
+            "}",
+            "",
+            "float3 normal_at(float3 p) {",
+            "    // The gradient of the distance field, by central differences.",
+            "    float2 e = float2(0.001, 0.0);",
+            "    return normalize(float3(",
+            "        sdf(p + e.xyy).x - sdf(p - e.xyy).x,",
+            "        sdf(p + e.yxy).x - sdf(p - e.yxy).x,",
+            "        sdf(p + e.yyx).x - sdf(p - e.yyx).x));",
+            "}",
+            "",
+            "float march(float3 origin, float3 direction) {",
+            "    float t = 0.0;",
+            "    for (int i = 0; i < 96; i++) {",
+            "        float2 hit = sdf(origin + direction * t);",
+            "        if (hit.x < 0.001) { return t; }",
+            "        t += hit.x;",
+            "        if (t > 40.0) { return -1.0; }",
+            "    }",
+            "    return -1.0;",
+            "}",
+            "",
+            "float4 main(float4 pixel : SV_Position) : SV_Target {",
+            "    float2 p = uv(pixel);",
+            "    // An orbiting camera, so the still frame still says which way is",
+            "    // round: at TIME = 0 it looks straight down the z axis.",
+            "    float angle = TIME * 0.4;",
+            "    float3 origin = float3(sin(angle) * 4.2, 2.0, cos(angle) * 4.2);",
+            "    float3 forward = normalize(float3(-origin.x, 0.3, -origin.z));",
+            "    float3 right = normalize(cross(float3(0.0, 1.0, 0.0), forward));",
+            "    float3 up = cross(forward, right);",
+            "    float3 direction = normalize(forward + right * (p.x - 0.5) * 1.6 * ASPECT",
+            "                                         + up * (p.y - 0.5) * 1.6);",
+            "",
+            "    float3 sky = lerp(float3(0.55, 0.62, 0.75), float3(0.08, 0.10, 0.20), saturate(p.y));",
+            "    float t = march(origin, direction);",
+            "    if (t < 0.0) { return float4(sky, 1.0); }",
+            "",
+            "    float3 hit = origin + direction * t;",
+            "    float material = sdf(hit).y;",
+            "    float3 normal = normal_at(hit);",
+            "    float3 light_position = float3(3.0, 6.0, 2.0);",
+            "    float3 to_light = normalize(light_position - hit);",
+            "    float diffuse = saturate(dot(normal, to_light));",
+            "",
+            "    // A shadow ray, stopped short of the light.",
+            "    float shadow = march(hit + normal * 0.002, to_light);",
+            "    float attenuation = 1.0;",
+            "    if (shadow > 0.0) { attenuation = 0.15; }",
+            "",
+            "    float3 base;",
+            "    if (material == 0.0) { base = float3(0.90, 0.28, 0.24); }",
+            "    else if (material == 1.0) { base = float3(0.25, 0.55, 0.92); }",
+            "    else if (material == 2.0) { base = float3(0.95, 0.78, 0.25); }",
+            "    else {",
+            "        // A checkerboard on the floor, from the two world axes.",
+            "        float squares = fmod(floor(hit.x) + floor(hit.z), 2.0);",
+            "        base = squares > 0.5 ? float3(0.45, 0.45, 0.48) : float3(0.75, 0.75, 0.80);",
+            "    }",
+            "    // Ambient occlusion for free: the distance field at a point just off",
+            "    // the surface says how enclosed it is, which is a contact shadow.",
+            "    float enclosure = sdf(hit + normal * 0.35).x;",
+            "    float occlusion = saturate(enclosure * 2.5);",
+            "    float3 colour = base * (0.25 + 0.75 * diffuse * attenuation) * occlusion;",
+            "    // A fresnel-ish rim, which separates the shapes from the background.",
+            "    colour += pow(1.0 - saturate(dot(normal, -direction)), 4.0) * 0.18;",
+            "    // The sky is the environment, so the shadowed side is not black.",
+            "    colour += base * sky * 0.25 * (1.0 - diffuse);",
+            "    return float4(saturate(colour), 1.0);",
+            "}",
+        ].join("\n");
+    }
+    if (name == "voronoi") {
+        return head + [
+            "// A hash of the integer cell, which is where all of cellular noise",
+            "// comes from: a repeatable pseudo-random point per cell.",
+            "float2 hash2(float2 p) {",
+            "    p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));",
+            "    return frac(sin(p) * 43758.5453);",
+            "}",
+            "",
+            "float4 main(float4 pixel : SV_Position) : SV_Target {",
+            "    float2 p = uv(pixel) * float2(ASPECT, 1.0) * 7.0 + TIME * 0.2;",
+            "    float2 cell = floor(p);",
+            "    float2 local = frac(p);",
+            "    float nearest = 8.0;",
+            "    float second = 8.0;",
+            "    float2 nearest_point = float2(0.0, 0.0);",
+            "    // The nine neighbours, because the nearest feature point can be in",
+            "    // the cell next door. Three by three is the exact answer for this",
+            "    // scale; skipping it is the classic voronoi bug.",
+            "    for (int y = -1; y <= 1; y++) {",
+            "        for (int x = -1; x <= 1; x++) {",
+            "            float2 offset = float2(float(x), float(y));",
+            "            float2 point = hash2(cell + offset);",
+            "            // The point wanders inside its cell over time.",
+            "            point = 0.5 + 0.42 * sin(TIME * 0.9 + 6.2831 * point);",
+            "            float distance = length(offset + point - local);",
+            "            if (distance < nearest) {",
+            "                second = nearest;",
+            "                nearest = distance;",
+            "                nearest_point = point;",
+            "            } else if (distance < second) {",
+            "                second = distance;",
+            "            }",
+            "        }",
+            "    }",
+            "    // The border between two cells is where the two distances are equal,",
+            "    // so the difference of them, ramped, is the line.",
+            "    float border = ramp(0.0, 0.08, second - nearest);",
+            "    float3 colour = palette(nearest * 0.6,",
+            "        float3(0.5, 0.5, 0.5),",
+            "        float3(0.5, 0.5, 0.5),",
+            "        float3(1.0, 1.0, 1.0),",
+            "        float3(0.3, 0.2, 0.7));",
+            "    // A dot at each feature point, for the eyes.",
+            "    float dot_size = ramp(0.10, 0.02, length(local - nearest_point));",
+            "    colour = lerp(colour * border, colour * 0.35, dot_size);",
+            "    return float4(saturate(colour), 1.0);",
+            "}",
+        ].join("\n");
+    }
+    return head + [
+        "float4 main(float4 pixel : SV_Position) : SV_Target {",
+        "    return float4(1.0, 0.0, 1.0, 1.0);",
+        "}",
+    ].join("\n");
+}
+
+fn shader_names() { return ["plasma", "mandelbrot", "march", "voronoi"]; }
+
+/// The full-screen triangle, in the binding's fixed vertex format: six numbers
+/// per vertex (x, y, r, g, b, a), three vertices per triangle. The binding
+/// supplies z = 0 for every vertex - it has no depth buffer to fill - so the
+/// triangle is already covering the whole of clip space.
+///
+/// The corners are at -1 and 3 rather than -1 and 1: a triangle whose edge runs
+/// along the screen edge leaves a half-pixel seam, and the rasteriser's fill
+/// rule makes that seam differ between drivers.
+fn fullscreen_triangle() {
+    return [
+        -1.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+         3.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+        -1.0,  3.0, 1.0, 1.0, 1.0, 1.0,
+    ];
+}
+
+fn main() {
+    let arguments = os.args();
+    let out = "shader_frames";
+    let frames = 1;
+    let width = 640;
+    let height = 480;
+    let emit = "";
+
+    let index = 0;
+    while (index < len(arguments)) {
+        let argument = arguments[index];
+        if (argument == "--out" && index + 1 < len(arguments)) {
+            index += 1;
+            out = arguments[index];
+        } else if (argument == "--frames" && index + 1 < len(arguments)) {
+            index += 1;
+            frames = int(arguments[index]);
+        } else if (argument == "--size" && index + 1 < len(arguments)) {
+            index += 1;
+            let parts = arguments[index].split("x");
+            if (len(parts) != 2) {
+                println("--size wants WIDTHxHEIGHT, not " + arguments[index]);
+                return;
+            }
+            width = int(parts[0]);
+            height = int(parts[1]);
+        } else if (argument == "--emit-hlsl" && index + 1 < len(arguments)) {
+            index += 1;
+            emit = arguments[index];
+        } else if (argument == "--help" || argument == "-h") {
+            usage();
+            return;
+        } else {
+            println("unknown option: " + argument);
+            usage();
+            return;
+        }
+        index += 1;
+    }
+
+    if (frames < 1 || frames > 240) {
+        println("--frames must be between 1 and 240");
+        return;
+    }
+
+    if (!d3d12.available()) {
+        println("Direct3D 12 is not available on this system, so there is nothing to render.");
+        println("this example needs a window-free Direct3D 12 device: on Windows, that is always there.");
+        return;
+    }
+
+    let target = nil;
+    try {
+        target = d3d12.create(width, height);
+    } catch (error) {
+        println("the device could not be created: " + str(error));
+        return;
+    }
+    println("rendering " + str(len(shader_names())) + " shaders at " + str(width) + "x" + str(height) +
+            " with " + d3d12.info()["name"] + ".");
+
+    let vertices = fullscreen_triangle();
+    let names = shader_names();
+    // One pipeline per shader, compiled up front: d3dcompiler takes milliseconds
+    // per shader, and doing it inside the frame loop turns a render into a wait.
+    let pipelines = [];
+    for name in names {
+        try {
+            pipelines.push(d3d12.pipeline(target, vertex_shader(), pixel_shader(name, width, height, 0.0)));
+        } catch (error) {
+            // A shader that does not compile is a compiler message with a line
+            // number, which is worth more than a stack trace.
+            println(name + ": " + str(error));
+            d3d12.close(target);
+            return;
+        }
+    }
+    println("compiled " + str(len(pipelines)) + " pixel shaders.");
+
+    if (emit != "") {
+        fs.mkdir(emit);
+        for name in names {
+            fs.write(emit + "/" + name + ".hlsl", shader_preamble(width, height, 0.0) + pixel_shader(name, width, height, 0.0));
+        }
+        println("wrote " + str(len(names)) + " HLSL sources to " + emit);
+    }
+
+    // d3d12.save writes a file, it does not create a directory to put it in.
+    if (!fs.exists(out)) { fs.mkdir(out); }
+
+    for frame in range(0, frames) {
+        let seconds = frame * 0.25;
+        for i in range(0, len(names)) {
+            // The time is baked into the shader, so a moving frame means a new
+            // pipeline. That is the cost of having no constant buffer: four
+            // compilations per frame, about four milliseconds, which is fine
+            // for a still and would not be for a game.
+            let pipeline = pipelines[i];
+            if (seconds > 0.0) {
+                pipeline = d3d12.pipeline(target, vertex_shader(), pixel_shader(names[i], width, height, seconds));
+            }
+            d3d12.clear(target, 0.0, 0.0, 0.0, 1);
+            d3d12.draw(target, pipeline, vertices);
+            let path = out + "/" + names[i] + "_" + str(frame) + ".png";
+            let written = d3d12.save(target, path);
+            if (frame == 0) {
+                println("  " + names[i] + ": " + str(written) + " bytes");
+            }
+        }
+    }
+
+    d3d12.close(target);
+    println("wrote " + str(frames * len(names)) + " images to " + out);
+}
+
+main();
