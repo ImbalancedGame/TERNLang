@@ -1,0 +1,59 @@
+// Field widths, alignment, precision, bases and grouping in `format`. Every
+// program that prints a table, a timing or a percentage used to spell this out
+// with padEnd and string arithmetic; the same text now comes from one
+// specification, and the compiled backend produces the same bytes.
+import "std:text";
+
+// --- numbers ----------------------------------------------------------------
+println(format("{:.2f}", 3.14159));
+println(format("{:8.2f}|", 3.14159));
+println(format("{:<8.2f}|", 3.14159));
+println(format("{:^8.2f}|", 3.14159));
+println(format("{:08.3f}", -3.14159));
+println(format("{:+.1f} {:+.1f}", 2.5, -2.5));
+println(format("{: d} {: d}", 7, -7));
+println(format("{:,}", 1234567));
+println(format("{:,.2f}", -1234567.891));
+println(format("{:x} {:X} {:o} {:b}", 48879, 48879, 8, 10));
+println(format("{:.1%} {:%} {:.0%}", 0.1234, 0.5, 0.75));
+println(format("{:e}", 1234.5));
+println(format("{:.3e}", 0.000123));
+
+// A type with no fractional digits refuses a fraction rather than truncating.
+try {
+    format("{:d}", 3.9);
+} catch (error) {
+    println(str(error));
+}
+
+// --- text -------------------------------------------------------------------
+println(format("{:>6}|{:<6}|{:^6}|", "ab", "ab", "ab"));
+println(format("{:*^9}|", "mid"));
+println(format("{:.3}", "truncated"));
+println(format("{:s}", 42));
+
+// --- mixing -----------------------------------------------------------------
+println(format("{0} then {1} then {0}", "a", "b"));
+println(format("{0:>4}", "x"));
+println(format("{} and {:.1f}", 1.0, 2.0));
+println(format("{{literal}} {:.0f}", 2.6));
+
+// A placeholder with no specification prints exactly what the value prints as,
+// which is what makes padding a value safe.
+println(format("{} | {:>8}", 3.0, 3.0));
+println(format("{} | {:>8}", 3, 3));
+
+// --- errors -----------------------------------------------------------------
+fn outcome(template, value) {
+    try {
+        return format(template, value);
+    } catch (error) {
+        return str(error);
+    }
+}
+
+println(outcome("{:q}", 1));
+println(outcome("{:d}", "abc"));
+println(outcome("{:.f}", 1.5));
+println(outcome("{:>99999}", 1));
+println(outcome("{nope}", 1));

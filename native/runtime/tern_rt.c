@@ -3593,6 +3593,359 @@ static Value r_each(int argc, Value *argv) {
 
 
 // `"{0} and {}"` style formatting, shared with the Text namespace.
+// ---- format specifications -------------------------------------------------
+//
+// The same grammar as TERN/Builtins/FormatSpec.cs, and deliberately the same
+// output: `{[[fill]align][sign][0][width][,][.precision][type]}`. A program's
+// text is compared byte for byte between the interpreter and a compiled binary,
+// so every branch here mirrors one there.
+
+typedef struct FormatSpec {
+    char fill;
+    char align;      // 0 when not given
+    char sign;       // 0 when not given
+    bool zero;
+    int width;
+    bool thousands;
+    int precision;   // -1 when not given
+    char type;       // 0 when not given
+} FormatSpec;
+
+static bool spec_is_align(char c) { return c == '<' || c == '>' || c == '^'; }
+
+static bool spec_is_type(char c) {
+    return c == 'd' || c == 'f' || c == 'e' || c == 'x' || c == 'X' || c == 'o' || c == 'b' ||
+           c == '%' || c == 's';
+}
+
+/// Parses a specification between the colon and the closing brace. Reports a
+/// FormatError for anything it cannot make sense of, naming what it accepts:
+/// a spec is short enough to describe in the message, and the alternative is a
+/// program that prints the wrong thing on one machine.
+static void parse_format_spec(const char *text, size_t len, FormatSpec *spec) {
+    spec->fill = ' ';
+    spec->align = '\0';
+    spec->sign = '\0';
+    spec->zero = false;
+    spec->width = 0;
+    spec->thousands = false;
+    spec->precision = -1;
+    spec->type = '\0';
+
+    size_t index = 0;
+
+    if (len >= 2 && spec_is_align(text[1])) {
+        spec->fill = text[0];
+        spec->align = text[1];
+        index = 2;
+    } else if (len >= 1 && spec_is_align(text[0])) {
+        spec->align = text[0];
+        index = 1;
+    }
+
+    if (index < len && (text[index] == '+' || text[index] == '-' || text[index] == ' ')) {
+        spec->sign = text[index++];
+    }
+
+    if (index < len && text[index] == '0') {
+        spec->zero = true;
+        index++;
+    }
+
+    while (index < len && text[index] >= '0' && text[index] <= '9') {
+        spec->width = spec->width * 10 + (text[index] - '0');
+        index++;
+    }
+
+    if (spec->width > 4096) {
+        tern_panic("FormatError", "format width %d is too wide; the limit is 4096", spec->width);
+    }
+
+    if (index < len && text[index] == ',') {
+        spec->thousands = true;
+        index++;
+    }
+
+    if (index < len && text[index] == '.') {
+        index++;
+        int value = 0;
+        bool any = false;
+        while (index < len && text[index] >= '0' && text[index] <= '9') {
+            value = value * 10 + (text[index] - '0');
+            any = true;
+            index++;
+        }
+
+        if (!any) {
+            tern_panic("FormatError", "the precision in '{%.*s}' needs a number, as in '.2f'",
+                       (int)len, text);
+        }
+
+        if (value > 100) {
+            tern_panic("FormatError", "the precision in '{%.*s}' is %d; the limit is 100 digits",
+                       (int)len, text, value);
+        }
+
+        spec->precision = value;
+    }
+
+    if (index < len) {
+        spec->type = text[index++];
+        if (!spec_is_type(spec->type)) {
+            tern_panic("FormatError",
+                       "unknown format type '%c' in '{%.*s}'; the types are d, f, e, x, X, o, b, %%, s",
+                       spec->type, (int)len, text);
+        }
+    }
+
+    if (index < len) {
+        tern_panic("FormatError",
+                   "'%.*s' is not a format specification: the shape is "
+                   "{[fill]align[sign][0][width][,][.precision][type]}, such as '>8.2f'",
+                   (int)len, text);
+    }
+}
+
+/// The value as whole-number digits, for a type with no fractional part.
+/// A float that is not whole is refused rather than quietly truncated.
+static uint64_t spec_whole(Value value, char type) {
+    if (value.tag != T_FLOAT) {
+        int64_t number = value.as.i;
+        return (uint64_t)(number < 0 ? -number : number);
+    }
+
+    double number = v_as_double(value);
+    if (number != floor(number)) {
+        tern_panic("FormatError",
+                   "format type '%c' wants a whole number, and %s is not one; "
+                   "use '{:.0f}' to round it or int() to cut off the fraction",
+                   type, ((Str *)tern_to_string(value).as.o)->chars);
+    }
+
+    return (uint64_t)(number < 0 ? -number : number);
+}
+
+static void spec_put_uint(Buf *out, uint64_t value, char type) {
+    const char *digits = type == 'x' ? "0123456789abcdef"
+                       : type == 'X' ? "0123456789ABCDEF"
+                       : type == 'o' ? "01234567"
+                       : type == 'b' ? "01"
+                                     : "0123456789";
+    uint64_t radix = type == 'x' || type == 'X' ? 16
+                   : type == 'o' ? 8
+                   : type == 'b' ? 2
+                                 : 10;
+
+    if (value == 0) {
+        buf_add_char(out, '0');
+        return;
+    }
+
+    char buffer[70];
+    int used = 0;
+    while (value > 0) {
+        buffer[used++] = digits[value % radix];
+        value /= radix;
+    }
+
+    while (used > 0) {
+        buf_add_char(out, buffer[--used]);
+    }
+}
+
+/// Inserts a comma every three digits, leaving a fractional part alone.
+static void spec_group(Buf *out, const char *text, size_t len) {
+    size_t point = len;
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] == '.') {
+            point = i;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < point; i++) {
+        if (i > 0 && (point - i) % 3 == 0) {
+            buf_add_char(out, ',');
+        }
+        buf_add_char(out, text[i]);
+    }
+
+    if (point < len) {
+        buf_add(out, text + point, len - point);
+    }
+}
+
+static void spec_pad(Buf *out, const char *prefix, size_t prefix_len, Buf *body,
+                     const char *suffix, size_t suffix_len, const FormatSpec *spec, bool number) {
+    size_t content = prefix_len + body->len + suffix_len;
+    if ((int)content >= spec->width) {
+        buf_add(out, prefix, prefix_len);
+        buf_add(out, body->data, body->len);
+        buf_add(out, suffix, suffix_len);
+        return;
+    }
+
+    char fill = spec->zero && spec->align == '\0' ? '0' : spec->fill;
+    char align = spec->align;
+    if (align == '\0') {
+        align = spec->zero ? '=' : (number ? '>' : '<');
+    }
+
+    size_t padding = (size_t)spec->width - content;
+
+    if (align == '<') {
+        buf_add(out, prefix, prefix_len);
+        buf_add(out, body->data, body->len);
+        buf_add(out, suffix, suffix_len);
+        for (size_t i = 0; i < padding; i++) buf_add_char(out, fill);
+        return;
+    }
+
+    if (align == '^') {
+        size_t left = padding / 2;
+        for (size_t i = 0; i < left; i++) buf_add_char(out, fill);
+        buf_add(out, prefix, prefix_len);
+        buf_add(out, body->data, body->len);
+        buf_add(out, suffix, suffix_len);
+        for (size_t i = 0; i < padding - left; i++) buf_add_char(out, fill);
+        return;
+    }
+
+    if (align == '=') {
+        // Zero padding sits between the sign and the digits.
+        buf_add(out, prefix, prefix_len);
+        for (size_t i = 0; i < padding; i++) buf_add_char(out, fill);
+        buf_add(out, body->data, body->len);
+        buf_add(out, suffix, suffix_len);
+        return;
+    }
+
+    for (size_t i = 0; i < padding; i++) buf_add_char(out, fill);
+    buf_add(out, prefix, prefix_len);
+    buf_add(out, body->data, body->len);
+    buf_add(out, suffix, suffix_len);
+}
+
+/// Renders one value as one specification asks, appending to `out`.
+static void render_format_spec(Buf *out, Value value, const FormatSpec *spec) {
+    bool number = v_is_num(value);
+    char type = spec->type;
+
+    if ((type == 'd' || type == 'x' || type == 'X' || type == 'o' || type == 'b') && !number) {
+        tern_panic("FormatError", "format type '%c' wants a number, not %s", type,
+                   ((Str *)tern_to_debug(value))->chars);
+    }
+
+    if ((type == 'f' || type == 'e' || type == '%') && !number) {
+        tern_panic("FormatError", "format type '%c' wants a number, not %s", type,
+                   ((Str *)tern_to_debug(value))->chars);
+    }
+
+    bool negative = number && (value.tag == T_INT ? (value.as.i) < 0 : v_as_double(value) < 0);
+
+    Buf body;
+    buf_init(&body);
+    char prefix[2] = {0, 0};
+    char suffix[2] = {0, 0};
+    size_t suffix_len = 0;
+
+    switch (type) {
+        case 'x':
+        case 'X':
+        case 'o':
+        case 'b':
+            spec_put_uint(&body, spec_whole(value, type), type);
+            break;
+
+        case 'd':
+            spec_put_uint(&body, spec_whole(value, 'd'), 'd');
+            break;
+
+        case 'e': {
+            double magnitude = fabs(value.tag == T_INT ? (double)(value.as.i) : v_as_double(value));
+            char buffer[128];
+            int written = snprintf(buffer, sizeof buffer, "%.*e",
+                                   spec->precision < 0 ? 6 : spec->precision, magnitude);
+            buf_add(&body, buffer, (size_t)written);
+            break;
+        }
+
+        case '%': {
+            double magnitude = fabs(value.tag == T_INT ? (double)(value.as.i) : v_as_double(value)) * 100.0;
+            char buffer[128];
+            int written = snprintf(buffer, sizeof buffer, "%.*f",
+                                   spec->precision < 0 ? 1 : spec->precision, magnitude);
+            buf_add(&body, buffer, (size_t)written);
+            suffix[0] = '%';
+            suffix_len = 1;
+            break;
+        }
+
+        case 'f': {
+            double magnitude = fabs(value.tag == T_INT ? (double)(value.as.i) : v_as_double(value));
+            char buffer[128];
+            int written = snprintf(buffer, sizeof buffer, "%.*f",
+                                   spec->precision < 0 ? 6 : spec->precision, magnitude);
+            buf_add(&body, buffer, (size_t)written);
+            break;
+        }
+
+        case 's': {
+            Value text = v_is_str(value) ? value : tern_to_string(value);
+            Str *piece = (Str *)text.as.o;
+            buf_add(&body, piece->chars, piece->len);
+            break;
+        }
+
+        default: {
+            if (number) {
+                if (spec->precision >= 0) {
+                    double magnitude =
+                        fabs(value.tag == T_INT ? (double)(value.as.i) : v_as_double(value));
+                    char buffer[128];
+                    int written = snprintf(buffer, sizeof buffer, "%.*f", spec->precision, magnitude);
+                    buf_add(&body, buffer, (size_t)written);
+                } else {
+                    // Exactly what the value prints as, minus the sign: the prefix
+                    // puts that back, so `{:>6}` of -3.0 is "  -3.0".
+                    Str *printed = (Str *)tern_to_string(value).as.o;
+                    size_t start = printed->len > 0 && printed->chars[0] == '-' ? 1 : 0;
+                    buf_add(&body, printed->chars + start, printed->len - start);
+                }
+            } else {
+                Str *printed = (Str *)tern_to_string(value).as.o;
+                size_t keep = printed->len;
+                if (spec->precision >= 0 && (size_t)spec->precision < keep) {
+                    keep = (size_t)spec->precision;
+                }
+                buf_add(&body, printed->chars, keep);
+            }
+            break;
+        }
+    }
+
+    if (spec->thousands && number) {
+        Buf grouped;
+        buf_init(&grouped);
+        spec_group(&grouped, body.data, body.len);
+        free(body.data);
+        body = grouped;
+    }
+
+    if (number) {
+        if (negative) {
+            prefix[0] = '-';
+        } else if (spec->sign == '+') {
+            prefix[0] = '+';
+        } else if (spec->sign == ' ') {
+            prefix[0] = ' ';
+        }
+    }
+
+    spec_pad(out, prefix, prefix[0] ? 1 : 0, &body, suffix, suffix_len, spec, number);
+    free(body.data);
+}
+
 static Value format_template(Value template_value, int argc, Value *argv) {
     Str *template = (Str *)template_value.as.o;
     const char *text = template->chars;
@@ -3624,8 +3977,19 @@ static Value format_template(Value template_value, int argc, Value *argv) {
             while (begin < end && (text[begin] == ' ' || text[begin] == '\t')) begin++;
             while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t')) end--;
 
+            // `{0:.2f}` is an index and a spec; `{:.2f}` is a spec alone.
+            int colon = -1;
+            for (int i = begin; i < end; i++) {
+                if (text[i] == ':') {
+                    colon = i;
+                    break;
+                }
+            }
+
+            int position_end = colon >= 0 ? colon : end;
+
             Value value;
-            if (begin == end) {
+            if (begin == position_end) {
                 if (argument >= argc) {
                     free(buffer);
                     tern_panic("FormatError", "not enough arguments for format string");
@@ -3634,13 +3998,16 @@ static Value format_template(Value template_value, int argc, Value *argv) {
             } else {
                 int position = 0;
                 bool numeric = true;
-                for (int i = begin; i < end; i++) {
+                for (int i = begin; i < position_end; i++) {
                     if (text[i] < '0' || text[i] > '9') { numeric = false; break; }
                     position = position * 10 + (text[i] - '0');
                 }
                 if (!numeric) {
                     free(buffer);
-                    tern_panic("FormatError", "unsupported format specifier");
+                    tern_panic("FormatError",
+                               "unsupported format specifier '{%.*s}'; the shape is {index:spec}, "
+                               "such as {0:.2f} or {:>8}",
+                               end - begin, text + begin);
                 }
                 if (position >= argc) {
                     free(buffer);
@@ -3651,7 +4018,20 @@ static Value format_template(Value template_value, int argc, Value *argv) {
                 if (argument < position + 1) argument = position + 1;
             }
 
-            Value rendered = tern_to_string(value);
+            Buf formatted;
+            buf_init(&formatted);
+            if (colon >= 0 && colon + 1 < end) {
+                FormatSpec spec;
+                parse_format_spec(text + colon + 1, (size_t)(end - colon - 1), &spec);
+                render_format_spec(&formatted, value, &spec);
+            } else {
+                Value as_text = tern_to_string(value);
+                Str *plain = (Str *)as_text.as.o;
+                buf_add(&formatted, plain->chars, plain->len);
+            }
+
+            Value rendered = str_value(formatted.data, formatted.len);
+            free(formatted.data);
             Str *piece = (Str *)rendered.as.o;
             while (used + piece->len + 1 >= cap) cap *= 2;
             buffer = realloc(buffer, cap);

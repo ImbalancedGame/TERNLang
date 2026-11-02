@@ -213,16 +213,24 @@ namespace TERN.Ide
                     break;
 
                 case LetStmt let:
-                    Declare(new Symbol
+                    foreach (var name in let.Names)
                     {
-                        Name = let.Name,
-                        Kind = let.IsConst ? SymbolKind.Constant : SymbolKind.Variable,
-                        Offset = let.Offset,
-                        Line = let.Line,
-                        Detail = (let.IsConst ? "const " : "let ") + let.Name,
-                        Depth = depth,
-                    });
-                    NoteInitializer(let.Name, let.Initializer);
+                        Declare(new Symbol
+                        {
+                            Name = name,
+                            Kind = let.IsConst ? SymbolKind.Constant : SymbolKind.Variable,
+                            Offset = let.Offset,
+                            Line = let.Line,
+                            Detail = (let.IsConst ? "const " : "let ") + name,
+                            Depth = depth,
+                        });
+                    }
+
+                    if (let.Name is { } simple)
+                    {
+                        NoteInitializer(simple, let.Initializer);
+                    }
+
                     break;
 
                 case IfStmt conditional:

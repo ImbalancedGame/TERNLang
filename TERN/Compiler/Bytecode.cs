@@ -155,6 +155,14 @@ namespace TERN.Compiler
         // operators and slicing
         In,               // pops item, container; pushes bool
         Slice,            // A = 1 when the end bound is inclusive; pops end, start, target
+
+        /// <summary>
+        /// Pops a message and raises it as a typed, catchable error: A = the type
+        /// name constant. <c>Throw</c> carries a plain value and so can only ever
+        /// produce an untyped <c>Error</c>; a compiler check that knows its own
+        /// category ("TypeError", "RangeError") says so instead.
+        /// </summary>
+        ThrowType,
     }
 
     public readonly struct Instr

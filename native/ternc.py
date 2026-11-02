@@ -797,6 +797,21 @@ class Generator:
         elif op == "Throw":
             line("{ Value error = st[--sp]; tern_raise(error); }")
 
+        elif op == "ThrowType":
+            # A typed raise: the payload is a string and the category is the
+            # constant, so a `catch` sees the message and an uncaught error
+            # prints the name, exactly as a builtin's error does.
+            const = self.constant_text(b, a)
+            if const.get("k") not in ("s", "str"):
+                raise CodegenError("ThrowType expects a string constant")
+            # The message is copied into a C buffer before the raise: the value
+            # stays rooted on the stack while it is converted, and the buffer
+            # cannot be collected while tern_throw_str builds the error object.
+            line('{ Value message = st[sp - 1]; char text[1024]; '
+                 'snprintf(text, sizeof text, "%%s", '
+                 '((Str *)tern_to_string(message).as.o)->chars); sp--; '
+                 'tern_throw_str(%s, text); }' % json.dumps(const["v"]))
+
         elif op == "LoadModule":
             const = self.constant_text(index, a)
             if const.get("k") != "module":
