@@ -13,6 +13,7 @@ UTF-8 character, so they concatenate back into the file.
 | Function | Arguments | Description |
 | --- | --- | --- |
 | [`append`](append.md) | 2..2 | Appends text, creating the file if it is missing. |
+| [`appendBytes`](appendBytes.md) | 2..2 | Appends a list of bytes to a file, creating it if it is missing. |
 | [`close`](close.md) | 1..1 | Closes a file handle. |
 | [`exists`](exists.md) | 1..1 | True when a file or directory exists. |
 | [`fileSize`](fileSize.md) | 1..1 | Size of an open file in bytes. |
@@ -30,6 +31,7 @@ UTF-8 character, so they concatenate back into the file.
 | [`seek`](seek.md) | 2..2 | Moves a handle's position and returns it. |
 | [`size`](size.md) | 1..1 | Size of a file in bytes. |
 | [`write`](write.md) | 2..2 | Writes text, replacing the file and creating its directories. |
+| [`writeBytes`](writeBytes.md) | 2..2 | Writes a list of bytes, replacing the file and creating its directories. |
 
 ## Example
 

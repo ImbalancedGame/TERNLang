@@ -60,6 +60,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | Name | Signature | Notes |
 | ---- | --------- | ----- |
 | `append` | `append(arg, arg)` | Appends text to a file. |
+| `appendBytes` | `appendBytes(arg, arg)` | Appends a list of bytes to a file. |
 | `close` | `close(arg)` | Closes a file handle. |
 | `exists` | `exists(arg)` | True when the path exists. |
 | `fileSize` | `fileSize(arg)` | Size of an open file in bytes. |
@@ -77,6 +78,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `seek` | `seek(arg, arg)` | Moves a handle's position to a byte offset and returns it. |
 | `size` | `size(arg)` | Size of a file in bytes. |
 | `write` | `write(arg, arg)` | Writes text, replacing the file. |
+| `writeBytes` | `writeBytes(arg, arg)` | Writes a list of bytes to a file, replacing it. |
 
 ## `gl`
 

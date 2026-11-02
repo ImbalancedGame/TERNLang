@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -504,6 +505,192 @@ def test_graphics(checks):
                      "STATE MISMATCH" not in (native_d3d.stdout + native_d3d.stderr),
                      (native_d3d.stdout + native_d3d.stderr)[-400:])
 
+def build_native(source, output):
+    """Compile a .tern example with the native backend, or return None."""
+    build = subprocess.run([PYTHON, os.path.join(ROOT, "native", "ternc.py"), source, "-o", output],
+                           cwd=ROOT, capture_output=True, text=True)
+    return output if build.returncode == 0 and os.path.exists(output) else None
+
+
+def png_size(path):
+    """(width, height) from a PNG's IHDR, and its chunk types in order."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    position = 8
+    width = height = 0
+    kinds = []
+    while position + 12 <= len(data):
+        length = struct.unpack(">I", data[position:position + 4])[0]
+        kind = data[position + 4:position + 8]
+        body = data[position + 8:position + 8 + length]
+        crc = struct.unpack(">I", data[position + 8 + length:position + 12 + length])[0]
+        if zlib.crc32(kind + body) & 0xFFFFFFFF != crc:
+            return None
+        kinds.append(kind)
+        if kind == b"IHDR":
+            width, height = struct.unpack(">II", body[:8])
+        position += 12 + length
+    return width, height, kinds, data
+
+
+def test_raytracer(checks):
+    """The CPU ray tracer: its PNG is a real PNG, and both back ends agree byte for byte."""
+    work = tempfile.mkdtemp(prefix="tern-ray-")
+    example = os.path.join(ROOT, "examples", "raytracer.tern")
+    interpreted = os.path.join(work, "interpreter.png")
+
+    run = subprocess.run(CLI + [example, "--out", interpreted, "--size", "48x36"], cwd=ROOT,
+                         capture_output=True, text=True)
+    checks.check("the raytracer runs", run.returncode == 0, (run.stderr or run.stdout)[-400:])
+    if run.returncode != 0:
+        return
+    checks.check("it says how long the tracing took", "traced" in run.stdout
+                 and "rays in" in run.stdout, run.stdout[-300:])
+
+    parsed = png_size(interpreted) if os.path.exists(interpreted) else None
+    checks.check("it writes a file", parsed is not None, "no PNG at " + interpreted)
+    if parsed is None:
+        return
+    # Written by hand, so every claim about it is worth checking: the CRC of
+    # each chunk, the size in the header, and the order the chunks come in.
+    width, height, kinds, data = parsed
+    checks.check("the header says 48x36", (width, height) == (48, 36), f"{width}x{height}")
+    checks.check("the chunks are IHDR, IDAT, IEND", kinds == [b"IHDR", b"IDAT", b"IEND"], str(kinds))
+    checks.check("it is 8 bits and truecolour", data[24] == 8 and data[25] == 2,
+                 f"depth {data[24]}, colour type {data[25]}")
+
+    # The picture has to be a picture: a floor, a sky and four spheres is
+    # thousands of distinct colours, and a black or blank frame is one.
+    raw = zlib.decompress(_idat_payload(data))
+    stride = 1 + width * 3
+    colours = set()
+    for y in range(height):
+        row = raw[y * stride + 1:(y + 1) * stride]
+        for x in range(width):
+            colours.add(row[x * 3:x * 3 + 3])
+    checks.check("the image is not blank", len(colours) > 50, f"{len(colours)} colours")
+    # The sky is the top row and the floor is the bottom one, so the two ends
+    # cannot be the same colour unless the camera is looking at nothing.
+    top = raw[1:4]
+    bottom = raw[(height - 1) * stride + 1:(height - 1) * stride + 4]
+    checks.check("the sky and the floor differ", top != bottom, f"{top} vs {bottom}")
+
+    # Parallax: the tracer is deterministic, so a second run is the same file,
+    # and a different size is a different file.
+    again = os.path.join(work, "again.png")
+    subprocess.run(CLI + [example, "--out", again, "--size", "48x36"], cwd=ROOT,
+                   capture_output=True, text=True)
+    checks.check("the same scene traces to the same bytes",
+                 open(again, "rb").read() == data)
+
+    native = build_native(example, os.path.join(work, "raytracer"))
+    if native is None:
+        checks.check("the raytracer compiles to a binary", False, "ternc.py failed")
+        return
+    checks.check("the raytracer compiles to a binary", True)
+    compiled = os.path.join(work, "native.png")
+    run = subprocess.run([native, "--out", compiled, "--size", "48x36"], cwd=ROOT,
+                         capture_output=True, text=True)
+    checks.check("the compiled raytracer runs", run.returncode == 0,
+                 (run.stderr or run.stdout)[-400:])
+    checks.check("both back ends produce the same PNG",
+                 os.path.exists(compiled) and open(compiled, "rb").read() == data)
+
+
+def _idat_payload(data):
+    """The zlib stream inside the first IDAT chunk."""
+    position = data.index(b"IDAT") - 4
+    length = struct.unpack(">I", data[position:position + 4])[0]
+    return data[position + 8:position + 8 + length]
+
+def build_mock_d3d12(work):
+    """The mock Direct3D 12 driver, or None."""
+    mock = os.path.join(work, "libd3d12.so")
+    built = subprocess.run([os.environ.get("CC", "cc"), "-shared", "-fPIC", "-o", mock,
+                            os.path.join(ROOT, "tools", "d3d12", "mock_d3d12.c")],
+                           cwd=ROOT, capture_output=True, text=True)
+    return mock if built.returncode == 0 else None
+
+
+def test_shaders(checks):
+    """The two shader examples: what they generate, and what the HLSL looks like."""
+    sys.path.insert(0, os.path.join(ROOT, "tools", "d3d12"))
+    import hlsl_lint
+
+    work = tempfile.mkdtemp(prefix="tern-shaders-")
+    mock = build_mock_d3d12(work)
+    checks.check("the mock Direct3D 12 driver builds for the shader examples", mock is not None)
+    if mock is None:
+        return
+    environment = dict(os.environ, TERN_D3D12_LIBRARY=mock, TERN_DXGI_LIBRARY=mock,
+                       TERN_D3DCOMPILER_LIBRARY=mock)
+
+    showcase = os.path.join(ROOT, "examples", "shader_showcase.tern")
+    out = os.path.join(work, "frames")
+    hlsl = os.path.join(work, "hlsl")
+    run = subprocess.run(CLI + [showcase, "--out", out, "--emit-hlsl", hlsl, "--size", "64x48"],
+                         cwd=ROOT, capture_output=True, text=True, env=environment)
+    checks.check("the shader showcase runs", run.returncode == 0,
+                 (run.stderr or run.stdout)[-400:])
+    checks.check("it compiles every shader", "compiled 4 pixel shaders" in run.stdout,
+                 run.stdout[-300:])
+    written = sorted(os.listdir(out)) if os.path.isdir(out) else []
+    checks.check("it writes one image per shader", len(written) == 4, str(written))
+
+    sources = sorted(os.listdir(hlsl)) if os.path.isdir(hlsl) else []
+    checks.check("it writes one HLSL source per shader", len(sources) == 4, str(sources))
+    # The shader is compiled by d3dcompiler on Windows, which is not here, so
+    # the generated text is checked for the mistakes a line-list generator
+    # makes: an unclosed brace, a call to a name that is not defined, an
+    # integer where a float is meant. This is not a compiler and does not claim
+    # to be one - docs/status.md says the same.
+    problems = []
+    for name in sources:
+        problems += hlsl_lint.check(open(os.path.join(hlsl, name), encoding="utf-8").read(),
+                                    name)
+    checks.check("the generated HLSL passes the structural check", not problems,
+                 "; ".join(problems[:4]))
+
+    frames = subprocess.run(CLI + [showcase, "--out", os.path.join(work, "moving"),
+                                   "--size", "32x24", "--frames", "2"],
+                            cwd=ROOT, capture_output=True, text=True, env=environment)
+    checks.check("it renders more than one frame", frames.returncode == 0
+                 and len(os.listdir(os.path.join(work, "moving"))) == 8,
+                 (frames.stderr or frames.stdout)[-300:])
+
+    traced = os.path.join(ROOT, "examples", "d3d12_raytrace.tern")
+    ray_source = os.path.join(work, "shot.hlsl")
+    ray_png = os.path.join(work, "shot.png")
+    run = subprocess.run(CLI + [traced, "--out", ray_png, "--emit-hlsl", ray_source,
+                                "--size", "64x48"],
+                         cwd=ROOT, capture_output=True, text=True, env=environment)
+    checks.check("the GPU ray tracer runs", run.returncode == 0,
+                 (run.stderr or run.stdout)[-400:])
+    checks.check("it reports the spheres it was given", "4 spheres" in run.stdout,
+                 run.stdout[-300:])
+    checks.check("it writes its image", os.path.exists(ray_png))
+    checks.check("the emitted shader has the scene baked into it",
+                 os.path.exists(ray_source)
+                 and "SPHERES[4][2]" in open(ray_source, encoding="utf-8").read(),
+                 "no baked scene")
+    ray_problems = hlsl_lint.check(open(ray_source, encoding="utf-8").read(), "shot.hlsl") \
+        if os.path.exists(ray_source) else ["the shader was not written"]
+    checks.check("the ray tracer's HLSL passes the structural check", not ray_problems,
+                 "; ".join(ray_problems[:4]))
+
+    # Without a driver both examples have to be a sentence, not a traceback:
+    # that is what a Linux user sees, and it is most of the audience for these
+    # two files.
+    for source, name in ((showcase, "showcase"), (traced, "ray tracer")):
+        absent = subprocess.run(CLI + [source], cwd=ROOT, capture_output=True, text=True,
+                                env=dict(os.environ, TERN_D3D12_LIBRARY="/nonexistent/libd3d12.so"))
+        checks.check(f"the {name} without Direct3D 12 is a sentence, not a traceback",
+                     absent.returncode == 0 and "not available" in absent.stdout
+                     and "Traceback" not in absent.stdout + absent.stderr,
+                     (absent.stderr or absent.stdout)[-400:])
+
 
 def main(argv):
     verbose = "-v" in argv or "--verbose" in argv
@@ -511,7 +698,8 @@ def main(argv):
     checks = Checks(verbose)
 
     groups = [("http", test_http), ("rcon", test_rcon), ("sftp", test_sftp),
-              ("graphics", test_graphics), ("native", test_native_http)]
+              ("graphics", test_graphics), ("raytracer", test_raytracer),
+              ("shaders", test_shaders), ("native", test_native_http)]
     for name, function in groups:
         if filters and not any(f in name for f in filters):
             continue

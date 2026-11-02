@@ -22,3 +22,13 @@ same
 different
 equal
 unequal
+int 0: truthy
+float 0: truthy
+empty text: truthy
+empty list: truthy
+empty map: truthy
+nil: falsy
+false: falsy
+true: truthy
+one: truthy
+bool(0): true bool(""): true bool([]): true

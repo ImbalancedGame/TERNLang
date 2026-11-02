@@ -14,7 +14,7 @@ caveats below.
 | Area | State | Verified by |
 | --- | --- | --- |
 | Language, interpreter | complete | 35 golden runs, `tools/test.sh` |
-| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (33), `native/parity.py` (44 programs) |
+| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (33), `native/parity.py` (46 programs) |
 | `math` `json` `os` `fs` `text` `lists` `time` `random` | complete, both back ends | golden tests, parity |
 | `net` (TCP, framing, tokens, frame ceiling, UDP, raw mode) | complete, both back ends | `tests/26_net.tern`, `tests/35_raw_bytes.tern`, `tools/test-tls.sh` |
 | `http` / `https` | complete, both back ends | `tests/28_http.tern`, `tools/test-tls.sh` |
@@ -36,12 +36,12 @@ Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       44 passed
+./tools/test.sh                                       42 passed
 python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
 python3 native/run_tests.py                           33 passed
-python3 native/parity.py                              44 compared, 0 differing
-python3 tools/test_examples.py                        65 passed
+python3 native/parity.py                              46 compared, 0 differing
+python3 tools/test_examples.py                        91 passed
 python3 tools/test_namespaces.py                      23 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
@@ -87,6 +87,17 @@ starts in 2 ms against 112 ms for the interpreter.
   draw calls, readback and PNG encoding are unmeasured on real hardware.
 * **Start-up.** The 2 ms against 112 ms figure above is a hello world; how much
   of that 112 ms is JIT, and how it scales with script size, is not measured.
+* **The ray tracer is the one pure-language workload with a number.** It is not
+  a synthetic loop: `examples/raytracer.tern --size 320x240` traces 76,800
+  primary rays, four spheres and a plane each, with a shadow ray and up to three
+  reflections, on a fixed scene. The interpreter takes 1,552 ms (49 rays/ms) and
+  the compiled binary 279 ms (275 rays/ms) — 5.6x, of the same order as the
+  `fib` and `loop` rows above rather than larger than them, which is worth
+  knowing: the loop is float arithmetic and non-inlined function calls, and the
+  compiled backend does not vectorise it, so a ray tracer written this way buys
+  what any other tight loop buys. Both produce a byte-identical PNG, which
+  `tools/test_examples.py` checks. Multiplying the samples per pixel multiplies
+  the time linearly: 480x360 at 2x2 is 691,200 rays in 8.9 s interpreted.
 
 ## The IDE
 
