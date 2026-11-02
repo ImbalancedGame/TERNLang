@@ -213,6 +213,132 @@ def run_cases(suite):
     suite.check("an unknown receiver still offers the built-in methods",
                 "upper" in labels or "push" in labels, str(labels[:10]))
 
+    # ------------------------------------------------- typed members
+    # Completion has to respect what a value actually is: a list has list
+    # methods and a string has string methods, and offering `toUpper` on a list
+    # is a wrong answer rather than a helpful one.
+    typed_source = (
+        "import \"std:math\";\n"
+        "\n"
+        "struct Ticket { id, title }\n"
+        "\n"
+        "fn describe() {\n"
+        "    return \"#${this.id}\";\n"
+        "}\n"
+        "\n"
+        "fn make() { return [1, 2]; }\n"
+        "\n"
+        "let names = [\"a\", \"b\"];\n"
+        "let label = \"hello\";\n"
+        "let table = {\"a\": 1};\n"
+        "let count = 1 + 2;\n"
+        "let ratio = 3 / 2;\n"
+        "let parts = \"a,b\".split(\",\");\n"
+        "let area = math.pi;\n"
+        "let ticket = Ticket(1, \"x\");\n"
+        "let later = make();\n"
+    )
+    typed_uri = client.open("/tmp/ide_typed.tern", typed_source)
+
+    def typed_members(receiver, version):
+        """Complete after `<receiver>.` appended to the typed fixture."""
+        text = typed_source + "\n" + receiver + "."
+        client.change(typed_uri, text, version=version)
+        last = len(text.split("\n")) - 1
+        result = client.request("textDocument/completion", {
+            "textDocument": {"uri": typed_uri},
+            "position": {"line": last, "character": len(receiver) + 1},
+        })
+        return [item["label"] for item in (result or {}).get("items", [])]
+
+    labels = typed_members("names", version=2)
+    suite.show("list members", labels[:12])
+    suite.check("a list offers list methods", "push" in labels and "join" in labels, str(labels[:12]))
+    suite.check("a list does not offer string methods", "upper" not in labels and "trim" not in labels,
+                str(labels[:12]))
+
+    labels = typed_members("label", version=3)
+    suite.check("a string offers string methods", "upper" in labels and "split" in labels, str(labels[:12]))
+    suite.check("a string does not offer list methods", "push" not in labels, str(labels[:12]))
+
+    labels = typed_members("table", version=4)
+    suite.check("a map offers map methods", "keys" in labels and "has" in labels, str(labels[:12]))
+    suite.check("a map does not offer list or string methods",
+                "push" not in labels and "upper" not in labels, str(labels[:12]))
+
+    labels = typed_members("count", version=5)
+    suite.check("an integer offers integer methods", "abs" in labels and "toString" in labels, str(labels[:12]))
+    suite.check("an integer does not offer string methods", "upper" not in labels, str(labels[:12]))
+
+    labels = typed_members("parts", version=6)
+    suite.check("a call's return type is followed", "push" in labels and "upper" not in labels,
+                str(labels[:12]))
+
+    labels = typed_members("area", version=7)
+    suite.check("a namespace constant knows its type", "round" in labels and "push" not in labels,
+                str(labels[:12]))
+
+    labels = typed_members("ticket", version=8)
+    suite.check("a struct offers its own members",
+                "id" in labels and "title" in labels and "push" not in labels, str(labels[:12]))
+
+    # `this` is only meaningful inside a method, so it gets its own file.
+    this_source = (
+        "struct Ticket {\n"
+        "    id, title\n"
+        "\n"
+        "    fn describe() {\n"
+        "        return \"#${this.id}\";\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "fn loose() { return 1; }\n"
+    )
+    this_uri = client.open("/tmp/ide_this.tern", this_source)
+    this_line = next(i for i, line in enumerate(this_source.split("\n")) if "this." in line)
+    this_column = this_source.split("\n")[this_line].index("this.") + len("this.")
+    result = client.request("textDocument/completion", {
+        "textDocument": {"uri": this_uri},
+        "position": {"line": this_line, "character": this_column},
+    })
+    labels = [item["label"] for item in (result or {}).get("items", [])]
+    suite.check("this inside a struct method offers the struct's members",
+                "id" in labels and "title" in labels and "push" not in labels, str(labels[:12]))
+
+    labels = typed_members("later", version=10)
+    suite.check("a function whose return type is unknown falls back to every built-in",
+                "push" in labels and "upper" in labels, str(labels[:12]))
+
+    # The receiver need not be a name: a call chain is read back out of the
+    # source and parsed, so `table.keys().` is a list like any other.
+    labels = typed_members("table.keys()", version=11)
+    suite.check("a call chain's result type is followed", "push" in labels and "upper" not in labels,
+                str(labels[:12]))
+
+    labels = typed_members('[1, 2]', version=12)
+    suite.check("a literal receiver knows its type", "push" in labels and "upper" not in labels,
+                str(labels[:12]))
+
+    labels = typed_members('"a,b".split(",")', version=13)
+    suite.check("a literal method call's type is followed", "push" in labels and "upper" not in labels,
+                str(labels[:12]))
+
+    # The outline and hover say what a declaration holds, not just that it exists.
+    hover_line = next(i for i, line in enumerate(typed_source.split("\n")) if line.startswith("let names"))
+    hover = client.request("textDocument/hover", {
+        "textDocument": {"uri": typed_uri},
+        "position": {"line": hover_line, "character": 5},
+    })
+    hover_text = (hover or {}).get("contents", {}).get("value", "")
+    suite.check("hover names the inferred type", "let names: list" in hover_text, hover_text)
+
+    outline = client.request("textDocument/documentSymbol", {"textDocument": {"uri": typed_uri}})
+    details = {symbol["name"]: symbol.get("detail", "") for symbol in outline or []}
+    suite.show("typed outline", details)
+    suite.check("the outline names the inferred type", details.get("names") == "let names: list", str(details))
+    suite.check("a declaration with no type keeps its plain detail",
+                details.get("later") == "let later", str(details))
+
     # A namespace member: `math.`.
     text = source.replace("math.pi", "math.")
     client.change(uri, text, version=3)

@@ -24,6 +24,7 @@ namespace TERN.Ide
 
         private readonly TernEngine _engine;
         private readonly Dictionary<string, List<BuiltinDoc>> _namespaces = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _namespaceNames = new(StringComparer.Ordinal);
         private readonly List<BuiltinDoc> _globals = new();
         private readonly List<(string Kind, string Name, string? Documentation)> _methods = new();
 
@@ -43,6 +44,7 @@ namespace TERN.Ide
                 {
                     members = new List<BuiltinDoc>();
                     _namespaces[entry.Group] = members;
+                    _namespaceNames.Add(entry.Group);
                 }
 
                 members.Add(entry);
@@ -107,7 +109,7 @@ namespace TERN.Ide
                 // Member access: work out what is on the left of the dot.
                 var receiverEnd = prefixStart - 1;
                 var (receiver, _, _) = document.WordAt(receiverEnd);
-                CompleteMembers(document, index, receiver, items);
+                CompleteMembers(document, index, receiver, receiverEnd, offset, items);
                 return items;
             }
 
@@ -134,13 +136,14 @@ namespace TERN.Ide
                     continue;
                 }
 
-                items.Add(Item(symbol.Name, symbol.LspKind, symbol.Detail, symbol.KindName, rank: 0));
+                items.Add(Item(symbol.Name, symbol.LspKind, Describe(symbol, index), symbol.KindName, rank: 0));
             }
 
             return items;
         }
 
-        private void CompleteMembers(Document document, SymbolIndex index, string receiver, JsonArray items)
+        private void CompleteMembers(Document document, SymbolIndex index, string receiver, int dotIndex,
+            int offset, JsonArray items)
         {
             if (_namespaces.TryGetValue(receiver, out var members))
             {
@@ -154,21 +157,37 @@ namespace TERN.Ide
                 return;
             }
 
-            var type = index.TypeOf(receiver);
-            if (type is not null)
+            var type = index.TypeOf(receiver, _namespaceNames, offset);
+            if (!type.IsKnown)
             {
-                foreach (var symbol in index.Symbols.Where(s => s.Name == type || s.Detail.StartsWith(type + ".", StringComparison.Ordinal)))
+                // `table.keys().` has no name to look up, so the expression is
+                // parsed the way the compiler would and inferred from that.
+                type = InferFromSource(document, index, dotIndex, offset);
+            }
+
+            if (type.IsStruct)
+            {
+                // A struct has exactly the fields and methods it declares: the
+                // rest of the file's methods are not members of it.
+                foreach (var symbol in index.Symbols.Where(s =>
+                             s.Owner == type.Name && s.Kind is SymbolKind.Field or SymbolKind.Method))
                 {
-                    // Fields and methods of the struct, minus the struct itself.
-                    if (symbol.Kind is SymbolKind.Field || symbol.Kind is SymbolKind.Method)
-                    {
-                        items.Add(Item(symbol.Name, symbol.LspKind, symbol.Detail, symbol.KindName, rank: 0));
-                    }
+                    items.Add(Item(symbol.Name, symbol.LspKind, symbol.Detail, symbol.KindName, rank: 0));
                 }
 
-                foreach (var symbol in index.Symbols.Where(s => s.Kind == SymbolKind.Method && s.Name != type))
+                return;
+            }
+
+            if (type.IsKnown)
+            {
+                // One method table: a list gets list methods, and `upper`
+                // belongs to a string, so it is not offered on a list.
+                foreach (var (kind, name, documentation) in _methods)
                 {
-                    items.Add(Item(symbol.Name, 2, symbol.Detail, "method", rank: 1));
+                    if (string.Equals(kind, type.Name, StringComparison.Ordinal))
+                    {
+                        items.Add(Item(name, 2, $"{kind}.{name}", documentation, rank: 0));
+                    }
                 }
 
                 return;
@@ -176,7 +195,7 @@ namespace TERN.Ide
 
             // Type unknown: offer the built-in methods rather than nothing. They
             // are the only members a value can have that the server can see
-            // without inference.
+            // without inference, and an empty list reads as a broken editor.
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var (kind, name, documentation) in _methods)
             {
@@ -187,6 +206,110 @@ namespace TERN.Ide
 
                 items.Add(Item(name, 2, $"{kind}.{name}", documentation, rank: 2));
             }
+        }
+
+        /// <summary>
+        /// The type of the expression ending at <paramref name="dotIndex"/>, if it
+        /// can be read back out of the source.
+        ///
+        /// The receiver is not always a name: `keys()`, `"a,b".split(",")` and
+        /// `[1, 2]` are values too, and the parser already knows how to read an
+        /// expression, so the text before the dot is parsed as one. A fragment
+        /// that does not parse is a receiver of no type, which is the fallback
+        /// the popup already had.
+        /// </summary>
+        private ReceiverType InferFromSource(Document document, SymbolIndex index, int dotIndex, int offset)
+        {
+            var start = ExpressionStart(document.Text, dotIndex);
+            if (start >= dotIndex || dotIndex - start > 256)
+            {
+                return ReceiverType.Unknown;
+            }
+
+            var fragment = document.Text.Substring(start, dotIndex - start);
+            var expression = Parser.ParseExpressionFragment(fragment, start, new DiagnosticBag());
+            return expression is null
+                ? ReceiverType.Unknown
+                : TypeInference.Of(expression, index, _namespaceNames, offset);
+        }
+
+        /// <summary>
+        /// Where the receiver expression starts, given the dot that ends it.
+        ///
+        /// A member chain is contiguous: identifiers, dots, and bracket groups
+        /// that belong to a call or an index. Anything else ends it — a space, an
+        /// operator, a statement separator — and a string literal is stepped over
+        /// whole so its punctuation cannot end the scan early.
+        /// </summary>
+        private static int ExpressionStart(string text, int dotIndex)
+        {
+            var depth = 0;
+            var position = dotIndex - 1;
+            while (position >= 0)
+            {
+                var character = text[position];
+
+                if (character is ')' or ']')
+                {
+                    depth++;
+                    position--;
+                    continue;
+                }
+
+                if (character is '(' or '[')
+                {
+                    if (depth == 0)
+                    {
+                        break;
+                    }
+
+                    depth--;
+                    position--;
+                    continue;
+                }
+
+                if (depth > 0)
+                {
+                    position--;
+                    continue;
+                }
+
+                if (character == '"')
+                {
+                    var opening = text.LastIndexOf('"', position - 1);
+                    if (opening < 0)
+                    {
+                        break;
+                    }
+
+                    position = opening - 1;
+                    continue;
+                }
+
+                if (!char.IsLetterOrDigit(character) && character is not ('_' or '$' or '.'))
+                {
+                    break;
+                }
+
+                position--;
+            }
+
+            return position + 1;
+        }
+
+        /// <summary>
+        /// A declaration's line, with the type it holds when the server can tell:
+        /// `let names: list` says more than `let names`.
+        /// </summary>
+        private string Describe(Symbol symbol, SymbolIndex index)
+        {
+            if (symbol.Kind is not (SymbolKind.Variable or SymbolKind.Constant))
+            {
+                return symbol.Detail;
+            }
+
+            var type = index.TypeOf(symbol.Name, _namespaceNames, symbol.Offset);
+            return type.IsKnown ? $"{symbol.Detail}: {type.Name}" : symbol.Detail;
         }
 
         private static string Signature(BuiltinDoc entry) => entry.IsConstant
@@ -418,7 +541,7 @@ namespace TERN.Ide
             var symbol = index.Resolve(word, start);
             if (symbol is not null)
             {
-                markdown.Add($"```tern\n{symbol.Detail}\n```");
+                markdown.Add($"```tern\n{Describe(symbol, index)}\n```");
                 markdown.Add($"{symbol.KindName} declared on line {symbol.Line}");
                 return Markdown(document, start, end, markdown);
             }
@@ -709,7 +832,7 @@ namespace TERN.Ide
                 result.Add(new JsonObject
                 {
                     ["name"] = symbol.Name,
-                    ["detail"] = symbol.Detail,
+                    ["detail"] = Describe(symbol, index),
                     ["kind"] = symbol.LspKind,
                     ["range"] = document.ToRange(symbol.Offset, nameEnd),
                     ["selectionRange"] = document.ToRange(symbol.Offset, nameEnd),
