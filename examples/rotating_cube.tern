@@ -11,10 +11,13 @@
 //    display, and it works identically in the interpreter and in a compiled
 //    binary.
 //
-// The window shows the Direct3D 12 render target: each frame is read back and
-// blitted into the window, which is not how a shipping game presents (that is a
-// DXGI swap chain, and it is the next step in docs/status.md). What it does do
-// is put the picture on screen, which a PNG in a folder does not.
+// The window shows the Direct3D 12 render target through a DXGI flip-model
+// swap chain: each frame is copied into the next back buffer on the GPU and
+// presented there, so the picture is never read back to reach the screen.
+// Where there is no flip-model swap chain - Windows 7 has no IDXGIFactory2, and
+// a driver can refuse CreateSwapChainForHwnd - it falls back to a readback and
+// a blit, and says so once. Either way the picture reaches the screen, which a
+// PNG in a folder does not.
 //
 //   tern run examples/rotating_cube.tern                    # window, or PNGs
 //   tern run examples/rotating_cube.tern --frames 24        # PNGs
@@ -410,9 +413,11 @@ fn usage() {
 
 // ------------------------------------------------------------- the window
 //
-// Each frame: draw, then show. d3d12.present() processes the window's messages
-// while it is at it, so the window keeps responding, and answers false once it
-// has been closed - which is what ends the loop, with no other clock needed.
+// The first frame is drawn before the window exists, so the window never opens
+// on a blank surface; after that each pass shows the frame drawn last and then
+// draws the next. d3d12.present() processes the window's messages while it is
+// at it, so the window keeps responding, and answers false once it has been
+// closed - which is what ends the loop, with no other clock needed.
 // --seconds is for the impatient and for a script that should not wait for a
 // person.
 //
