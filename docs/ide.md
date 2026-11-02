@@ -291,6 +291,46 @@ bar carries the problem counts, the cursor position, the language, the encoding
 and the state of the syntax server — `ready`, `starting` or `stopped`, which
 is the first thing to look at when nothing responds.
 
+### What a dot offers
+
+Completion after a dot is typed, not a list of everything every value can do. The
+server works out what the receiver holds and offers that type's members only:
+
+```tern
+let names = ["a", "b"];
+names.          // push, pop, join, map ... — no upper, no trim
+
+let label = "hello";
+label.          // upper, split, trim ... — no push
+
+let parts = "a,b".split(",");     // the page for string.split says it is a list
+parts.          // list members
+["x"].join("").  // the receiver can be an expression too: a string
+
+let ticket = Ticket(1, "x");
+ticket.         // id, title — the fields the struct declares
+
+struct Ticket {
+    id, title
+    fn describe() { return "#${this.id}"; }   // this. offers id, title, describe
+}
+```
+
+The type comes from the declaration: a literal, a list or map literal, a range, a
+struct constructor, a call whose reference page names its return type (that table
+is generated from the same annotations as `docs/msdn`, so it cannot drift), and
+`this` inside a method. A receiver that is not a name — `table.keys().`, a
+string literal, a list literal — is read back out of the source and parsed the
+way the compiler would. `let x = 1; x = "text";` is not a type, so it does not
+get one.
+
+When the type genuinely cannot be known — the result of `make()`, a list element,
+a function parameter — the popup falls back to the full built-in list, as it did
+before, because an empty popup reads as a broken editor and a wrong-but-plausible
+one is worse than nothing only when there is something better to say. Hover and
+the Structure view show the inferred type next to the declaration (`let names:
+list`), so the guess is visible rather than implicit.
+
 ### Version control
 
 The Commit window lists what git says has changed — a letter and a colour per
@@ -431,7 +471,7 @@ for the hook): the two columns are within noise of each other, 7.20 s against
 Both halves are covered, and both are part of `tools/test.sh`:
 
 ```bash
-bash tools/test-ide.sh                                   # 39 assertions, protocol only
+bash tools/test-ide.sh                                   # 58 assertions, protocol only
 python3 tools/debug_test.py                              # 41 checks, debugger only
 LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 133 checks, real window
 .venv/bin/python tools/test_package.py                   # 15 checks, packaging
@@ -479,6 +519,14 @@ used to do — proved nothing: every layer between the keystroke and the list wa
 broken and the test could not tell. Typing `math.` has to yield the library's
 members rather than the keyword list, typing `sqr` has to narrow it to `sqrt`
 without another round-trip, and Tab has to insert it.
+
+The protocol suite covers the types behind the members as well: `names.` on a
+list must offer `push` and not `upper`, `label.` on a string the other way round,
+`parts.` after `"a,b".split(",")` must follow the documented return type, `this.`
+inside a struct method must offer that struct, and a receiver the server cannot
+type must still fall back to the full list instead of an empty popup. Hover
+asserts on the type it prints, so a wrong inference fails a test rather than
+quietly suggesting nonsense.
 
 That regression had a cause worth remembering: **the editor never told the
 language server that the text had changed.** `didOpen` was sent once, on open,

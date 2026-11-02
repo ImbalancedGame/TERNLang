@@ -25,7 +25,7 @@ caveats below.
 | `d3d12` (device, target, HLSL, PSO, draw, window) | complete against a mock driver | `tools/test-d3d12.sh` |
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
 | MSDN-style reference | 292 pages, generated | `tools/gen-reference.py --check` |
-| Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
+| Language server (`ide/Server`) | complete, LSP 3.17, typed completion | `tools/test-ide.sh` (58) |
 | TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (133) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
@@ -47,7 +47,7 @@ bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
 bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
-bash tools/test-ide.sh                                39 passed
+bash tools/test-ide.sh                                58 passed
 python3 tools/debug_test.py                           41 passed
 python3 tools/gen-reference.py --check                292 pages up to date
 ```
@@ -107,7 +107,7 @@ what `tools/tern run` reports.
 
 * **Language server** (`ide/Server`, 390 KB) — LSP 3.17 over stdio with
   Content-Length framing: `initialize`, full-text sync, diagnostics,
-  completion (members, built-ins, imports, keywords; `.` and `"` triggers),
+  completion (typed members, built-ins, imports, keywords; `.` and `"` triggers),
   hover, definition, references, document/workspace symbols, formatting,
   signature help, rename with `prepareRename`.
 * **Studio** (`ide/Studio`, PySide6) — Rider-shaped shell: menu bar, toolbar,

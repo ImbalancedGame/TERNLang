@@ -32,6 +32,9 @@ namespace TERN.Ide
         /// <summary>Parameter names, in order, for signature help.</summary>
         public string[] Parameters { get; init; } = Array.Empty<string>();
 
+        /// <summary>The struct a field or method belongs to, if it is one.</summary>
+        public string? Owner { get; init; }
+
         public string KindName => Kind switch
         {
             SymbolKind.Function => "function",
@@ -67,15 +70,25 @@ namespace TERN.Ide
     /// this walks the AST that the parser already produced and, for a receiver,
     /// records the struct or namespace an identifier was initialised from.
     ///
-    /// The type knowledge is deliberately shallow — `let t = Ticket(...)` is
-    /// recognised, `let t = make()` is not. A wrong answer is worse than no
-    /// answer for completion, so anything uncertain returns nothing and the
-    /// editor falls back to the general list.
+    /// The type knowledge comes from the initializer: a literal, a list or map
+    /// literal, a range, a struct constructor and a call whose reference page
+    /// names its return type are all understood, and a name assigned a second
+    /// type elsewhere is not. A wrong answer is worse than no answer for
+    /// completion, so anything uncertain returns <see cref="ReceiverType.Unknown"/>
+    /// and the editor falls back to the general list.
     /// </summary>
     public sealed class SymbolIndex
     {
         private readonly Dictionary<string, Symbol> _declarations = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, string> _receiverType = new(StringComparer.Ordinal);
+
+        /// <summary>The expression each `let`/`const` was initialised with.</summary>
+        private readonly Dictionary<string, Expr> _initializers = new(StringComparer.Ordinal);
+
+        /// <summary>Bindings whose type comes from the loop rather than an initializer.</summary>
+        private readonly Dictionary<string, ReceiverType> _directTypes = new(StringComparer.Ordinal);
+
+        /// <summary>Values assigned to a name after its declaration, which may change its type.</summary>
+        private readonly Dictionary<string, List<Expr>> _assignments = new(StringComparer.Ordinal);
 
         public List<Symbol> Symbols { get; } = new();
 
@@ -119,8 +132,79 @@ namespace TERN.Ide
             return symbol;
         }
 
-        /// <summary>The struct type an identifier was initialised from, if it is obvious.</summary>
-        public string? TypeOf(string name) => _receiverType.TryGetValue(name, out var type) ? type : null;
+        /// <summary>
+        /// The struct whose method contains <paramref name="offset"/>, if any.
+        ///
+        /// The index has no ranges, only declaration offsets, so "inside" is
+        /// taken to mean "after the method's declaration and before the next
+        /// member's": locals are not members, and a member's body cannot
+        /// outlive the next member's header.
+        /// </summary>
+        public string? ThisAt(int offset)
+        {
+            Symbol? nearest = null;
+            foreach (var symbol in Symbols)
+            {
+                if (symbol.Kind is SymbolKind.Method or SymbolKind.Field or SymbolKind.Struct or SymbolKind.Function)
+                {
+                    if (symbol.Offset <= offset && (nearest is null || symbol.Offset > nearest.Offset))
+                    {
+                        nearest = symbol;
+                    }
+                }
+            }
+
+            return nearest?.Owner;
+        }
+
+        /// <summary>True when <paramref name="name"/> is a struct declared in this file.</summary>
+        public bool IsStruct(string name) => Structs.Contains(name);
+
+        /// <summary>
+        /// The type of a binding, from its declaration and the calls it was given.
+        /// Unknown when the declaration says nothing, or when a later assignment
+        /// gives it a different type: `let x = 1; x = "text";` is a string and an
+        /// integer at once, and completion has to offer neither's members.
+        /// </summary>
+        public ReceiverType TypeOf(string name, HashSet<string> namespaces, int offset = -1, int depth = 0)
+        {
+            if (depth > TypeInference.MaxDepth)
+            {
+                return ReceiverType.Unknown;
+            }
+
+            if (_directTypes.TryGetValue(name, out var direct))
+            {
+                return direct;
+            }
+
+            // Completion reaches a receiver by name, so `this.` arrives here
+            // rather than as a ThisExpr.
+            if (name == "this")
+            {
+                return ThisAt(offset) is { } owner ? ReceiverType.OfStruct(owner) : ReceiverType.Unknown;
+            }
+
+            var type = _initializers.TryGetValue(name, out var initializer)
+                ? TypeInference.Of(initializer, this, namespaces, offset, depth + 1)
+                : ReceiverType.Unknown;
+
+            if (_assignments.TryGetValue(name, out var values))
+            {
+                foreach (var value in values)
+                {
+                    var assigned = TypeInference.Of(value, this, namespaces, offset, depth + 1);
+                    if (!assigned.IsKnown)
+                    {
+                        continue;
+                    }
+
+                    type = type.IsKnown ? TypeInference.Unify(type, assigned) : assigned;
+                }
+            }
+
+            return type;
+        }
 
         private void Declare(Symbol symbol)
         {
@@ -183,6 +267,7 @@ namespace TERN.Ide
                             Line = LineOf(document: null, field.Offset),
                             Detail = $"{declared.Name}.{field.Name}",
                             Depth = depth + 1,
+                            Owner = declared.Name,
                         });
                     }
 
@@ -202,6 +287,7 @@ namespace TERN.Ide
                             Detail = Signature(method),
                             Depth = depth + 1,
                             Parameters = ParameterNames(method),
+                            Owner = declared.Name,
                         });
                         DeclareParameters(method, depth + 2);
                         if (method.Body is not null)
@@ -226,11 +312,15 @@ namespace TERN.Ide
                         });
                     }
 
-                    if (let.Name is { } simple)
+                    if (let.Name is { } simple && let.Initializer is { } initializer)
                     {
-                        NoteInitializer(simple, let.Initializer);
+                        _initializers.TryAdd(simple, initializer);
                     }
 
+                    break;
+
+                case ExpressionStmt { Expression: AssignExpr { Target: IdentifierExpr target } assignment }:
+                    NoteAssignment(target.Name, assignment.Value);
                     break;
 
                 case IfStmt conditional:
@@ -264,6 +354,20 @@ namespace TERN.Ide
                     break;
 
                 case ForInStmt each:
+                    if (each.Names.Count == 1)
+                    {
+                        // A loop over text yields text; a loop over a range
+                        // yields integers. A list or map yields values of no
+                        // declared type, so nothing is claimed about them.
+                        var element = ElementOf(each.Iterable) is { } kind
+                            ? ReceiverType.Builtin(kind)
+                            : (ReceiverType?)null;
+                        if (element is { } type && type.IsKnown)
+                        {
+                            _directTypes[each.Names[0]] = type;
+                        }
+                    }
+
                     foreach (var name in each.Names)
                     {
                         Declare(new Symbol
@@ -340,13 +444,24 @@ namespace TERN.Ide
             }
         }
 
-        /// <summary>Remembers `let t = Ticket(...)` so `t.` can complete Ticket's members.</summary>
-        private void NoteInitializer(string name, Expr? initializer)
+        /// <summary>The kind a `for ... in` loop hands out, when the iterable says so.</summary>
+        private static string? ElementOf(Expr iterable) => iterable switch
         {
-            if (initializer is CallExpr call && call.Callee is IdentifierExpr callee && Structs.Contains(callee.Name))
+            LiteralExpr { Value: string } => "string",
+            InterpolatedStringExpr => "string",
+            RangeExpr => "int",
+            _ => null,
+        };
+
+        private void NoteAssignment(string name, Expr value)
+        {
+            if (!_assignments.TryGetValue(name, out var values))
             {
-                _receiverType[name] = callee.Name;
+                values = new List<Expr>();
+                _assignments[name] = values;
             }
+
+            values.Add(value);
         }
 
         private static string[] ParameterNames(FunctionLiteral function) =>
