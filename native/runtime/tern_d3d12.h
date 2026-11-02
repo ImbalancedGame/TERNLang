@@ -10,9 +10,12 @@
 //
 // The vtable indices are the ones in the shipped d3d12.h: ID3D12Device's
 // CreateCommandQueue is slot 8, ID3D12GraphicsCommandList's Close is 9 and its
-// ClearRenderTargetView is 48, and so on. Getting one of those wrong is a crash
-// rather than a compile error, which is why they are listed here against the
-// header and exercised by the mock.
+// ClearRenderTargetView is 48, and so on. Getting one of those wrong is not a
+// compile error and not something the mock can see - it numbers its tables the
+// same way, so both sides agree on the mistake and only a real driver objects.
+// Each one is therefore a named constant below, and the Windows build asserts
+// every constant against the position of that method in the SDK's own vtable
+// (tools/d3d12/gen_layout_check.py).
 #ifndef TERN_D3D12_H
 #define TERN_D3D12_H
 
@@ -450,6 +453,59 @@ _Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, render_target_format
 
 #define TERN_SLOT(object, slot) (((void **)((void ***)(object))[0])[slot])
 
+// Slot indices, one name per call site, so that a wrong number is a compile
+// error here and a failed check against the real header in the Windows build
+// (tools/d3d12/gen_layout_check.py) - rather than a call to whatever function
+// happens to sit at that offset on the user's driver, which is a device
+// removal and no clue about which line caused it.
+//
+// QueryInterface, AddRef and Release are IUnknown's, at 0, 1 and 2 on every
+// interface, so those three stay literal.
+
+#define TERN_SLOT_ID3D12Debug_EnableDebugLayer 3
+#define TERN_SLOT_ID3D12InfoQueue_GetNumStoredMessages 8
+#define TERN_SLOT_ID3D12InfoQueue_GetMessage 5
+#define TERN_SLOT_ID3D12InfoQueue_ClearStoredMessages 4
+#define TERN_SLOT_ID3D12Fence_GetCompletedValue 8
+#define TERN_SLOT_ID3D12GraphicsCommandList_Close 9
+#define TERN_SLOT_ID3D12CommandQueue_ExecuteCommandLists 10
+#define TERN_SLOT_ID3D12CommandQueue_Signal 14
+#define TERN_SLOT_ID3D12CommandAllocator_Reset 8
+#define TERN_SLOT_ID3D12GraphicsCommandList_Reset 10
+#define TERN_SLOT_ID3D12GraphicsCommandList_ResourceBarrier 26
+#define TERN_SLOT_ID3D12Device_GetDeviceRemovedReason 37
+#define TERN_SLOT_ID3D12Device_CreateCommandQueue 8
+#define TERN_SLOT_ID3D12Device_CreateCommandAllocator 9
+#define TERN_SLOT_ID3D12Device_CreateCommandList 12
+#define TERN_SLOT_ID3D12Device_CreateDescriptorHeap 14
+#define TERN_SLOT_ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart 9
+#define TERN_SLOT_ID3D12Device_CreateCommittedResource 27
+#define TERN_SLOT_ID3D12Device_CreateRenderTargetView 20
+#define TERN_SLOT_ID3D12Device_GetCopyableFootprints 38
+#define TERN_SLOT_ID3D12Device_CreateFence 36
+#define TERN_SLOT_ID3DBlob_GetBufferSize 4
+#define TERN_SLOT_ID3DBlob_GetBufferPointer 3
+#define TERN_SLOT_ID3D12Device_CreateRootSignature 16
+#define TERN_SLOT_ID3D12Device_CreateGraphicsPipelineState 10
+#define TERN_SLOT_ID3D12Resource_Map 8
+#define TERN_SLOT_ID3D12Resource_Unmap 9
+#define TERN_SLOT_ID3D12Resource_GetGPUVirtualAddress 11
+#define TERN_SLOT_ID3D12GraphicsCommandList_OMSetRenderTargets 46
+#define TERN_SLOT_ID3D12GraphicsCommandList_SetGraphicsRootSignature 30
+#define TERN_SLOT_ID3D12GraphicsCommandList_SetPipelineState 25
+#define TERN_SLOT_ID3D12GraphicsCommandList_RSSetViewports 21
+#define TERN_SLOT_ID3D12GraphicsCommandList_RSSetScissorRects 22
+#define TERN_SLOT_ID3D12GraphicsCommandList_IASetPrimitiveTopology 20
+#define TERN_SLOT_ID3D12GraphicsCommandList_IASetVertexBuffers 44
+#define TERN_SLOT_ID3D12GraphicsCommandList_DrawInstanced 12
+#define TERN_SLOT_IDXGIFactory1_EnumAdapters1 12
+#define TERN_SLOT_IDXGIAdapter1_GetDesc1 10
+#define TERN_SLOT_ID3D12GraphicsCommandList_ClearRenderTargetView 48
+#define TERN_SLOT_ID3D12GraphicsCommandList_CopyTextureRegion 16
+#define TERN_SLOT_IDXGISwapChain1_GetBuffer 9
+#define TERN_SLOT_IDXGISwapChain1_Present 8
+
+
 typedef long (*PfnCreateCommandQueue)(void *, const void *, const TernGuid *, void **);
 typedef long (*PfnCreateCommandAllocator)(void *, int, const TernGuid *, void **);
 typedef long (*PfnCreateCommandList)(void *, int, int, void *, void *, const TernGuid *, void **);
@@ -700,7 +756,7 @@ static int d3d12_enable_debug_layer(void) {
                  "Optional features > Graphics Tools");
         return 0;
     }
-    ((void (*)(void *))TERN_SLOT(debug, 3))(debug);   // EnableDebugLayer
+    ((void (*)(void *))TERN_SLOT(debug, TERN_SLOT_ID3D12Debug_EnableDebugLayer))(debug);   // EnableDebugLayer
     d3d12_release(debug);
     d3d12_debug_on = 1;
     return 1;
@@ -727,11 +783,11 @@ static void d3d12_report_messages(TernD3D12Target *target) {
         return;
     }
     unsigned long long count = ((unsigned long long (*)(void *))
-        TERN_SLOT(target->info_queue, 8))(target->info_queue);   // GetNumStoredMessages
+        TERN_SLOT(target->info_queue, TERN_SLOT_ID3D12InfoQueue_GetNumStoredMessages))(target->info_queue);   // GetNumStoredMessages
     for (unsigned long long i = 0; i < count; i++) {
         size_t size = 0;
         PfnInfoQueueMessage get_message = (PfnInfoQueueMessage)
-            TERN_SLOT(target->info_queue, 5);                    // GetMessage
+            TERN_SLOT(target->info_queue, TERN_SLOT_ID3D12InfoQueue_GetMessage);                    // GetMessage
         if (get_message(target->info_queue, i, NULL, &size) < 0 || size == 0) {
             break;
         }
@@ -745,7 +801,7 @@ static void d3d12_report_messages(TernD3D12Target *target) {
         }
         free(message);
     }
-    ((void (*)(void *))TERN_SLOT(target->info_queue, 4))(target->info_queue);  // ClearStoredMessages
+    ((void (*)(void *))TERN_SLOT(target->info_queue, TERN_SLOT_ID3D12InfoQueue_ClearStoredMessages))(target->info_queue);  // ClearStoredMessages
     fflush(stderr);
 }
 
@@ -767,7 +823,7 @@ static long d3d12_wait(TernD3D12Target *target) {
     // Polling GetCompletedValue keeps one code path on both platforms: a script
     // renders offscreen and waits, which is not a frame-rate critical path.
     PfnGetCompletedValue completed =
-        (PfnGetCompletedValue)TERN_SLOT(target->fence, 8);
+        (PfnGetCompletedValue)TERN_SLOT(target->fence, TERN_SLOT_ID3D12Fence_GetCompletedValue);
     for (int waited = 0; waited < D3D12_WAIT_TIMEOUT_MS; waited++) {
         if (completed(target->fence) >= target->fence_value) {
             return 0;
@@ -782,11 +838,11 @@ static long d3d12_wait(TernD3D12Target *target) {
 }
 
 static void d3d12_submit(TernD3D12Target *target, const char *what) {
-    ((long (*)(void *))TERN_SLOT(target->list, 9))(target->list);            // Close
+    ((long (*)(void *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_Close))(target->list);            // Close
     void *lists[1] = { target->list };
-    ((PfnExecuteCommandLists)TERN_SLOT(target->queue, 10))(target->queue, 1, lists);
+    ((PfnExecuteCommandLists)TERN_SLOT(target->queue, TERN_SLOT_ID3D12CommandQueue_ExecuteCommandLists))(target->queue, 1, lists);
     target->fence_value++;
-    ((PfnFenceSignal)TERN_SLOT(target->queue, 14))(target->queue, target->fence, target->fence_value);
+    ((PfnFenceSignal)TERN_SLOT(target->queue, TERN_SLOT_ID3D12CommandQueue_Signal))(target->queue, target->fence, target->fence_value);
     if (d3d12_wait(target) != 0) {
         unsigned long code = d3d12_removal_code(target);
         if (code != 0) {
@@ -801,8 +857,8 @@ static void d3d12_submit(TernD3D12Target *target, const char *what) {
 }
 
 static void d3d12_reset(TernD3D12Target *target) {
-    ((PfnResetAllocator)TERN_SLOT(target->allocator, 8))(target->allocator);
-    ((PfnResetList)TERN_SLOT(target->list, 10))(target->list, target->allocator, NULL);
+    ((PfnResetAllocator)TERN_SLOT(target->allocator, TERN_SLOT_ID3D12CommandAllocator_Reset))(target->allocator);
+    ((PfnResetList)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_Reset))(target->list, target->allocator, NULL);
 }
 
 static void d3d12_barrier(TernD3D12Target *target, void *resource, unsigned before, unsigned after) {
@@ -814,7 +870,7 @@ static void d3d12_barrier(TernD3D12Target *target, void *resource, unsigned befo
     barrier.u.transition.subresource = 0xFFFFFFFFu;
     barrier.u.transition.state_before = before;
     barrier.u.transition.state_after = after;
-    ((PfnResourceBarrier)TERN_SLOT(target->list, 26))(target->list, 1, &barrier);
+    ((PfnResourceBarrier)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_ResourceBarrier))(target->list, 1, &barrier);
 }
 
 /// Moves the render target to `after`, naming the state it is really in.
@@ -882,7 +938,7 @@ static unsigned long d3d12_removal_code(TernD3D12Target *target) {
     if (!target || !target->device) {
         return 0;
     }
-    long reason = ((long (*)(void *))TERN_SLOT(target->device, 37))(target->device);
+    long reason = ((long (*)(void *))TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_GetDeviceRemovedReason))(target->device);
     return (unsigned long)reason & 0xFFFFFFFFul;
 }
 
@@ -1018,37 +1074,37 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     struct { int type; int priority; unsigned flags; unsigned node_mask; } queue_desc = {
         D3D12_COMMAND_LIST_TYPE_DIRECT_, 0, 0, 0
     };
-    hr = ((PfnCreateCommandQueue)TERN_SLOT(target->device, 8))(
+    hr = ((PfnCreateCommandQueue)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateCommandQueue))(
         target->device, &queue_desc, &TERN_IID_ID3D12CommandQueue, &target->queue);
     if (hr < 0) {
         d3d12_unavailable("a command queue could not be created");
     }
 
-    hr = ((PfnCreateCommandAllocator)TERN_SLOT(target->device, 9))(
+    hr = ((PfnCreateCommandAllocator)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateCommandAllocator))(
         target->device, D3D12_COMMAND_LIST_TYPE_DIRECT_, &TERN_IID_ID3D12CommandAllocator,
         &target->allocator);
     if (hr < 0) {
         d3d12_unavailable("a command allocator could not be created");
     }
 
-    hr = ((PfnCreateCommandList)TERN_SLOT(target->device, 12))(
+    hr = ((PfnCreateCommandList)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateCommandList))(
         target->device, D3D12_COMMAND_LIST_TYPE_DIRECT_, 0, target->allocator, NULL,
         &TERN_IID_ID3D12GraphicsCommandList, &target->list);
     if (hr < 0) {
         d3d12_unavailable("a command list could not be created");
     }
-    ((PfnCloseList)TERN_SLOT(target->list, 9))(target->list);
+    ((PfnCloseList)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_Close))(target->list);
 
     D3D12_DESCRIPTOR_HEAP_DESC heap_desc;
     memset(&heap_desc, 0, sizeof heap_desc);
     heap_desc.type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV_;
     heap_desc.num_descriptors = 1;
-    hr = ((PfnCreateDescriptorHeap)TERN_SLOT(target->device, 14))(
+    hr = ((PfnCreateDescriptorHeap)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateDescriptorHeap))(
         target->device, &heap_desc, &TERN_IID_ID3D12DescriptorHeap, &target->heap);
     if (hr < 0) {
         d3d12_unavailable("a descriptor heap could not be created");
     }
-    ((PfnGetCpuHandle)TERN_SLOT(target->heap, 9))(target->heap, &target->rtv);
+    ((PfnGetCpuHandle)TERN_SLOT(target->heap, TERN_SLOT_ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart))(target->heap, &target->rtv);
 
     D3D12_RESOURCE_DESC texture;
     memset(&texture, 0, sizeof texture);
@@ -1073,13 +1129,13 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     clear.u.colour[2] = 0.09f;
     clear.u.colour[3] = 1.0f;
 
-    hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
+    hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateCommittedResource))(
         target->device, &default_heap, 0, &texture, D3D12_RESOURCE_STATE_COMMON_,
         &clear, &TERN_IID_ID3D12Resource, &target->target);
     if (hr < 0) {
         d3d12_unavailable("a render target could not be created");
     }
-    ((PfnCreateRenderTargetView)TERN_SLOT(target->device, 20))(
+    ((PfnCreateRenderTargetView)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateRenderTargetView))(
         target->device, target->target, NULL, target->rtv);
     target->state = D3D12_RESOURCE_STATE_COMMON_;
 
@@ -1089,7 +1145,7 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     unsigned rows = 0;
     unsigned long long row_size = 0;
     memset(&layout, 0, sizeof layout);
-    ((PfnGetCopyableFootprints)TERN_SLOT(target->device, 38))(
+    ((PfnGetCopyableFootprints)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_GetCopyableFootprints))(
         target->device, &texture, 0, 1, 0, &layout, &rows, &row_size, &target->total_bytes);
     target->row_pitch = layout.footprint.row_pitch;
     if (target->row_pitch == 0) {
@@ -1108,14 +1164,14 @@ static TernD3D12Target *d3d12_make_device(int width, int height) {
     buffer.sample_desc.count = 1;
     buffer.layout = 1;   // D3D12_TEXTURE_LAYOUT_ROW_MAJOR
 
-    hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
+    hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateCommittedResource))(
         target->device, &readback_heap, 0, &buffer, D3D12_RESOURCE_STATE_COPY_DEST_,
         NULL, &TERN_IID_ID3D12Resource, &target->readback);
     if (hr < 0) {
         d3d12_unavailable("a readback buffer could not be created");
     }
 
-    hr = ((PfnCreateFence)TERN_SLOT(target->device, 36))(
+    hr = ((PfnCreateFence)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateFence))(
         target->device, 0, 0, &TERN_IID_ID3D12Fence, &target->fence);
     if (hr < 0) {
         d3d12_unavailable("a fence could not be created");
@@ -1181,8 +1237,8 @@ static PfnD3DCompile d3d12_compiler(void) {
 }
 
 static const void *blob_bytes(void *blob, size_t *length) {
-    *length = ((size_t (*)(void *))TERN_SLOT(blob, 4))(blob);          // GetBufferSize
-    return ((const void *(*)(void *))TERN_SLOT(blob, 3))(blob);        // GetBufferPointer
+    *length = ((size_t (*)(void *))TERN_SLOT(blob, TERN_SLOT_ID3DBlob_GetBufferSize))(blob);          // GetBufferSize
+    return ((const void *(*)(void *))TERN_SLOT(blob, TERN_SLOT_ID3DBlob_GetBufferPointer))(blob);        // GetBufferPointer
 }
 
 /// The first line of a blob, trimmed. D3DCompile writes a multi-line report whose
@@ -1265,7 +1321,7 @@ static void *d3d12_empty_root_signature(void *device) {
     const void *bytes = blob_bytes(blob, &length);
     void *signature = NULL;
     long hr = ((long (*)(void *, unsigned, const void *, size_t, const TernGuid *, void **))
-               TERN_SLOT(device, 16))(device, 0, bytes, length,
+               TERN_SLOT(device, TERN_SLOT_ID3D12Device_CreateRootSignature))(device, 0, bytes, length,
                                    &TERN_IID_ID3D12RootSignature, &signature);
     d3d12_release(blob);
     if (hr < 0 || !signature) {
@@ -1324,7 +1380,7 @@ static void *d3d12_make_program(TernD3D12Target *target, const char *vertex_sour
 
     void *pipeline = NULL;
     long hr = ((long (*)(void *, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *, const TernGuid *, void **))
-               TERN_SLOT(target->device, 10))(target->device, &description,
+               TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateGraphicsPipelineState))(target->device, &description,
                                               &TERN_IID_ID3D12PipelineState, &pipeline);
     d3d12_release(vertex);
     d3d12_release(pixel);
@@ -1376,7 +1432,7 @@ static D3D12_VERTEX_BUFFER_VIEW d3d12_upload_vertices(TernD3D12Target *target, V
     buffer.sample_desc.count = 1;
 
     void *resource = NULL;
-    long hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, 27))(
+    long hr = ((PfnCreateCommittedResource)TERN_SLOT(target->device, TERN_SLOT_ID3D12Device_CreateCommittedResource))(
         target->device, &upload_heap, 0, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ_,
         NULL, &TERN_IID_ID3D12Resource, &resource);
     if (hr < 0 || !resource) {
@@ -1388,7 +1444,7 @@ static D3D12_VERTEX_BUFFER_VIEW d3d12_upload_vertices(TernD3D12Target *target, V
     range.begin = 0;
     range.end = 0;
     void *data = NULL;
-    hr = ((PfnMap)TERN_SLOT(resource, 8))(resource, 0, &range, &data);
+    hr = ((PfnMap)TERN_SLOT(resource, TERN_SLOT_ID3D12Resource_Map))(resource, 0, &range, &data);
     if (hr < 0 || !data) {
         d3d12_release(resource);
         d3d12_fail_removed(target, "the vertex buffer could not be mapped", hr);
@@ -1399,7 +1455,7 @@ static D3D12_VERTEX_BUFFER_VIEW d3d12_upload_vertices(TernD3D12Target *target, V
         for (int field = 0; field < 6; field++) {
             Value item = list->items[i * 6 + (size_t)field];
             if (!v_is_num(item)) {
-                ((PfnUnmap)TERN_SLOT(resource, 9))(resource, 0, &range);
+                ((PfnUnmap)TERN_SLOT(resource, TERN_SLOT_ID3D12Resource_Unmap))(resource, 0, &range);
                 d3d12_release(resource);
                 tern_panic("TypeError", "vertex %d must be a number, not %s",
                            (int)(i * 6 + (size_t)field), tern_type_name(item));
@@ -1413,11 +1469,11 @@ static D3D12_VERTEX_BUFFER_VIEW d3d12_upload_vertices(TernD3D12Target *target, V
         packed[i * D3D12_VERTEX_FLOATS + 5] = (float)v_as_double(list->items[i * 6 + 4]);
         packed[i * D3D12_VERTEX_FLOATS + 6] = (float)v_as_double(list->items[i * 6 + 5]);
     }
-    ((PfnUnmap)TERN_SLOT(resource, 9))(resource, 0, &range);
+    ((PfnUnmap)TERN_SLOT(resource, TERN_SLOT_ID3D12Resource_Unmap))(resource, 0, &range);
 
     D3D12_VERTEX_BUFFER_VIEW view;
     memset(&view, 0, sizeof view);
-    view.buffer_location = ((unsigned long long (*)(void *))TERN_SLOT(resource, 11))(resource);
+    view.buffer_location = ((unsigned long long (*)(void *))TERN_SLOT(resource, TERN_SLOT_ID3D12Resource_GetGPUVirtualAddress))(resource);
     view.size_in_bytes = (unsigned)bytes;
     view.stride_in_bytes = D3D12_VERTEX_STRIDE;
 
@@ -1452,10 +1508,10 @@ static Value n_d3d12_draw(int argc, Value *argv) {
 
     d3d12_reset(target);
     d3d12_transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET_);
-    ((PfnOMSetRenderTargets)TERN_SLOT(target->list, 46))(target->list, 1, &target->rtv, 0, NULL);
-    ((void (*)(void *, void *))TERN_SLOT(target->list, 30))(
+    ((PfnOMSetRenderTargets)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_OMSetRenderTargets))(target->list, 1, &target->rtv, 0, NULL);
+    ((void (*)(void *, void *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_SetGraphicsRootSignature))(
         target->list, target->signatures[handle - 1]);                        // SetGraphicsRootSignature
-    ((void (*)(void *, void *))TERN_SLOT(target->list, 25))(
+    ((void (*)(void *, void *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_SetPipelineState))(
         target->list, target->programs[handle - 1]);                          // SetPipelineState
     // The state that decides whether anything is drawn at all. Without these
     // two the clear still covers the target and the triangles go nowhere.
@@ -1471,15 +1527,15 @@ static Value n_d3d12_draw(int argc, Value *argv) {
     scissor.top = 0;
     scissor.right = target->width;
     scissor.bottom = target->height;
-    ((void (*)(void *, unsigned, const D3D12_VIEWPORT *))TERN_SLOT(target->list, 21))(
+    ((void (*)(void *, unsigned, const D3D12_VIEWPORT *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_RSSetViewports))(
         target->list, 1, &viewport);                                          // RSSetViewports
-    ((void (*)(void *, unsigned, const D3D12_RECT *))TERN_SLOT(target->list, 22))(
+    ((void (*)(void *, unsigned, const D3D12_RECT *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_RSSetScissorRects))(
         target->list, 1, &scissor);                                           // RSSetScissorRects
-    ((void (*)(void *, int))TERN_SLOT(target->list, 20))(
+    ((void (*)(void *, int))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_IASetPrimitiveTopology))(
         target->list, D3D12_PRIMITIVE_TOPOLOGY_TRIANGLELIST_);                // IASetPrimitiveTopology
-    ((void (*)(void *, unsigned, unsigned, const D3D12_VERTEX_BUFFER_VIEW *))TERN_SLOT(target->list, 44))(
+    ((void (*)(void *, unsigned, unsigned, const D3D12_VERTEX_BUFFER_VIEW *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_IASetVertexBuffers))(
         target->list, 0, 1, &view);                                           // IASetVertexBuffers
-    ((void (*)(void *, unsigned, unsigned, unsigned, unsigned))TERN_SLOT(target->list, 12))(
+    ((void (*)(void *, unsigned, unsigned, unsigned, unsigned))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_DrawInstanced))(
         target->list, (unsigned)count, 1, 0, 0);                              // DrawInstanced
     d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
     d3d12_submit(target, "d3d12.draw");
@@ -1530,12 +1586,12 @@ static Value n_d3d12_info(int argc, Value *argv) {
         void *factory = NULL;
         if (driver->create_factory(&TERN_IID_IDXGIFactory1, &factory) >= 0 && factory) {
             void *adapter = NULL;
-            long hr = ((long (*)(void *, unsigned, void **))TERN_SLOT(factory, 12))(
+            long hr = ((long (*)(void *, unsigned, void **))TERN_SLOT(factory, TERN_SLOT_IDXGIFactory1_EnumAdapters1))(
                 factory, 0, &adapter);
             if (hr >= 0 && adapter) {
                 unsigned char description[320];
                 memset(description, 0, sizeof description);
-                ((PfnGetDesc1)TERN_SLOT(adapter, 10))(adapter, description);
+                ((PfnGetDesc1)TERN_SLOT(adapter, TERN_SLOT_IDXGIAdapter1_GetDesc1))(adapter, description);
                 char utf8[256];
                 int at = 0;
                 // The description is UTF-16; only the BMP is copied, which is all
@@ -1575,9 +1631,9 @@ static Value n_d3d12_clear(int argc, Value *argv) {
 
     d3d12_reset(target);
     d3d12_transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET_);
-    ((PfnOMSetRenderTargets)TERN_SLOT(target->list, 46))(
+    ((PfnOMSetRenderTargets)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_OMSetRenderTargets))(
         target->list, 1, &target->rtv, 0, NULL);
-    ((PfnClearRenderTargetView)TERN_SLOT(target->list, 48))(
+    ((PfnClearRenderTargetView)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_ClearRenderTargetView))(
         target->list, target->rtv, colour, 0, NULL);
     d3d12_transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE_);
     d3d12_submit(target, "d3d12.clear");
@@ -1609,7 +1665,7 @@ static void d3d12_copy_out(TernD3D12Target *target, const char *what) {
     source.type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX_;
     source.u.subresource_index = 0;
 
-    ((PfnCopyTextureRegion)TERN_SLOT(target->list, 16))(
+    ((PfnCopyTextureRegion)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_CopyTextureRegion))(
         target->list, &destination, 0, 0, 0, &source, NULL);
 
     d3d12_submit(target, what);
@@ -1624,7 +1680,7 @@ static Value n_d3d12_pixels(int argc, Value *argv) {
     range.begin = 0;
     range.end = 0;
     void *data = NULL;
-    long hr = ((PfnMap)TERN_SLOT(target->readback, 8))(target->readback, 0, &range, &data);
+    long hr = ((PfnMap)TERN_SLOT(target->readback, TERN_SLOT_ID3D12Resource_Map))(target->readback, 0, &range, &data);
     if (hr < 0 || !data) {
         d3d12_fail_removed(target, "the readback buffer could not be mapped", hr);
     }
@@ -1640,7 +1696,7 @@ static Value n_d3d12_pixels(int argc, Value *argv) {
         }
     }
 
-    ((PfnUnmap)TERN_SLOT(target->readback, 9))(target->readback, 0, &range);
+    ((PfnUnmap)TERN_SLOT(target->readback, TERN_SLOT_ID3D12Resource_Unmap))(target->readback, 0, &range);
     return v_obj((Obj *)list);
 }
 
@@ -1654,7 +1710,7 @@ static Value n_d3d12_save(int argc, Value *argv) {
     range.begin = 0;
     range.end = 0;
     void *data = NULL;
-    long hr = ((PfnMap)TERN_SLOT(target->readback, 8))(target->readback, 0, &range, &data);
+    long hr = ((PfnMap)TERN_SLOT(target->readback, TERN_SLOT_ID3D12Resource_Map))(target->readback, 0, &range, &data);
     if (hr < 0 || !data) {
         d3d12_fail_removed(target, "the readback buffer could not be mapped", hr);
     }
@@ -1668,7 +1724,7 @@ static Value n_d3d12_save(int argc, Value *argv) {
         memcpy(tight + (size_t)y * row_bytes,
                (const unsigned char *)data + (size_t)y * target->row_pitch, row_bytes);
     }
-    ((PfnUnmap)TERN_SLOT(target->readback, 9))(target->readback, 0, &range);
+    ((PfnUnmap)TERN_SLOT(target->readback, TERN_SLOT_ID3D12Resource_Unmap))(target->readback, 0, &range);
 
     size_t written = tern_png_write(path, target->width, target->height, tight, 1);
     free(tight);
@@ -1773,7 +1829,7 @@ static int d3d12_swap_chain_open(TernSwapChain *swap, TernD3D12Target *target,
     swap->frame = 0;
     for (unsigned i = 0; i < TERN_SWAP_BUFFER_COUNT; i++) {
         void *buffer = NULL;
-        hr = ((PfnGetBuffer)TERN_SLOT(chain, 9))(chain, i, &TERN_IID_ID3D12Resource, &buffer);
+        hr = ((PfnGetBuffer)TERN_SLOT(chain, TERN_SLOT_IDXGISwapChain1_GetBuffer))(chain, i, &TERN_IID_ID3D12Resource, &buffer);
         if (hr < 0 || !buffer) {
             d3d12_swap_chain_close(swap);
             swap->failed = 1;
@@ -1809,7 +1865,7 @@ static int d3d12_swap_show(TernSwapChain *swap, TernD3D12Target *target) {
     source.type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX_;
     source.u.subresource_index = 0;
 
-    ((PfnCopyTextureRegion)TERN_SLOT(target->list, 16))(
+    ((PfnCopyTextureRegion)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_CopyTextureRegion))(
         target->list, &destination, 0, 0, 0, &source, NULL);
     d3d12_barrier(target, buffer, D3D12_RESOURCE_STATE_COPY_DEST_, D3D12_RESOURCE_STATE_PRESENT_);
     swap->states[frame] = D3D12_RESOURCE_STATE_PRESENT_;
@@ -1817,7 +1873,7 @@ static int d3d12_swap_show(TernSwapChain *swap, TernD3D12Target *target) {
 
     // Present waits for the vertical blank at interval 1, which is also what
     // paces the loop: the blit path needed a sleep to avoid spinning a core.
-    long hr = ((PfnPresent)TERN_SLOT(swap->chain, 8))(swap->chain, 1, 0);
+    long hr = ((PfnPresent)TERN_SLOT(swap->chain, TERN_SLOT_IDXGISwapChain1_Present))(swap->chain, 1, 0);
     if (hr < 0) {
         return 0;
     }
@@ -1873,7 +1929,7 @@ static Value n_d3d12_present(int argc, Value *argv) {
     range.begin = 0;
     range.end = 0;
     void *data = NULL;
-    long hr = ((PfnMap)TERN_SLOT(target->readback, 8))(target->readback, 0, &range, &data);
+    long hr = ((PfnMap)TERN_SLOT(target->readback, TERN_SLOT_ID3D12Resource_Map))(target->readback, 0, &range, &data);
     if (hr < 0 || !data) {
         d3d12_fail_removed(target, "the readback buffer could not be mapped", hr);
     }
@@ -1894,7 +1950,7 @@ static Value n_d3d12_present(int argc, Value *argv) {
                (const unsigned char *)data + (size_t)(target->height - 1 - y) * target->row_pitch,
                row_bytes);
     }
-    ((PfnUnmap)TERN_SLOT(target->readback, 9))(target->readback, 0, &range);
+    ((PfnUnmap)TERN_SLOT(target->readback, TERN_SLOT_ID3D12Resource_Unmap))(target->readback, 0, &range);
 
     int open = tern_window_present(window, tight, target->width, target->height);
     free(tight);

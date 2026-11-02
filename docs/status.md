@@ -133,7 +133,15 @@ Ordered by what would bite a user first.
    `.exe` — but `tools/test_runner.py` proves the resolution, not a Windows
    process launch. `pip install ziglang` and one `ternc.py` run is the check
    that remains.
-2. **Neither renderer has rendered a frame on real hardware.** Both are tested
+2. **The C# mirror's vtable slot numbers are still bare literals.** The native
+   backend's are named constants checked against the SDK header by the Windows
+   build; `TERN/Builtins/D3D12.cs` writes the same numbers inline
+   (`Slot<CreateFenceFn>(device, 36)`) and nothing checks them. A wrong one
+   fails the same way — a call to the wrong function on the driver — so the
+   next pass should either derive both from one table or check the C# against
+   the header's constants. The two back ends agree today, read by hand; the
+   check is what is missing.
+3. **Neither renderer has rendered a frame on real hardware.** Both are tested
    against mocks that answer the calls in the right order and paint what they
    are told to paint, which proves the plumbing — that the vertex buffer
    reaches the draw, that the readback pitch is the device's — and not that a
@@ -151,7 +159,7 @@ Ordered by what would bite a user first.
    `examples/d3d12_diagnose.tern` is the one to run: it makes each call in turn
    and prints what each did, so the failure names itself, and it reports the
    binding revision that produced it.
-3. **The window layer is Windows only.** `d3d12.window` opens a real Win32
+4. **The window layer is Windows only.** `d3d12.window` opens a real Win32
    window and `d3d12.present` puts the frame in it, through a flip-model swap
    chain where one can be made. `user32`, `gdi32`, `kernel32` and `dxgi` are
    loaded at run time, so a Linux build answers `nil` and a Linux window needs
@@ -159,7 +167,7 @@ Ordered by what would bite a user first.
    `ResizeBuffers`: a resized window is stretched by DXGI rather than
    re-created, and a device reset is not handled beyond falling back to the
    blit. Both are Windows-only to test and are the next two items there.
-4. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
+5. **Windows builds have no networking or OpenGL.** `net`, `http`, `rcon`,
    `sftp` and `gl` answer `UnsupportedError` in a Windows binary; the language,
    `math`, `time`, `json`, `os`, `fs`, `text`, `lists` and `d3d12` are there.
    Winsock is the missing translation for the first four, and `wgl` or an EGL
@@ -167,12 +175,12 @@ Ordered by what would bite a user first.
    lands in which group is no longer left to reading the preprocessor:
    `tools/test_namespaces.py` checks it, and it is how the `d3d12` gap below was
    found.
-5. **`d3d12` draws with one vertex buffer per call.** Correct, and the wrong
+6. **`d3d12` draws with one vertex buffer per call.** Correct, and the wrong
    shape for a renderer that draws a thousand times a frame: each `d3d12.draw`
    creates an upload-heap buffer and waits for the GPU. A ring of persistently
    mapped buffers is the next step, and it needs the fence work that goes with
    it.
-6. **Neither renderer has a depth buffer.** `d3d12.draw` and `gl.draw` take a
+7. **Neither renderer has a depth buffer.** `d3d12.draw` and `gl.draw` take a
    clip-space position and a colour per vertex and nothing else, so everything
    is at the same depth and the order the triangles arrive in is the order they
    paint. A scene that is not a convex solid - or one where two visible
@@ -181,22 +189,22 @@ Ordered by what would bite a user first.
    back faces instead. The general answer is a depth-stencil target, a depth
    test in the pipeline state and a `z` on the vertex, and that is a change to
    the vertex format both modules share.
-7. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
+8. **Server-side TLS is missing.** `net.listen(port, {"tls": true})` raises
    `TlsError: server TLS is not supported`: a script can be a TLS client but not
    a TLS server. Both back ends would need the other half of the handshake
    (OpenSSL's `SSL_accept`, .NET's `SslStream` on the accepted socket).
-8. **Map writes are memory bound, not compute bound.** Not a correctness
+9. **Map writes are memory bound, not compute bound.** Not a correctness
    problem; listed because it is the one benchmark where compiling buys nothing
    and it will not improve until the table's layout does (a bucket array with
    inline keys, or a chunked table that avoids the doubling rehash).
-9. **Small allocation churn.** The native collector is conservative: an integer
+10. **Small allocation churn.** The native collector is conservative: an integer
    that happens to look like an object address can keep an object alive, and the
    heap floor is 16 MiB, so a tiny program's RSS is not tiny. The interpreter
    leaves that to .NET.
-10. **`fs` error text differs slightly.** A compiled binary names the path as the
+11. **`fs` error text differs slightly.** A compiled binary names the path as the
    script wrote it; the interpreter reports the resolved absolute path. Same
    error kind, different text, which `parity.py` tolerates and a user might not.
-11. **Diagnostics in compiled binaries.** Compiler warnings from
+12. **Diagnostics in compiled binaries.** Compiler warnings from
    `./tools/tern check` are not emitted by binaries, and there is no sandbox:
    `--no-fs`, `--no-net`, `engine.AllowFileSystem` and `engine.AllowNetwork`
    belong to the interpreter, since a binary has no engine to configure.
@@ -468,3 +476,18 @@ SSH is what the servers actually offer).
   `IBStripCutValue`, which made the structure 8 bytes short of the 656 the SDK
   expects. The Windows build now asserts every offset against the real header
   and fails to compile if one drifts.
+* **The vtable slot numbers were right and nothing proved it.** Every
+  Direct3D 12 call goes through a numbered slot (`ID3D12Device::CreateFence` is
+  36, `ID3D12GraphicsCommandList::CopyTextureRegion` is 16); a wrong one calls
+  whatever function happens to live at that offset on the user's driver, which
+  answers by removing the device and naming nothing. The mock driver numbers its
+  tables the same way, so it cannot catch a wrong number either - both sides
+  agree on the mistake. Each slot the backend uses is now a named constant
+  (`TERN_SLOT_ID3D12Device_CreateFence`), and
+  `tools/d3d12/gen_layout_check.py` turns every one of them into a
+  `_Static_assert` against the position of that method in the SDK's own vtable
+  struct, compiled by the Windows build with Zig. Forty-two slots checked;
+  changing `CreateFence` from 36 to 35 in the header fails that build with the
+  slot named. All forty-two were also read against the shipped headers by hand
+  first, and were correct - this is the check that keeps them correct, not a fix
+  for a bug found.
