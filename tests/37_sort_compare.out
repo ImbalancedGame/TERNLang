@@ -1,0 +1,6 @@
+[1, 2, 3]
+[3, 2, 1]
+["a", "bb", "cc"]
+[-2.0, 0.0, 1.5]
+sort() needs a comparator that returns a number: negative when the first argument sorts first, positive when the second does, zero when they are equal. This one returned true. A test is not a comparator - 'fn(a, b) { return a < b; }' sorts nothing; use 'fn(a, b) { return a - b; }', or for values that cannot be subtracted, 'fn(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }'
+sort() needs a comparator that returns a number: negative when the first argument sorts first, positive when the second does, zero when they are equal. This one returned false. A test is not a comparator - 'fn(a, b) { return a < b; }' sorts nothing; use 'fn(a, b) { return a - b; }', or for values that cannot be subtracted, 'fn(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }'

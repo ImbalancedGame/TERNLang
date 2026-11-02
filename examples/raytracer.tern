@@ -26,6 +26,7 @@
 import "std:fs";
 import "std:math";
 import "std:os";
+import "std:cli";
 import "std:time";
 
 // --- the scene ---------------------------------------------------------------
@@ -235,25 +236,67 @@ fn shade(ox, oy, oz, dx, dy, dz, depth, scene) {
     }
 }
 
-/// A shaded float to a byte: clamped, because a specular highlight can exceed 1
-/// and a negative ambient would go below 0, and neither is the encoder's job.
+/// A shaded float to a byte: clamped and gamma-encoded.
+///
+/// The shading above is linear light - a surface twice as bright has twice the
+/// number, which is what adding two lamps should do - and a monitor is not. An
+/// 8-bit channel is roughly perceptual, so writing linear values straight into
+/// one makes every shadow far too dark and every lit surface look flat. This is
+/// the standard sRGB curve's cheap cousin, and it is the same one
+/// examples/d3d12_raytrace.tern uses in the shader, which is what lets the two
+/// images be compared.
+///
+/// The clamp comes first because a specular highlight really does exceed 1 and
+/// the cheap curve would turn that into a NaN and then a zero.
 fn to_byte(value) {
-    let scaled = int(value * 255.0 + 0.5);
-    if (scaled < 0) { return 0; }
+    let capped = value;
+    if (capped < 0.0) { capped = 0.0; }
+    if (capped > 1.0) { capped = 1.0; }
+    let encoded = capped ** (1.0 / 2.2);
+    let scaled = int(encoded * 255.0 + 0.5);
     if (scaled > 255) { return 255; }
     return scaled;
+}
+
+/// The camera basis: forward, right and up, from an eye and the point it looks
+/// at. Returned as one list of nine numbers rather than three lists, because
+/// this is called once per frame and a list per vector would be the only
+/// allocation in the render loop that is not the pixel buffer.
+///
+/// examples/d3d12_raytrace.tern builds the same basis in HLSL. They have to
+/// agree, or the two images are two different pictures of the same scene: this
+/// used to be an axis-aligned `(u, v, -1)` camera here and a look-at camera in
+/// the shader, which put the horizon 14% down the frame on the CPU and 41% down
+/// on the GPU.
+fn camera_basis(eye, target, aspect, field) {
+    let fx = target[0] - eye[0];
+    let fy = target[1] - eye[1];
+    let fz = target[2] - eye[2];
+    let fl = math.sqrt(fx * fx + fy * fy + fz * fz);
+    fx = fx / fl; fy = fy / fl; fz = fz / fl;
+    // right = normalize(cross(up_world, forward)), with up_world = (0, 1, 0).
+    let rx = 1.0 * fz - 0.0 * fy;
+    let ry = 0.0 * fx - 0.0 * fz;
+    let rz = 0.0 * fy - 1.0 * fx;
+    let rl = math.sqrt(rx * rx + ry * ry + rz * rz);
+    rx = rx / rl; ry = ry / rl; rz = rz / rl;
+    // up = cross(forward, right).
+    let ux = fy * rz - fz * ry;
+    let uy = fz * rx - fx * rz;
+    let uz = fx * ry - fy * rx;
+    return [fx, fy, fz, rx, ry, rz, ux, uy, uz, aspect * field, field];
 }
 
 fn render(width, height, samples, scene) {
     let pixels = [];
     let aspect = width / height;
-    // Looking down the +z axis from (0, 1.1, 4.2), which puts the horizon a
-    // third of the way up the frame.
-    let eye_x = 0.0;
-    let eye_y = 1.15;
-    let eye_z = 4.20;
-    let target_y = 0.75;
-    let field = 0.55;
+    let eye = [0.0, 1.15, 4.20];
+    let basis = camera_basis(eye, [0.0, 0.75, 0.0], aspect, 0.55);
+    let forward = [basis[0], basis[1], basis[2]];
+    let right = [basis[3], basis[4], basis[5]];
+    let up = [basis[6], basis[7], basis[8]];
+    let spread_x = basis[9];
+    let spread_y = basis[10];
 
     for y in range(0, height) {
         for x in range(0, width) {
@@ -262,24 +305,23 @@ fn render(width, height, samples, scene) {
             let b = 0.0;
             for sy in range(0, samples) {
                 for sx in range(0, samples) {
-                    // Pixel centre, offset inside the pixel for each sample.
-                    let px = x + (sx + 0.5) / samples;
-                    let py = y + (sy + 0.5) / samples;
-                    let u = ((px / width) * 2.0 - 1.0) * aspect * field;
-                    let v = (1.0 - (py / height) * 2.0) * field;
-                    // z is negative because the camera sits in front of the
-                    // scene at +z looking back at it, which is the convention
-                    // the sphere positions above are written in.
-                    //
+                    // Pixel centre, offset inside the pixel for each sample,
+                    // as 0..1 with y up.
+                    let px = (x + (sx + 0.5) / samples) / width;
+                    let py = 1.0 - (y + (sy + 0.5) / samples) / height;
+                    let across = (px - 0.5) * 2.0 * spread_x;
+                    let down = (py - 0.5) * 2.0 * spread_y;
                     // The direction is normalised first. The quadratic in
                     // hit_sphere solves for a unit direction; feeding it a
                     // vector of length 1.08 does not fail loudly, it returns a
                     // distance that is not the intersection, and every normal
                     // below is then off the surface by the same factor - which
                     // looks like a shading bug and is not one.
-                    let dir_y = v + target_y - eye_y;
-                    let length = math.sqrt(u * u + dir_y * dir_y + 1.0);
-                    shade(eye_x, eye_y, eye_z, u / length, dir_y / length, -1.0 / length, 0, scene);
+                    let dx = forward[0] + right[0] * across + up[0] * down;
+                    let dy = forward[1] + right[1] * across + up[1] * down;
+                    let dz = forward[2] + right[2] * across + up[2] * down;
+                    let length = math.sqrt(dx * dx + dy * dy + dz * dz);
+                    shade(eye[0], eye[1], eye[2], dx / length, dy / length, dz / length, 0, scene);
                     r = r + trace_r;
                     g = g + trace_g;
                     b = b + trace_b;
@@ -431,53 +473,26 @@ fn ascii_preview(width, height, pixels, columns) {
     }
 }
 
-fn usage() {
-    println("a CPU ray tracer that writes a PNG with no image library");
-    println("  --out PATH        where to write it (default raytrace.png)");
-    println("  --size WIDTHxHEIGHT  image size (default 320x240)");
-    println("  --samples N       N x N rays per pixel, 1..4 (default 1)");
-    println("  --ascii           also print a preview in the terminal");
-    println("  --help            this text");
-}
-
 fn main() {
-    let arguments = os.args();
-    let out = "raytrace.png";
-    let width = 320;
-    let height = 240;
-    let samples = 1;
-    let show_ascii = false;
+    let options = cli.parse({
+        "out": "raytrace.png",
+        "size": "320x240",
+        "samples": 1,
+        "ascii": false,
+    }, {
+        "out": "where the PNG goes",
+        "size": "WIDTHxHEIGHT, in pixels",
+        "samples": "rays per pixel; more is smoother and slower",
+        "ascii": "print a text preview instead of only writing the PNG",
+    });
+    if (options == nil) { return; }
 
-    let index = 0;
-    while (index < len(arguments)) {
-        let argument = arguments[index];
-        if (argument == "--out" && index + 1 < len(arguments)) {
-            index += 1;
-            out = arguments[index];
-        } else if (argument == "--size" && index + 1 < len(arguments)) {
-            index += 1;
-            let parts = arguments[index].split("x");
-            if (len(parts) != 2) {
-                println("--size wants WIDTHxHEIGHT, not " + arguments[index]);
-                return;
-            }
-            width = int(parts[0]);
-            height = int(parts[1]);
-        } else if (argument == "--samples" && index + 1 < len(arguments)) {
-            index += 1;
-            samples = int(arguments[index]);
-        } else if (argument == "--ascii") {
-            show_ascii = true;
-        } else if (argument == "--help" || argument == "-h") {
-            usage();
-            return;
-        } else {
-            println("unknown option: " + argument);
-            usage();
-            return;
-        }
-        index += 1;
-    }
+    let out = options["out"];
+    let pixels = cli.pair(options["size"], "--size");
+    let width = pixels[0];
+    let height = pixels[1];
+    let samples = options["samples"];
+    let show_ascii = options["ascii"];
 
     if (width < 1 || height < 1 || width > 4096 || height > 4096) {
         println("--size must be between 1x1 and 4096x4096");

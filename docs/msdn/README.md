@@ -8,6 +8,7 @@ The pages are generated from the engine's own catalogue (`tools/tern docs --json
 
 | Namespace | Description |
 | --- | --- |
+| [`cli`](cli/index.md) | Command-line options, read against a schema of defaults. |
 | [`d3d12`](d3d12/index.md) | Direct3D 12: device, render target, pipeline and draw. |
 | [`fs`](fs/index.md) | Files, directories and reading a file in pieces. |
 | [`gl`](gl/index.md) | OpenGL, loaded at run time so nothing is linked. |

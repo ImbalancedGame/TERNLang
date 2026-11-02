@@ -25,7 +25,7 @@ REPO = os.path.dirname(HERE)
 TESTS = os.path.join(REPO, "tests")
 
 # Scripts that never reach a runtime: they exercise the compiler's diagnostics.
-COMPILER_ONLY = {"12_lint", "24_parse_errors"}
+COMPILER_ONLY = {"12_lint", "24_parse_errors", "38_for_names"}
 
 
 def main(argv):

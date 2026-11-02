@@ -13,9 +13,9 @@ caveats below.
 
 | Area | State | Verified by |
 | --- | --- | --- |
-| Language, interpreter | complete | 35 golden runs, `tools/test.sh` |
-| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (33), `native/parity.py` (46 programs) |
-| `math` `json` `os` `fs` `text` `lists` `time` `random` | complete, both back ends | golden tests, parity |
+| Language, interpreter | complete | 38 golden runs, `tools/test.sh` |
+| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (35), `native/parity.py` (48 programs) |
+| `math` `json` `os` `fs` `text` `lists` `time` `random` `cli` | complete, both back ends | golden tests, parity |
 | `net` (TCP, framing, tokens, frame ceiling, UDP, raw mode) | complete, both back ends | `tests/26_net.tern`, `tests/35_raw_bytes.tern`, `tools/test-tls.sh` |
 | `http` / `https` | complete, both back ends | `tests/28_http.tern`, `tools/test-tls.sh` |
 | `rcon` | complete, both back ends | `tests/29_rcon.tern` |
@@ -24,32 +24,32 @@ caveats below.
 | `gl` (libEGL, OpenGL 3.3 core) | complete against a mock driver | `tools/test-gl.sh` |
 | `d3d12` (device, target, HLSL, PSO, draw, window) | complete against a mock driver | `tools/test-d3d12.sh` |
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
-| MSDN-style reference | 284 pages, generated | `tools/gen-reference.py --check` |
+| MSDN-style reference | 292 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17 | `tools/test-ide.sh` (39) |
 | TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (133) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
-| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic — each run, not just compiled | `tools/test_examples.py` (65) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic — each run, not just compiled | `tools/test_examples.py` (91) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       42 passed
+./tools/test.sh                                       45 passed
 python3 tools/test_runner.py                          21 passed
 python3 tools/test_package.py                         15 passed
-python3 native/run_tests.py                           33 passed
-python3 native/parity.py                              46 compared, 0 differing
+python3 native/run_tests.py                           35 passed
+python3 native/parity.py                              48 compared, 0 differing
 python3 tools/test_examples.py                        91 passed
-python3 tools/test_namespaces.py                      23 passed
+python3 tools/test_namespaces.py                      24 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
 bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
 bash tools/test-ide.sh                                39 passed
 python3 tools/debug_test.py                           41 passed
-python3 tools/gen-reference.py --check                284 pages up to date
+python3 tools/gen-reference.py --check                292 pages up to date
 ```
 
 ## Benchmarks

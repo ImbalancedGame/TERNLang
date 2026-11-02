@@ -1916,6 +1916,7 @@ Value tern_iter_new(Value iterable) {
     Iterator *it = (Iterator *)tern_alloc(sizeof(Iterator), O_ITER);
     it->target = iterable;
     it->index = 0;
+    it->chars = 0;
     if (v_is_list(iterable)) {
         it->kind = 0;
     } else if (v_is_map(iterable)) {
@@ -1930,15 +1931,38 @@ Value tern_iter_new(Value iterable) {
     return v_obj((Obj *)it);
 }
 
-bool tern_iter_next(Value value, Value *first, Value *second) {
+// `bindings` is 1 for `for x in ...` and 2 for `for a, b in ...`. What the
+// second name means depends on what is being iterated, and it is the second
+// name that changes - never the first - so that adding an index to an existing
+// loop cannot change what the loop variable is.
+//
+//   list, one name    x = item        (the usual case)
+//   list, two names   a = index, b = item
+//   map, one name     x = value
+//   map, two names    a = key, b = value
+//   range, one name   x = number
+//   range, two names  a = index, b = number
+//   text, one name    c = character
+//   text, two names   a = code point index, c = character
+//
+// Before this, a list always answered `first` = item and left `second` alone, so
+// `for i, x in [10, 20]` silently counted `i` through the values and gave `x`
+// nothing at all. It parsed, it ran, and it was wrong.
+bool tern_iter_next(Value value, int bindings, Value *first, Value *second) {
     Iterator *it = (Iterator *)value.as.o;
+    bool pairs = bindings > 1;
     switch (it->kind) {
         case 0: {
             List *list = (List *)it->target.as.o;
             if (it->index >= list->count) {
                 return false;
             }
-            *first = list->items[it->index++];
+            if (pairs) {
+                *first = v_int(it->index);
+                *second = list->items[it->index++];
+            } else {
+                *first = list->items[it->index++];
+            }
             return true;
         }
         case 1: {
@@ -1962,7 +1986,14 @@ bool tern_iter_next(Value value, Value *first, Value *second) {
             if (done) {
                 return false;
             }
-            *first = v_int(current);
+            if (pairs) {
+                // The index counts iterations, not steps: for a range that goes
+                // by threes, the second value is 3, 6, 9 and the first is 1, 2, 3.
+                *first = v_int((int64_t)it->index);
+                *second = v_int(current);
+            } else {
+                *first = v_int(current);
+            }
             it->index++;
             return true;
         }
@@ -1973,7 +2004,13 @@ bool tern_iter_next(Value value, Value *first, Value *second) {
             }
             int size;
             utf8_decode(s->chars + it->index, s->chars + s->len, &size);
-            *first = str_value(s->chars + it->index, (size_t)size);
+            if (pairs) {
+                *first = v_int(it->chars);
+                *second = str_value(s->chars + it->index, (size_t)size);
+                it->chars++;
+            } else {
+                *first = str_value(s->chars + it->index, (size_t)size);
+            }
             it->index += size;
             return true;
         }
@@ -3168,7 +3205,20 @@ static Value l_sort(int argc, Value *argv) {
             while (j >= 0) {
                 Value pair[2] = {key, list->items[j]};
                 Value result = tern_call(comparator, 2, pair);
-                if (v_is_num(result) && v_as_double(result) >= 0) {
+                if (!v_is_num(result)) {
+                    // Word for word the interpreter's sentence: a comparator
+                    // that answers true is a predicate, and it used to leave the
+                    // list in whatever order this loop happened to build.
+                    tern_panic("TypeError",
+                        "sort() needs a comparator that returns a number: negative when the first "
+                        "argument sorts first, positive when the second does, zero when they are "
+                        "equal. This one returned %s. A test is not a comparator - "
+                        "'fn(a, b) { return a < b; }' sorts nothing; use 'fn(a, b) { return a - b; }', "
+                        "or for values that cannot be subtracted, "
+                        "'fn(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }'",
+                        ((Str *)tern_to_string(result).as.o)->chars);
+                }
+                if (v_as_double(result) >= 0) {
                     break;
                 }
                 list->items[j + 1] = list->items[j];
@@ -5021,6 +5071,336 @@ static Value os_joinpath(int argc, Value *argv) {
         buf_add(&buf, text->chars, text->len);
     }
     return buf_finish(&buf);
+}
+
+// --- std:cli ----------------------------------------------------------------
+//
+// os.args() hands back the raw strings; this turns them into typed values
+// against a schema, which is the twenty-five line while loop every program used
+// to write for itself. Every message here is the interpreter's, word for word.
+
+/// The name of an option, from a key in the schema map.
+static const char *cli_key(Map *spec, int32_t index) {
+    return ((Str *)spec->order[index].as.o)->chars;
+}
+
+/// The option's declared default, or nil when it is not declared.
+static Value cli_default(Map *spec, const char *name) {
+    Value out;
+    return map_get(spec, str_from_cstr(name), &out) ? out : v_nil();
+}
+
+/// Damerau-Levenshtein: insert, delete, substitute, swap two neighbours. The
+/// swap is what makes `--samplse` for `--samples` one edit instead of two.
+static int cli_distance(const char *a, const char *b) {
+    int length_a = (int)strlen(a);
+    int length_b = (int)strlen(b);
+    if (length_a > 64 || length_b > 64) {
+        return 99;
+    }
+    int matrix[65][65];
+    for (int i = 0; i <= length_a; i++) matrix[i][0] = i;
+    for (int j = 0; j <= length_b; j++) matrix[0][j] = j;
+    for (int i = 1; i <= length_a; i++) {
+        for (int j = 1; j <= length_b; j++) {
+            int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+            int best = matrix[i - 1][j] + 1;
+            if (matrix[i][j - 1] + 1 < best) best = matrix[i][j - 1] + 1;
+            if (matrix[i - 1][j - 1] + cost < best) best = matrix[i - 1][j - 1] + cost;
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] &&
+                matrix[i - 2][j - 2] + 1 < best) {
+                best = matrix[i - 2][j - 2] + 1;
+            }
+            matrix[i][j] = best;
+        }
+    }
+    return matrix[length_a][length_b];
+}
+
+/// The declared name within one edit of what was typed, or NULL.
+static const char *cli_nearest(Map *spec, const char *name) {
+    const char *best = NULL;
+    int best_distance = 99;
+    for (int32_t i = 0; i < spec->order_count; i++) {
+        const char *candidate = cli_key(spec, i);
+        int distance = cli_distance(name, candidate);
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = candidate;
+        }
+    }
+    if (!best) return NULL;
+    return best_distance <= ((int)strlen(best) <= 4 ? 2 : 1) ? best : NULL;
+}
+
+/// The options, as "--a, --b and --c".
+static void cli_list_options(Map *spec, char *out, size_t size) {
+    size_t used = 0;
+    for (int32_t i = 0; i < spec->order_count; i++) {
+        int last = i == spec->order_count - 1;
+        used += (size_t)snprintf(out + used, size - used, "%s--%s",
+                                 i == 0 ? "" : (last ? " and " : ", "), cli_key(spec, i));
+        if (used >= size) return;
+    }
+}
+
+/// "--name N", "--name NUMBER", "--name TEXT" or "--name" for a switch.
+static void cli_shape(Value fallback, const char *name, char *out, size_t size) {
+    const char *tail = fallback.tag == T_BOOL ? "" : fallback.tag == T_INT ? " N"
+                     : fallback.tag == T_FLOAT ? " NUMBER" : " TEXT";
+    snprintf(out, size, "--%s%s", name, tail);
+}
+
+static void cli_usage(Map *spec, Map *notes) {
+    char shape[160];
+    char fallback_text[160];
+    char described[512];
+    printf("usage: <script> [options]\n\noptions:\n");
+    for (int32_t i = 0; i < spec->order_count; i++) {
+        const char *name = cli_key(spec, i);
+        Value fallback = cli_default(spec, name);
+        cli_shape(fallback, name, shape, sizeof shape);
+        if (v_is_str(fallback)) {
+            snprintf(fallback_text, sizeof fallback_text, "\"%s\"", ((Str *)fallback.as.o)->chars);
+        } else {
+            snprintf(fallback_text, sizeof fallback_text, "%s",
+                     ((Str *)tern_to_string(fallback).as.o)->chars);
+        }
+        described[0] = '\0';
+        if (notes) {
+            Value note;
+            if (map_get(notes, str_from_cstr(name), &note) && v_is_str(note)) {
+                snprintf(described, sizeof described, "  %s", ((Str *)note.as.o)->chars);
+            }
+        }
+        printf("  %-20s default %-14s%s\n", shape, fallback_text, described);
+    }
+    printf("  %-20s this text\n", "--help");
+    fflush(stdout);
+}
+
+/// The positional arguments left by the last parse().
+static List *cli_positional = NULL;
+
+static List *cli_positional_list(void) {
+    if (!cli_positional) {
+        cli_positional = list_new(0);
+    }
+    return cli_positional;
+}
+
+static Value cli_parse(int argc, Value *argv) {
+    Value schema = argv[0];
+    if (!v_is_map(schema)) {
+        tern_panic("TypeError", "parse() expects a map of option names to defaults, not %s",
+                   tern_type_name(schema));
+    }
+    Map *spec = (Map *)schema.as.o;
+    // The optional second argument: one-line descriptions for --help.
+    Map *notes = argc > 1 && v_is_map(argv[1]) ? (Map *)argv[1].as.o : NULL;
+    Map *results = map_new();
+    List *positional = cli_positional_list();
+    positional->count = 0;
+
+    // Every declared option starts at its default, so an option nobody typed
+    // still has the value the caller wrote down once.
+    for (int32_t i = 0; i < spec->order_count; i++) {
+        Value fallback;
+        if (map_get(spec, spec->order[i], &fallback)) {
+            map_set(results, spec->order[i], fallback);
+        }
+    }
+
+    char message[768];
+    char shape[160];
+    char options[512];
+
+    for (int i = 0; i < tern_arg_count; i++) {
+        const char *argument = tern_arg_values[i];
+        if (strcmp(argument, "--") == 0) {
+            // Everything after a bare `--` is positional, whatever it looks like.
+            for (int rest = i + 1; rest < tern_arg_count; rest++) {
+                list_push(positional, str_from_cstr(tern_arg_values[rest]));
+            }
+            break;
+        }
+        if (strcmp(argument, "--help") == 0 || strcmp(argument, "-h") == 0) {
+            cli_usage(spec, notes);
+            return v_nil();
+        }
+        if (argument[0] != '-' || argument[1] == '\0') {
+            list_push(positional, str_from_cstr(argument));
+            continue;
+        }
+
+        // --name=value, or --name with the value in the next argument.
+        char name_buffer[128];
+        const char *name = argument;
+        while (*name == '-') name++;
+        const char *inline_value = NULL;
+        const char *equals = strchr(name, '=');
+        if (equals) {
+            size_t length = (size_t)(equals - name);
+            if (length >= sizeof name_buffer) length = sizeof name_buffer - 1;
+            memcpy(name_buffer, name, length);
+            name_buffer[length] = '\0';
+            name = name_buffer;
+            inline_value = equals + 1;
+        }
+
+        // Looked up with map_get rather than cli_default, so a declared option
+        // whose default is nil is a text option and not an unknown one.
+        Value fallback;
+        if (!map_get(spec, str_from_cstr(name), &fallback)) {
+            const char *best = cli_nearest(spec, name);
+            cli_list_options(spec, options, sizeof options);
+            if (best) {
+                snprintf(message, sizeof message,
+                         "unknown option '--%s'; did you mean '--%s'? The options are %s.",
+                         name, best, options);
+            } else {
+                snprintf(message, sizeof message,
+                         "unknown option '--%s'; the options are %s.", name, options);
+            }
+            tern_panic("UsageError", "%s", message);
+        }
+
+        if (fallback.tag == T_BOOL) {
+            // `--ascii` is true, `--ascii=false` is false, and `--ascii false`
+            // leaves "false" as a positional argument: a switch that sometimes
+            // eats the next word is worse than one that never does.
+            bool truth = inline_value == NULL ||
+                         (strcmp(inline_value, "false") != 0 && strcmp(inline_value, "0") != 0 &&
+                          strcmp(inline_value, "no") != 0 && strcmp(inline_value, "off") != 0);
+            map_set(results, str_from_cstr(name), v_bool(truth));
+            continue;
+        }
+
+        if (!inline_value) {
+            if (i + 1 >= tern_arg_count) {
+                cli_shape(fallback, name, shape, sizeof shape);
+                snprintf(message, sizeof message,
+                         "--%s needs a value: %s", name, shape);
+                tern_panic("UsageError", "%s", message);
+            }
+            inline_value = tern_arg_values[++i];
+        }
+
+        if (fallback.tag == T_INT) {
+            char *end = NULL;
+            long long number = strtoll(inline_value, &end, 10);
+            if (!end || end == inline_value || *end != '\0') {
+                cli_shape(fallback, name, shape, sizeof shape);
+                snprintf(message, sizeof message,
+                         "--%s wants a whole number, not '%s'; %s", name, inline_value, shape);
+                tern_panic("UsageError", "%s", message);
+            }
+            map_set(results, str_from_cstr(name), v_int((int64_t)number));
+        } else if (fallback.tag == T_FLOAT) {
+            char *end = NULL;
+            double number = strtod(inline_value, &end);
+            if (!end || end == inline_value || *end != '\0') {
+                cli_shape(fallback, name, shape, sizeof shape);
+                snprintf(message, sizeof message,
+                         "--%s wants a number, not '%s'; %s", name, inline_value, shape);
+                tern_panic("UsageError", "%s", message);
+            }
+            map_set(results, str_from_cstr(name), v_float(number));
+        } else {
+            map_set(results, str_from_cstr(name), str_from_cstr(inline_value));
+        }
+    }
+
+    return v_obj((Obj *)results);
+}
+
+static Value cli_args(int argc, Value *argv) {
+    (void)argc; (void)argv;
+    List *positional = cli_positional_list();
+    List *copy = list_new(positional->count);
+    for (int32_t i = 0; i < positional->count; i++) {
+        list_push(copy, positional->items[i]);
+    }
+    return v_obj((Obj *)copy);
+}
+
+static Value cli_has(int argc, Value *argv) {
+    Value name = argv[0];
+    if (!v_is_str(name)) {
+        tern_panic("TypeError", "has() expects an option name, not %s", tern_type_name(name));
+    }
+    const char *wanted = ((Str *)name.as.o)->chars;
+    size_t length = strlen(wanted);
+    for (int i = 0; i < tern_arg_count; i++) {
+        const char *argument = tern_arg_values[i];
+        if (strcmp(argument, "--") == 0) break;
+        if (strncmp(argument, "--", 2) != 0) continue;
+        const char *rest = argument + 2;
+        if (strncmp(rest, wanted, length) == 0 && (rest[length] == '\0' || rest[length] == '=')) {
+            return v_bool(true);
+        }
+    }
+    return v_bool(false);
+}
+
+/// cli.pair("320x240") as [320, 240].
+/// Trims spaces and tabs from both ends of a buffer, in place.
+static char *cli_trim(char *text) {
+    while (*text == ' ' || *text == '\t') {
+        text++;
+    }
+    size_t length = strlen(text);
+    while (length > 0 && (text[length - 1] == ' ' || text[length - 1] == '\t')) {
+        text[--length] = '\0';
+    }
+    return text;
+}
+
+static Value cli_pair(int argc, Value *argv) {
+    Value text_value = argv[0];
+    if (!v_is_str(text_value)) {
+        tern_panic("TypeError", "pair() expects text such as \"320x240\", not %s",
+                   tern_type_name(text_value));
+    }
+    const char *text = ((Str *)text_value.as.o)->chars;
+    // The optional second argument names the option, so the complaint says which
+    // one: "'320x0' for --size is not a size". Without it the message still names
+    // the value and the shape, which is most of the help.
+    char where[96];
+    where[0] = '\0';
+    if (argc > 1 && v_is_str(argv[1]) && ((Str *)argv[1].as.o)->chars[0] != '\0') {
+        snprintf(where, sizeof where, " for %s", ((Str *)argv[1].as.o)->chars);
+    }
+    char buffer[256];
+    snprintf(buffer, sizeof buffer, "%s", text);
+    char *whole = cli_trim(buffer);
+    char *separator = strpbrk(whole, "xX,");
+    if (!separator) {
+        tern_panic("UsageError", "'%s'%s is not a size: write WIDTHxHEIGHT, such as 320x240",
+                   text, where);
+    }
+    *separator = '\0';
+    char *first = cli_trim(whole);
+    char *end = NULL;
+    long width = strtol(first, &end, 10);
+    if (!end || end == first || *end != '\0') {
+        tern_panic("UsageError", "'%s'%s is not a size: write WIDTHxHEIGHT, such as 320x240",
+                   text, where);
+    }
+    const char *second = cli_trim(separator + 1);
+    long height = strtol(second, &end, 10);
+    if (!end || end == second || *end != '\0') {
+        tern_panic("UsageError", "'%s'%s is not a size: write WIDTHxHEIGHT, such as 320x240",
+                   text, where);
+    }
+    if (width < 1 || height < 1) {
+        tern_panic("UsageError", "'%s'%s is not a size: both numbers have to be at least 1",
+                   text, where);
+    }
+    List *list = list_new(2);
+    list_push(list, v_int((int64_t)width));
+    list_push(list, v_int((int64_t)height));
+    return v_obj((Obj *)list);
 }
 
 static Value os_args(int argc, Value *argv) {
@@ -9311,6 +9691,14 @@ static Value namespace_map(const char *ns) {
         return v_obj((Obj *)map);
     }
 
+    if (strcmp(ns, "cli") == 0) {
+        map_set(map, str_from_cstr("parse"), make_native_arity("parse", cli_parse, 1, 2));
+        map_set(map, str_from_cstr("args"), make_native_arity("args", cli_args, 0, 0));
+        map_set(map, str_from_cstr("has"), make_native_arity("has", cli_has, 1, 1));
+        map_set(map, str_from_cstr("pair"), make_native_arity("pair", cli_pair, 1, 2));
+        return v_obj((Obj *)map);
+    }
+
     if (strcmp(ns, "os") == 0) {
         map_set(map, str_from_cstr("platform"), make_native_arity("platform", os_platform, 0, 0));
         map_set(map, str_from_cstr("lineSeparator"), make_native_arity("lineSeparator", os_linesep, 0, 0));
@@ -9548,7 +9936,7 @@ static Value namespace_map(const char *ns) {
 /// Used for `import "std:x"` constants and for globals the interpreter exposes.
 Value tern_lookup_std_member(const char *name) {
     static const char *spaces[] = {"math", "time", "json", "os", "random", "text", "lists",
-                                  "fs", "net", "http", "rcon", "sftp", "gl", "d3d12", NULL};
+                                  "fs", "net", "http", "rcon", "sftp", "gl", "d3d12", "cli", NULL};
     for (int i = 0; spaces[i]; i++) {
         Value space = namespace_map(spaces[i]);
         Value member;
@@ -9573,7 +9961,7 @@ Value tern_lookup_global(const char *name) {
         strcmp(name, "lists") == 0 || strcmp(name, "net") == 0 ||
         strcmp(name, "http") == 0 || strcmp(name, "rcon") == 0 ||
         strcmp(name, "sftp") == 0 || strcmp(name, "gl") == 0 ||
-        strcmp(name, "d3d12") == 0) {
+        strcmp(name, "d3d12") == 0 || strcmp(name, "cli") == 0) {
         return namespace_map(name);
     }
 

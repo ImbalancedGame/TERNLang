@@ -1,0 +1,56 @@
+// Command-line options read against a schema of defaults. No arguments are
+// passed to this script, so what is under test is the defaults, the type
+// conversion and the messages - the same output is expected from the
+// interpreter and from a compiled binary with an empty argument list.
+import "std:cli";
+
+let options = cli.parse({
+    "out": "picture.png",
+    "size": "320x240",
+    "samples": 1,
+    "ratio": 1.5,
+    "ascii": false,
+}, {
+    "out": "where the picture goes",
+    "samples": "rays per pixel",
+});
+
+println("defaults: ${options["out"]} ${options["samples"]} ${options["ratio"]} ${options["ascii"]}");
+println("typed: " + str(cli.has("out")) + " " + str(cli.has("size")));
+println("positional: " + str(cli.args()));
+
+let size = cli.pair(options["size"], "--size");
+println("pair: ${size[0]}x${size[1]}");
+
+// Other separators and padding people type: "640X480", "640, 480".
+println("pair: " + str(cli.pair("640X480")));
+println("pair: " + str(cli.pair(" 640 , 480 ")));
+
+fn bad_size(text, name) {
+    try {
+        cli.pair(text, name);
+        return "no error";
+    } catch (error) {
+        return str(error);
+    }
+}
+
+fn bad_call(what) {
+    try {
+        if (what == "schema") { cli.parse("not a map"); }
+        if (what == "has") { cli.has(3); }
+        return "no error";
+    } catch (error) {
+        return str(error);
+    }
+}
+
+// A size that is not a size says which option, which value, and what to write.
+println(bad_size("320", "--size"));
+println(bad_size("320x0", "--size"));
+println(bad_size("320x240x1", "--size"));
+println(bad_size("-8x-8", ""));
+
+// The schema itself has to be a map of defaults, and has() wants a name.
+println(bad_call("schema"));
+println(bad_call("has"));

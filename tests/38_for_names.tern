@@ -1,0 +1,16 @@
+// A for loop binds one name, or a name and a value, and nothing else. A third
+// name used to be reported under TRN0210 - a code that already meant "invalid
+// assignment target", so a search for it found the wrong thing. The compiler
+// must keep saying no, under its own code, and must say how many names it got.
+//
+// This test only checks the compiler, so it is not run natively.
+
+let xs = [1, 2, 3];
+
+for i, value, extra in xs {
+    println(i, value, extra);
+}
+
+for a, b, c, d in xs {
+    println(a, b, c, d);
+}

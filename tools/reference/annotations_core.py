@@ -123,6 +123,51 @@ no method equivalent that matters, and `text.join` is the function form of
             'println(text.join(["a", "b"], "-"));',
         ],
     },
+    "cli": {
+        "title": "cli",
+        "summary": "Command-line options, read against a schema of defaults.",
+        "intro": """
+A program that takes options needs three things: to read them, to say what it
+does with them, and to say no politely to something it does not understand.
+`cli.parse` is all three. It takes the option names with their defaults and
+their types baked in - a `false` default is a switch, a number default takes a
+number, anything else takes text - then reads `os.args()`:
+
+- `--out x.png` and `--out=x.png` both work.
+- `--ascii` sets true and never swallows the next word; `--ascii=false` sets false.
+- A number that is not a number is refused, naming the option and the shape it wants.
+- An unknown option is refused with the nearest declared name when there is one.
+- `--help` (or `-h`) prints a table of the options and their defaults, and
+  `parse` answers `nil`, which is why every program that calls it starts with
+  `if (options == nil) { return; }`.
+- `--` ends the options; everything after it is positional.
+- Anything left over is reachable from `cli.args()`.
+
+The optional second argument is a map from option name to a one-line
+description, which is all `--help` needs to print a usage screen worth reading.
+Without it the help is still correct, just terser.
+""",
+        "example": [
+            'import "std:cli";',
+            "",
+            "let options = cli.parse({",
+            '    "out": "picture.png",',
+            '    "size": "320x240",',
+            '    "samples": 1,',
+            '    "ascii": false,',
+            "}, {",
+            '    "out": "where the PNG goes",',
+            '    "size": "WIDTHxHEIGHT",',
+            '    "samples": "rays per pixel",',
+            '    "ascii": "print a text preview as well",',
+            "});",
+            "if (options == nil) { return; }   // --help already printed",
+            "",
+            'let size = cli.pair(options["size"], "--size");',
+            'println(options["out"], size[0], size[1], options["samples"], options["ascii"]);',
+            'if (cli.has("samples")) { println("samples was typed"); }',
+        ],
+    },
     "time": {
         "title": "time",
         "summary": "The clock, and sleeping.",
@@ -733,6 +778,95 @@ FUNCTIONS = {
     },
 
     # ------------------------------------------------------------------- os
+    # ------------------------------------------------------------------ cli
+    "cli.parse": {
+        "summary": "Reads the arguments against a schema of defaults; nil after printing --help.",
+        "params": [
+            ("schema", "map", "Option name to default value. The default's type is the option's type: `false` is a switch, a number takes a number, anything else takes text."),
+            ("notes", "map, optional", "Option name to a one-line description, printed beside the option by `--help`."),
+        ],
+        "returns": ("map or nil", "Every declared option, typed or defaulted. `nil` when `--help` was asked for and the table has been printed."),
+        "errors": [
+            ("UsageError", "An unknown option, a missing value, or a value whose text is not a number. The message names the option and, for a near-miss, suggests the declared one."),
+            ("TypeError", "The first argument is not a map."),
+        ],
+        "remarks": """
+The whole parse is strict: a typo is an error rather than a silent default, because the
+alternative is a program that runs with the wrong settings and says nothing. The error
+message lists the options it does know, so the fix is in the message.
+
+A switch never consumes the next argument, so `--ascii --out x.png` and
+`--ascii out.png` both leave `out.png` positional. `--ascii=false` turns one off
+explicitly. `--` stops option parsing, which is how a file called `--out` is passed.
+""",
+        "example": [
+            'import "std:cli";',
+            "",
+            'let options = cli.parse({"out": "a.png", "samples": 1, "ascii": false});',
+            "if (options == nil) { return; }",
+            'println(options["out"], options["samples"], options["ascii"]);',
+        ],
+        "see": ["cli.args", "cli.has", "cli.pair", "os.args"],
+    },
+    "cli.args": {
+        "summary": "The arguments that were not options, from the last parse.",
+        "params": [],
+        "returns": ("list of string", "The positional arguments, in the order they were typed. Empty before any call to `cli.parse`."),
+        "remarks": """
+Options and positionals can be mixed: `--out x.png one.png two.png` leaves
+`["one.png", "two.png"]` here. Everything after `--` is positional even if it
+starts with a dash.
+""",
+        "example": [
+            'import "std:cli";',
+            "",
+            'let options = cli.parse({"out": "a.png"});',
+            "if (options == nil) { return; }",
+            "for path in cli.args() { println(path); }",
+        ],
+        "see": ["cli.parse"],
+    },
+    "cli.has": {
+        "summary": "True when the argument was typed at all.",
+        "params": [("name", "string", "The option name, without the leading dashes.")],
+        "returns": ("bool", "True when `--name` or `--name=...` appears in the arguments."),
+        "remarks": """
+A default is not the same thing as a request. `--frames 12` and no `--frames` at
+all leave the same value in the parsed map, and only `cli.has("frames")` tells
+them apart - which is what a program needs to decide whether the user asked for
+something or merely failed to.
+""",
+        "example": [
+            'import "std:cli";',
+            "",
+            'let options = cli.parse({"frames": 12});',
+            'if (cli.has("frames")) { println("asked for " + str(options["frames"])); }',
+        ],
+        "see": ["cli.parse"],
+    },
+    "cli.pair": {
+        "summary": "Splits \"320x240\" into [320, 240].",
+        "params": [
+            ("text", "string", "Two whole numbers around a lowercase `x`, such as `320x240`."),
+            ("name", "string, optional", "The option this came from, used in the error message: `'320' for --size is not a size`."),
+        ],
+        "returns": ("list of int", "`[width, height]`."),
+        "errors": [("UsageError", "The text is not two positive whole numbers around an `x`. The message shows the accepted form.")],
+        "remarks": """
+The message is the point. `int(parts[0])` on `--size 320x` raises a conversion
+error that does not mention the option, the value, or the shape wanted;
+`cli.pair` does all three, and rejects `0` and negatives, which pass `int` and
+then make a renderer fail in a way that names nothing.
+""",
+        "example": [
+            'import "std:cli";',
+            "",
+            'let options = cli.parse({"size": "320x240"});',
+            'let size = cli.pair(options["size"], "--size");',
+            'println(size[0] * size[1] + " pixels");',
+        ],
+        "see": ["cli.parse"],
+    },
     "os.args": {
         "summary": "The script's arguments.",
         "params": [],

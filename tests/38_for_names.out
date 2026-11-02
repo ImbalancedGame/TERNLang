@@ -1,0 +1,2 @@
+38_for_names:10: error TRN0214: a for loop binds at most two names (a, b); this one has 3
+38_for_names:14: error TRN0214: a for loop binds at most two names (a, b); this one has 4

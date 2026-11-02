@@ -69,6 +69,9 @@ namespace TERN
 
         public List<string> ScriptArguments { get; } = new();
 
+        /// <summary>What <c>cli.parse</c> left over after reading <see cref="ScriptArguments"/>.</summary>
+        public List<string> ScriptPositionals { get; } = new();
+
         public Random Random { get; private set; } = new();
 
         public void SeedRandom(long seed) => Random = new Random(unchecked((int)seed));
