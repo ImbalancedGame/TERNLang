@@ -477,7 +477,7 @@ LD_LIBRARY_PATH=build/qt-stubs .venv/bin/python tools/ide/ui_test.py   # 133 che
 .venv/bin/python tools/test_package.py                   # 15 checks, packaging
 ```
 
-`tools/test_runner.py` (21 checks) and `tools/test_sources.py` (4) cover what
+`tools/test_runner.py` (33 checks) and `tools/test_sources.py` (4) cover what
 neither half can: how the CLI is started on a platform that is not this one, and
 the source defects no run would reveal.
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -39,12 +40,25 @@ namespace TernRunner
             }
             catch (TernCompileException compile)
             {
+                var missingModule = false;
                 foreach (var diagnostic in compile.Diagnostics)
                 {
-                    if (diagnostic.Severity == DiagnosticSeverity.Error)
+                    if (diagnostic.Severity != DiagnosticSeverity.Error)
                     {
-                        Console.Error.WriteLine(diagnostic.Format());
+                        continue;
                     }
+
+                    Console.Error.WriteLine(diagnostic.Format());
+                    missingModule |= diagnostic.Code == "TRN0218";
+                }
+
+                if (missingModule)
+                {
+                    // The error says the build does not have the module; this says
+                    // which build is answering, because the usual cause is an
+                    // assembly left over from an older tree (build\Release\ rather
+                    // than build\).
+                    Console.Error.WriteLine($"note: this is {DescribeBuild()}");
                 }
 
                 return 2;
@@ -64,8 +78,56 @@ namespace TernRunner
         private static int PrintVersion()
         {
             Console.WriteLine($"TERN {Version}");
+            Console.WriteLine($"runner  {RunnerPath()}");
+            Console.WriteLine($"built   {RunnerBuilt()}");
+
+            using var engine = new TernEngine();
+            Console.WriteLine($"modules {string.Join(", ", engine.StandardModuleNames)}");
             return 0;
         }
+
+        /// <summary>
+        /// The assembly that is executing, so an old copy is visible.
+        ///
+        /// The assembly, not the process: the process is `dotnet`, and the whole
+        /// point is which `.dll` was handed to it.
+        /// </summary>
+        private static string RunnerPath()
+        {
+            var location = typeof(Program).Assembly.Location;
+            if (string.IsNullOrEmpty(location))
+            {
+                location = Environment.ProcessPath;
+            }
+
+            return string.IsNullOrEmpty(location) ? "(unknown)" : location;
+        }
+
+        /// <summary>
+        /// When that assembly was written, not when this language version says it
+        /// is: two builds of the same version are exactly the case that needs
+        /// telling apart.
+        /// </summary>
+        private static string RunnerBuilt()
+        {
+            var location = typeof(Program).Assembly.Location;
+            if (string.IsNullOrEmpty(location))
+            {
+                return "(unknown)";
+            }
+
+            try
+            {
+                return File.GetLastWriteTimeUtc(location).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + " UTC";
+            }
+            catch (IOException)
+            {
+                return "(unknown)";
+            }
+        }
+
+        private static string DescribeBuild() =>
+            $"{RunnerPath()}, built {RunnerBuilt()}; rebuild if that is not the assembly your build just wrote";
 
         private static int PrintHelp()
         {
