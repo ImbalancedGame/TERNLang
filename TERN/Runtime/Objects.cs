@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Text;
 using TERN.Compiler;
 
@@ -246,6 +247,7 @@ namespace TERN.Runtime
 
         private static long NormalizeHash(int hash) => hash == 0 ? 1L : hash;
 
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public bool TryGet(in Value key, out Value value)
         {
             var hash = NormalizeHash(key.GetHashCode());
@@ -283,6 +285,7 @@ namespace TERN.Runtime
             return value;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public void Set(in Value key, in Value value)
         {
             var hash = NormalizeHash(key.GetHashCode());

@@ -2398,6 +2398,7 @@ namespace TERN.Runtime
         /// stack buffer: one allocation and no <see cref="StringBuilder"/>.
         /// Anything else falls back to the general path.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private Value ConcatValues(int start, int count)
         {
             var size = 0;
@@ -3269,6 +3270,7 @@ namespace TERN.Runtime
             _ => throw Error("TypeError", $"{what} must be an integer, not {TypeName(value)}"),
         };
 
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public Value LoadIndexed(in Value target, in Value index)
         {
             switch (target.Kind)
@@ -3380,6 +3382,7 @@ namespace TERN.Runtime
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public void StoreIndexed(in Value target, in Value index, in Value value)
         {
             switch (target.Kind)

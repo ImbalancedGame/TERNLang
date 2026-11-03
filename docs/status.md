@@ -13,8 +13,8 @@ caveats below.
 
 | Area | State | Verified by |
 | --- | --- | --- |
-| Language, interpreter | complete | 41 golden runs, `tools/test.sh` |
-| Language, compiled (`native/`) | complete, same output and same exit status | `native/run_tests.py` (38), `native/parity.py` (51 programs) |
+| Language, interpreter | complete | 42 golden runs, `tools/test.sh` |
+| Language, compiled (`native/`) | complete, same output and same exit status | `native/run_tests.py` (39), `native/parity.py` (52 programs) |
 | `math` `json` `os` `fs` `text` `lists` `time` `random` `cli` | complete, both back ends | golden tests, parity |
 | `net` (TCP, framing, tokens, frame ceiling, UDP, raw mode) | complete, both back ends | `tests/26_net.tern`, `tests/35_raw_bytes.tern`, `tools/test-tls.sh` |
 | `http` / `https` | complete, both back ends | `tests/28_http.tern`, `tools/test-tls.sh` |
@@ -36,11 +36,11 @@ Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       48 passed
+./tools/test.sh                                       49 passed
 python3 tools/test_runner.py                          37 passed
 python3 tools/test_package.py                         15 passed
-python3 native/run_tests.py                           38 passed
-python3 native/parity.py                              51 compared, 0 differing
+python3 native/run_tests.py                           39 passed
+python3 native/parity.py                              52 compared, 0 differing
 python3 tools/test_examples.py                        97 passed
 python3 tools/test_namespaces.py                      24 passed
 bash tools/test-gl.sh                                 ok
@@ -59,17 +59,21 @@ own clock. Full notes in [`../bench/compare/workloads.md`](../bench/compare/work
 
 | Workload | TERN | TERN compiled | Lua 5.4 | LuaJIT | Node 22 | C# |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fib` | 127 | 18 | 55 | 6 | 10 | 5 |
-| `loop` | 116 | 5 | 31 | 12 | 9 | 5 |
-| `maps` | 187 | 150 | 177 | 59 | 109 | 71 |
-| `bintree` | 49 | 5 | 34 | 7 | 5 | 26 |
-| `strings` | 22 | 5 | 11 | 5 | 3 | 4 |
+| `fib` | 140 | 18 | 57 | 6 | 9 | 5 |
+| `loop` | 126 | 5 | 32 | 12 | 8 | 5 |
+| `maps` | 102 | 98 | 158 | 57 | 98 | 69 |
+| `bintree` | 43 | 5 | 29 | 7 | 5 | 26 |
+| `strings` | 16 | 3 | 11 | 5 | 3 | 4 |
 
-Milliseconds, best of five. Compiling is worth 7-23x on the compute-bound
-workloads and nothing on `maps`, which is memory-latency bound: the same table
-of 800 000 integer keys takes 199 ms compiled and 197 ms interpreted, with the
-collector idle. Build cost is ~4 s and ~220 KB per binary; a compiled binary
-starts in 2 ms against 112 ms for the interpreter.
+Milliseconds, best of five, all six columns measured in one sweep. `maps` used
+to be the workload TERN lost: 187 ms interpreted and 150 ms compiled, level with
+Lua and behind Node. Two things were wrong with it and neither was the table —
+the generated C formatted every key's number with `snprintf`, twice per value,
+and the interpreter ran the map's helpers as tier-0 JIT code for the whole
+200 ms the workload lasts. Fixing both took `maps` to 102 / 98, ahead of Lua 5.4
+and level with Node. Compiling is still worth 7-25x on the compute-bound
+workloads. Build cost is ~4 s and ~220 KB per binary; a compiled binary starts
+in 2 ms against 112 ms for the interpreter.
 
 ### What has not been benchmarked
 
@@ -224,6 +228,19 @@ Out of scope by request: DLSS, and FTP (SFTP is the supported transfer, because
 SSH is what the servers actually offer).
 
 ## Recently fixed
+
+* **`maps` was the one benchmark TERN lost, and the table was not the reason.**
+  The generated C formatted each interpolated number with `snprintf("%lld")`
+  twice per value - once to count the digits, once to write them - and the
+  interpreter ran `TernMap.TryGet`/`Set`, `Value.GetHashCode`, `StringHash`,
+  `LoadIndexed`, `StoreIndexed` and `ConcatValues` as tier-0 JIT code for the
+  whole 200 ms the workload lasts, promoting them just after it ended. Running
+  the same workload three times in one process shows it: 200 / 200 / 73 ms.
+  The digits are now written by hand in C and those methods are compiled fully
+  on their first call, which took the workload from 195 to 99-104 ms
+  interpreted (two 5-run sweeps) and from 141 to 94-98 compiled, with the other
+  four workloads unmoved. It is now ahead of Lua 5.4 and level with Node;
+  `tests/42_int_text.tern` pins the digits at both ends of the int64 range.
 
 * **The GPU ray tracer's shader could not compile at all.** `trace()` called
   itself once per reflection, and shader model 5.0 has no call stack, so fxc

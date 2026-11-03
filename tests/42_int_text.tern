@@ -1,0 +1,22 @@
+// Every way a number becomes text, at the ends of the range: the interpolation
+// path, str(), json, and the debug form used when a value is printed inside a
+// container. The native backend writes these digits by hand, so this is the
+// test that says its loop agrees with the framework's formatter.
+
+let values = [
+    0, 1, -1, 9, 10, -10,
+    99, 100, -100,
+    9223372036854775807,
+    -9223372036854775807 - 1,
+    1000000000000000000,
+];
+
+for (let i = 0; i < values.length; i++) {
+    let n = values[i];
+    println("${n}");
+    println(str(n));
+    println(json.stringify(n));
+    println([n]);
+    println({"n": n});
+    println("a${n}b${n + 0}c");
+}
