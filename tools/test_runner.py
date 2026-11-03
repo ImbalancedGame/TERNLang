@@ -70,6 +70,57 @@ def main(argv):
                  "TERN" in (finished.stdout or "") or finished.stdout.strip() != "",
                  (finished.stdout or "")[:120])
 
+    # --------------------------------------- the CLI says which build it is
+    # A stale assembly is invisible otherwise: a `dotnet build` that failed, or
+    # a leftover build\Release\ next to build\, leaves an old DLL that compiles
+    # an old language. `version` has to name the file it is running from.
+    checks.check("version names the assembly, not the dotnet host",
+                 "TERN.Runner.dll" in (finished.stdout or ""),
+                 (finished.stdout or "")[:300])
+    checks.check("version says when that assembly was built",
+                 "built" in (finished.stdout or "") and "UTC" in (finished.stdout or ""),
+                 (finished.stdout or "")[:300])
+    checks.check("version lists the std: modules this build has",
+                 "std:cli" in (finished.stdout or "") and "std:fs" in (finished.stdout or ""),
+                 (finished.stdout or "")[:400])
+
+    # ------------------------------------------------- a missing std: module
+    # The report this exists for: a runner older than the script said
+    #   error TRN0204: cannot load module 'std:cli'
+    # then one undefined-variable error per use of `cli`, which blames the
+    # script for a stale build.
+    with tempfile.TemporaryDirectory(prefix="tern-missing-") as folder:
+        script = os.path.join(folder, "needs.tern")
+        with open(script, "w", encoding="utf-8") as handle:
+            handle.write('import "std:nosuchthing";\n'
+                         "\n"
+                         "fn main() {\n"
+                         '    nosuchthing.parse({});\n'
+                         "}\n")
+
+        failed = runner.run(ROOT, ["run", script], capture_output=True, text=True)
+        output = failed.stderr or ""
+        checks.check("an unknown std: module fails the run", failed.returncode != 0, str(failed.returncode))
+        checks.check("with its own error code", "TRN0218" in output, output[:300])
+        checks.check("naming the module that is missing", "std:nosuchthing" in output, output[:300])
+        checks.check("and listing the modules the build does have",
+                     "cli, " in output and ", fs," in output, output[:400])
+        checks.check("saying that a rebuild is the answer", "rebuild" in output, output[:400])
+        checks.check("reporting which assembly answered", "TERN.Runner.dll" in output, output[:400])
+        checks.check("once per cause, not once per use",
+                     output.count("error") == 1, output.replace("\n", " | ")[:400])
+        # A file module that is not there is a different mistake: its own code,
+        # and none of the standard-library advice.
+        file_import = os.path.join(folder, "imports.tern")
+        with open(file_import, "w", encoding="utf-8") as handle:
+            handle.write('import "./absent.tern";\n')
+
+        missing_file = runner.run(ROOT, ["run", file_import], capture_output=True, text=True)
+        file_output = missing_file.stderr or ""
+        checks.check("a missing file module keeps its own code", "TRN0204" in file_output, file_output[:300])
+        checks.check("and does not talk about rebuilding the runner",
+                     "rebuild" not in file_output, file_output[:300])
+
     # ------------------------------------------- assembly wins over a script
     if os.path.exists(os.path.join(ROOT, "build", "TERN.Runner.dll")):
         loaded = runner.command(ROOT)

@@ -28,7 +28,7 @@ caveats below.
 | Language server (`ide/Server`) | complete, LSP 3.17, typed completion | `tools/test-ide.sh` (58) |
 | TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (133) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
-| Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (15) |
+| Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (33) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
 | Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic — each run, not just compiled | `tools/test_examples.py` (91) |
 
@@ -37,7 +37,7 @@ in all of them:
 
 ```
 ./tools/test.sh                                       47 passed
-python3 tools/test_runner.py                          21 passed
+python3 tools/test_runner.py                          33 passed
 python3 tools/test_package.py                         15 passed
 python3 native/run_tests.py                           37 passed
 python3 native/parity.py                              50 compared, 0 differing

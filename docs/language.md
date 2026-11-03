@@ -1252,11 +1252,18 @@ compilation fails.
 | `TRN03xx` | linter (warnings only) |
 
 Codes worth recognising, because the message alone does not say where to look:
-`TRN0206` undefined name, `TRN0207` too many arguments, `TRN0210` invalid
-assignment target, `TRN0212` unsupported assignment operator, `TRN0213`
-unbounded range outside a slice, `TRN0214` more than two names in a `for`,
-`TRN0215` a pattern declaration with no initializer, `TRN0216` a name bound
-twice in one pattern.
+`TRN0204` a file module that cannot be loaded, `TRN0206` undefined name,
+`TRN0207` too many arguments, `TRN0210` invalid assignment target, `TRN0212`
+unsupported assignment operator, `TRN0213` unbounded range outside a slice,
+`TRN0214` more than two names in a `for`, `TRN0215` a pattern declaration with
+no initializer, `TRN0216` a name bound twice in one pattern, `TRN0218` a `std:`
+module this build does not have, `TRN0221` a struct method that captures an
+outer variable.
+
+`TRN0218` is about the runner rather than the script: a `std:` module is
+compiled into it, so the message lists the ones the build does have. If the
+name you expected is not among them, the runner is older than the script —
+`tern version` says which assembly is answering and when it was built.
 
 ### The linter
 

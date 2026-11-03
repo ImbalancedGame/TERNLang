@@ -463,6 +463,33 @@ The suite is plain TERN: each `tests/NN_name.tern` is run and compared against
 output. `tools/test.sh` also fails when `docs/stdlib.md` drifts from the
 registered standard library.
 
+### "cannot load module 'std:...'"
+
+A `std:` name is compiled into the runner, not read from a file, so this means
+the runner answering is older than the script — usually an assembly left over
+from a previous layout. `build\TERN.Runner.dll` is the one `dotnet build` writes
+today; a `build\Release\TERN.Runner.dll` or `bin\...` beside it is from before
+that layout existed and can be deleted.
+
+`tern version` answers the question directly, because the version number is the
+same in every build:
+
+```bat
+tools\tern.cmd version
+:: TERN 2.0.0
+:: runner  E:\Repo\TERNLang\build\TERN.Runner.dll
+:: built   2026-11-03 12:26:31 UTC
+:: modules std:cli, std:d3d12, std:fs, ...
+```
+
+The `modules` line is what the build actually contains, so a name missing there
+is a stale or failed build rather than a mistake in the script.
+
+`tools\tern.cmd` runs whichever assembly the build wrote; naming a `.dll` by hand
+is what makes the stale copy easy to pick. When a `std:` import does fail, the
+error says which assembly answered and when it was built, so the mismatch is in
+the message rather than something to go looking for.
+
 ## Migrating from TERN 1.x
 
 TERN 2.x is not backward compatible. The table maps the old constructs:

@@ -20,6 +20,14 @@ namespace TERN.Compiler
     {
         bool TryGetStdModule(string name, out StdModule module);
 
+        /// <summary>
+        /// The `std:` module names this host can import. Only a diagnostic uses
+        /// it: "cannot load module" is unhelpful on its own, because a `std:`
+        /// name is compiled in rather than read from disk, so the interesting
+        /// fact is which names this build actually has.
+        /// </summary>
+        IEnumerable<string> StandardModuleNames { get; }
+
         /// <summary>Compiles (or returns a cached) file module. Returns null when it cannot be loaded.</summary>
         TernModule? LoadFileModule(string path, string? importerPath);
     }
@@ -1503,6 +1511,27 @@ namespace TERN.Compiler
                 _finally.AddRange(saved);
             }
 
+            /// <summary>
+            /// The TRN0218 message: the name that is missing, the names the build
+            /// does have, and why a rebuild is the answer.
+            /// </summary>
+            private string MissingStdModule(string path)
+            {
+                var available = new List<string>();
+                foreach (var name in Module.Host.StandardModuleNames)
+                {
+                    available.Add(name.StartsWith("std:", StringComparison.Ordinal) ? name.Substring(4) : name);
+                }
+
+                available.Sort(StringComparer.Ordinal);
+                var listed = available.Count == 0 ? "none" : string.Join(", ", available);
+
+                return $"cannot load module '{path}': this build has no standard-library module " +
+                       $"called '{path.Substring(4)}'. It has: {listed}. A 'std:' module is compiled " +
+                       "into the runner rather than read from a file, so a runner older than the " +
+                       "script cannot import a newer module - rebuild it.";
+            }
+
             private void CompileImport(ImportStmt import)
             {
                 if (Module.Host.TryGetStdModule(import.Path, out var stdModule))
@@ -1527,6 +1556,28 @@ namespace TERN.Compiler
                         Emit(Op.LoadConst, mapConstant, 0, 0, pop: 0, push: 1);
                         Emit(Op.LoadField, AddStringConstant(name), 0, 0, pop: 1, push: 1);
                         Emit(Op.StoreGlobal, slot, 0, 0, pop: 1, push: 0);
+                    }
+
+                    return;
+                }
+
+                if (import.Path.StartsWith("std:", StringComparison.Ordinal))
+                {
+                    // A std: name is compiled into the runner, not read from a
+                    // file, so this is a build that is older (or thinner) than
+                    // the script rather than a bad path. Say which names it does
+                    // have, and declare the alias anyway so the failure produces
+                    // one error instead of one per use of the module.
+                    Module.Error("TRN0218", MissingStdModule(import.Path), import);
+
+                    // Declare the name the script was about to use anyway. The
+                    // import has failed and the program will not run, and without
+                    // this every `cli.parse(...)` below reports its own
+                    // undefined-variable error for the same one cause.
+                    var binding = import.Alias ?? import.Path.Substring(4);
+                    if (!_scope.TryResolve(binding, out _))
+                    {
+                        _scope.Declare(binding, isConst: true, exported: true);
                     }
 
                     return;
