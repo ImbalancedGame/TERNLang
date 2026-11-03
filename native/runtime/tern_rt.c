@@ -782,9 +782,34 @@ static int64_t str_unit_of_offset(const Str *s, uint32_t offset) {
 
 Value str_from_cstr(const char *text) { return str_value(text, strlen(text)); }
 
+/// Writes the decimal digits of `value` into `out`, which needs room for 20
+/// characters, and returns how many were written.
+///
+/// snprintf("%lld") is the slowest thing on the hottest path there is -
+/// building a string out of a number - at roughly four times the cost of this
+/// loop, so the digits are written out by hand.
+static int format_int(char *out, int64_t value) {
+    uint64_t magnitude = value < 0 ? (uint64_t)0 - (uint64_t)value : (uint64_t)value;
+    char digits[20];
+    int count = 0;
+    do {
+        digits[count++] = (char)('0' + (int)(magnitude % 10));
+        magnitude /= 10;
+    } while (magnitude != 0);
+
+    int written = 0;
+    if (value < 0) {
+        out[written++] = '-';
+    }
+    while (count > 0) {
+        out[written++] = digits[--count];
+    }
+    return written;
+}
+
 Value str_from_int(int64_t value) {
-    char buffer[32];
-    int n = snprintf(buffer, sizeof buffer, "%lld", (long long)value);
+    char buffer[20];
+    int n = format_int(buffer, value);
     return str_value(buffer, (size_t)n);
 }
 
@@ -1198,8 +1223,8 @@ static void debug_into(Buf *buf, Value v) {
         case T_MISSING: buf_add_cstr(buf, "<missing>"); return;
         case T_BOOL: buf_add_cstr(buf, v.as.i ? "true" : "false"); return;
         case T_INT: {
-            char tmp[32];
-            int n = snprintf(tmp, sizeof tmp, "%lld", (long long)v.as.i);
+            char tmp[20];
+            int n = format_int(tmp, v.as.i);
             buf_add(buf, tmp, (size_t)n);
             return;
         }
@@ -2029,8 +2054,8 @@ Value tern_concat(Value *parts, int count) {
         if (v_is_str(part)) {
             total += ((Str *)part.as.o)->len;
         } else if (part.tag == T_INT) {
-            char tmp[32];
-            total += (size_t)snprintf(tmp, sizeof tmp, "%lld", (long long)part.as.i);
+            char tmp[20];
+            total += (size_t)format_int(tmp, part.as.i);
         } else if (part.tag == T_BOOL) {
             total += part.as.i ? 4 : 5;
         } else if (part.tag == T_NIL) {
@@ -2055,7 +2080,7 @@ Value tern_concat(Value *parts, int count) {
             memcpy(joined->chars + position, s->chars, s->len);
             position += s->len;
         } else if (part.tag == T_INT) {
-            position += (size_t)snprintf(joined->chars + position, 32, "%lld", (long long)part.as.i);
+            position += (size_t)format_int(joined->chars + position, part.as.i);
         } else if (part.tag == T_BOOL) {
             const char *word = part.as.i ? "true" : "false";
             size_t n = strlen(word);
@@ -4521,8 +4546,8 @@ static void json_write(Buf *buf, Value v, int indent, int level) {
             buf_add_cstr(buf, v.as.i ? "true" : "false");
             return;
         case T_INT: {
-            char tmp[32];
-            int n = snprintf(tmp, sizeof tmp, "%lld", (long long)v.as.i);
+            char tmp[20];
+            int n = format_int(tmp, v.as.i);
             buf_add(buf, tmp, (size_t)n);
             return;
         }

@@ -199,6 +199,7 @@ namespace TERN.Runtime
 
         public override bool Equals(object? obj) => obj is Value other && Equals(other);
 
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public override int GetHashCode()
         {
             switch (Kind)
@@ -242,6 +243,7 @@ namespace TERN.Runtime
         }
 
         /// <summary>FNV-1a over the UTF-16 characters of a string.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public static int StringHash(string text)
         {
             unchecked

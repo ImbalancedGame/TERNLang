@@ -230,23 +230,24 @@ timings, so startup and host warm-up are excluded. Best of five runs on a 2 vCPU
 
 | Workload   | TERN | TERN native | Lua 5.4 | LuaJIT | Node 22 | C#   | TERN / Lua |
 | ---------- | ---: | ----------: | ------: | -----: | ------: | ---: | ---------: |
-| `fib`      |  127 |          18 |      55 |      6 |      10 |    5 |      2.30x |
-| `loop`     |  116 |           5 |      31 |     12 |       9 |    5 |      3.69x |
-| `maps`     |  187 |         150 |     177 |     59 |     109 |   71 |      1.06x |
-| `bintree`  |   49 |           5 |      34 |      7 |       5 |   26 |      1.42x |
-| `strings`  |   22 |           5 |      11 |      5 |       3 |    4 |      1.91x |
+| `fib`      |  140 |          18 |      57 |      6 |       9 |    5 |      2.44x |
+| `loop`     |  126 |           5 |      32 |     12 |       8 |    5 |      3.95x |
+| `maps`     |  102 |          98 |     158 |     57 |      98 |   69 |      0.64x |
+| `bintree`  |   43 |           5 |      29 |      7 |       5 |   26 |      1.48x |
+| `strings`  |   16 |           3 |      11 |      5 |       3 |    4 |      1.41x |
 
-TERN is within 1.1x of Lua on `maps` and 3.7x behind on the tight numeric
+TERN is 1.6x faster than Lua on `maps` and 4x behind on the tight numeric
 loop; LuaJIT, Node and C# are tracing/AOT compilers
 and are 10-25x ahead on numeric code. How much of that the compiled backend
-takes back depends on the workload: 7x on `fib`, 23x on `loop`, 10x on
-`bintree`, and nothing at all on `maps`, where a table write costs what it costs
-whichever language performs it. Compiled, TERN is ahead of LuaJIT on `loop`
-and `bintree`, level on `strings`, and 2.5-3x behind on `fib` and `maps`.
+takes back depends on the workload: 8x on `fib`, 25x on `loop`, 9x on
+`bintree`, and 1.04x on `maps`, where the cost is the keys built with string
+interpolation and a probe into a table that has left cache - both of which the
+interpreter's BCL does about as well as generated C. Compiled, TERN is ahead of
+LuaJIT on `loop`, `bintree` and `strings`, and 3x behind on `fib`.
 
-These numbers move by up to 30% with host load: the same suite measured `maps`
-at 0.74x of Lua in an earlier session. See `bench/compare/workloads.md` for
-per-workload notes and the remaining per-opcode costs.
+These numbers move by up to 30% with host load. See
+`bench/compare/workloads.md` for per-workload notes, the remaining per-opcode
+costs, and what took `maps` from 187 ms to 102 in November 2026.
 
 `for` loops over lists, maps, strings and ranges used to leave one stack slot
 behind per iteration (`IterNext` kept the iterator it had already advanced).
@@ -306,16 +307,16 @@ comparable.
 
 | | `fib` | `loop` | `maps` | `bintree` | `strings` |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| interpreted | 127 | 116 | 187 | 49 | 22 |
-| compiled | 18 | 5 | 150 | 5 | 5 |
-| speed-up | 7.1x | 23x | 1.2x | 9.8x | 4.4x |
+| interpreted | 140 | 126 | 102 | 43 | 16 |
+| compiled | 18 | 5 | 98 | 5 | 3 |
+| speed-up | 7.8x | 25x | 1.04x | 8.6x | 5.3x |
 
 What compiling cannot fix is memory latency. A map write is a hash, a probe into
 a table large enough to leave cache, and — while the table grows — a rehash. The
-same loop writing 800 000 integer keys takes 199 ms compiled and 197 ms
+same loop writing 800 000 integer keys takes 264 ms compiled and 334 ms
 interpreted, and `TERN_GC_STATS=1` reports zero collections: the table is
 `malloc`ed outside the GC heap, so the collector is not the cost either. `maps`
-is the one workload where the interpreter's BCL dictionary is as good as the
+is the one workload where the interpreter's BCL dictionary is within 4% of the
 generated C.
 
 Compiled binaries keep the interpreter's stack traces, which costs about two
