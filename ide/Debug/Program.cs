@@ -63,6 +63,9 @@ namespace TERN.Debug
         private bool _finished;
         private Exception? _failure;
 
+        /// <summary>The status an `os.exit` asked for; 0 when the script just ended.</summary>
+        private int _exitCode;
+
         // Step state, applied when execution resumes.
         private enum StepMode { None, Into, Over, Out }
         private StepMode _step = StepMode.None;
@@ -290,12 +293,19 @@ namespace TERN.Debug
 
             _finished = false;
             _failure = null;
+            _exitCode = 0;
 
             _worker = new Thread(() =>
             {
                 try
                 {
                     _engine.Execute(_module, _vm);
+                }
+                catch (TernExitException exit)
+                {
+                    // `os.exit` is the script's own decision, not a failure: the
+                    // debugger reports it as an exit with that status.
+                    _exitCode = exit.Code;
                 }
                 catch (TernError error)
                 {
@@ -312,8 +322,9 @@ namespace TERN.Debug
                     Event(output, "exited", new Dictionary<string, object?>
                     {
                         ["ok"] = _failure is null,
-                        ["message"] = _failure?.Message ?? "exited",
+                        ["message"] = _failure?.Message ?? $"exited with status {_exitCode}",
                         ["type"] = _failure is TernError ternError ? ternError.ErrorType : null,
+                        ["code"] = _exitCode,
                     });
                 }
             })

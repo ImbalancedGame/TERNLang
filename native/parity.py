@@ -117,12 +117,18 @@ def main(argv):
 
             expected = interpreted.stdout + interpreted.stderr
             actual = compiled.stdout + compiled.stderr
-            if expected == actual:
+            if expected == actual and interpreted.returncode == compiled.returncode:
                 print("%-28s ok" % label)
                 continue
 
             failed += 1
             print("%-28s DIFFERS" % label)
+            # A status difference matters on its own: a build step reads the
+            # status, not the text, so a script that exits 3 on one side and 0
+            # on the other is a different program.
+            if expected == actual:
+                print("  exit status: tern run %d, native %d"
+                      % (interpreted.returncode, compiled.returncode))
             # Show the first differing line rather than a whole diff.
             left = expected.splitlines()
             right = actual.splitlines()

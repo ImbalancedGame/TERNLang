@@ -204,6 +204,7 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `args` | `args()` | Script arguments as a list. |
 | `cwd` | `cwd()` | Current working directory. |
 | `env` | `env(arg, [arg])` | Environment variable value, or nil. |
+| `exit` | `exit([arg])` | Ends the script with a status: 0 for success, anything else for failure. |
 | `joinPath` | `joinPath(...)` | Joins path segments for this platform. |
 | `lineSeparator` | `lineSeparator()` | The platform line separator. |
 | `platform` | `platform()` | Host platform name. |

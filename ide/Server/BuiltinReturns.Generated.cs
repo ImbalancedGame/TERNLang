@@ -202,6 +202,7 @@ namespace TERN.Ide
             ["net.udpReceive"] = "map",
             ["os.args"] = "list",
             ["os.cwd"] = "string",
+            ["os.exit"] = "nil",
             ["os.joinPath"] = "string",
             ["os.lineSeparator"] = "string",
             ["os.platform"] = "string",

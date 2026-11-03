@@ -680,6 +680,78 @@ def test_shaders(checks):
     checks.check("the ray tracer's HLSL passes the structural check", not ray_problems,
                  "; ".join(ray_problems[:4]))
 
+    # The check that was missing. The ray tracer used to call itself once per
+    # reflection, which passed every other lint and then failed on the GPU with
+    # "error X3500: 'trace': recursive functions not allowed in ps_5_0".
+    recursive = (
+        "float3 trace(float3 origin, float3 direction, int depth) {\n"
+        "    return depth > 0 ? trace(origin, direction, depth - 1) : origin;\n"
+        "}\n"
+        "float4 main(float4 pixel : SV_Position) : SV_Target {\n"
+        "    return float4(trace(pixel.xyz, pixel.xyz, 3), 1.0);\n"
+        "}\n")
+    problems = hlsl_lint.check(recursive, "recursive.hlsl")
+    checks.check("the lint rejects a shader that calls itself",
+                 any("recursive" in problem and "X3500" in problem for problem in problems),
+                 str(problems[:2]))
+
+    mutual = (
+        "float3 ping(float3 p) { return pong(p); }\n"
+        "float3 pong(float3 p) { return ping(p); }\n"
+        "float4 main(float4 pixel : SV_Position) : SV_Target {\n"
+        "    return float4(ping(pixel.xyz), 1.0);\n"
+        "}\n")
+    checks.check("and one that recurses through another function",
+                 any("recursive" in problem for problem in hlsl_lint.check(mutual, "mutual.hlsl")),
+                 str(hlsl_lint.check(mutual, "mutual.hlsl")[:2]))
+    checks.check("an ordinary shader is still accepted",
+                 not hlsl_lint.check(
+                     "float3 lift(float3 p) { return p * 2.0; }\n"
+                     "float4 main(float4 pixel : SV_Position) : SV_Target {\n"
+                     "    return float4(lift(pixel.xyz), 1.0);\n"
+                     "}\n", "plain.hlsl"))
+
+    # A run that produced no image is a failed run, and the status has to say
+    # so: a build step has nothing else to go on. The mock compiler refuses any
+    # source with FAIL in it, which is how this is checked without a GPU.
+    failing = os.path.join(work, "failing.tern")
+    with open(failing, "w", encoding="utf-8") as handle:
+        handle.write(
+            'import "std:d3d12";\n'
+            'import "std:os";\n'
+            '\n'
+            'fn main() {\n'
+            '    if (!d3d12.available()) { return; }\n'
+            '    let target = d3d12.create(8, 8);\n'
+            '    try {\n'
+            '        d3d12.pipeline(target,\n'
+            '            "float4 main(float4 p : SV_Position) : SV_Position { return p; }",\n'
+            '            "float4 main(float4 p : SV_Position) : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); } // FAIL");\n'
+            '    } catch (error) {\n'
+            '        println("the shader did not compile");\n'
+            '        d3d12.close(target);\n'
+            '        os.exit(1);\n'
+            '    }\n'
+            '}\n'
+            '\n'
+            'main();\n')
+
+    failed_run = subprocess.run(CLI + [failing], cwd=ROOT, capture_output=True, text=True,
+                                env=environment)
+    checks.check("a shader that does not compile exits non-zero", failed_run.returncode == 1,
+                 f"exit {failed_run.returncode}: {(failed_run.stdout + failed_run.stderr)[-200:]}")
+
+    # os.exit is how a script says so; the plain path is checked here too, so a
+    # missing status cannot hide behind the d3d12 ones.
+    exits = os.path.join(work, "exits.tern")
+    with open(exits, "w", encoding="utf-8") as handle:
+        handle.write('import "std:os";\nprintln("before");\nos.exit(7);\n')
+    left = subprocess.run(CLI + [exits], cwd=ROOT, capture_output=True, text=True)
+    checks.check("os.exit sets the process status", left.returncode == 7,
+                 f"exit {left.returncode}: {left.stdout!r}")
+    checks.check("and the output written before it is not lost", "before" in left.stdout,
+                 repr(left.stdout))
+
     # Without a driver both examples have to be a sentence, not a traceback:
     # that is what a Linux user sees, and it is most of the audience for these
     # two files.

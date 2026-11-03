@@ -70,6 +70,33 @@ def main(argv):
                  "TERN" in (finished.stdout or "") or finished.stdout.strip() != "",
                  (finished.stdout or "")[:120])
 
+    # ------------------------------------------------- os.exit is a status
+    # The interpreter has to hand the status to the shell rather than flatten
+    # it to 1, and stdout written before the exit has to be flushed: a script
+    # that renders a picture and then reports failure must not lose the report.
+    with tempfile.TemporaryDirectory(prefix="tern-exit-") as folder:
+        script = os.path.join(folder, "status.tern")
+        with open(script, "w", encoding="utf-8") as handle:
+            handle.write('import "std:os";\n'
+                         'println("working");\n'
+                         "os.exit(7);\n"
+                         'println("unreachable");\n')
+
+        status = runner.run(ROOT, ["run", script], capture_output=True, text=True)
+        checks.check("os.exit sets the process status", status.returncode == 7,
+                     f"exit {status.returncode}")
+        checks.check("the output written before it survives", "working" in status.stdout,
+                     repr(status.stdout))
+        checks.check("and nothing after it runs", "unreachable" not in status.stdout,
+                     repr(status.stdout))
+
+        plain = os.path.join(folder, "plain.tern")
+        with open(plain, "w", encoding="utf-8") as handle:
+            handle.write('import "std:os";\n'
+                         "os.exit();\n")
+        checks.check("os.exit with no argument is success",
+                     runner.run(ROOT, ["run", plain], capture_output=True, text=True).returncode == 0)
+
     # --------------------------------------- the CLI says which build it is
     # A stale assembly is invisible otherwise: a `dotnet build` that failed, or
     # a leftover build\Release\ next to build\, leaves an old DLL that compiles

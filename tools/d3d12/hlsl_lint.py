@@ -15,7 +15,11 @@ does is catch the mistakes that a text generator actually makes:
     time but not until someone runs it on Windows;
   * a `float` literal written without a decimal point, which HLSL accepts for
     whole numbers and then decides is an int when it is used in overload
-    resolution - `max(x, 0)` with an int 0 is the classic one.
+    resolution - `max(x, 0)` with an int 0 is the classic one;
+  * recursion, direct or mutual, which shader model 5.0 forbids outright. This
+    is the one that got through: a ray tracer that called itself once per
+    reflection passed every other check and then failed on the GPU with
+    `error X3500: 'trace': recursive functions not allowed in ps_5_0`.
 
     python3 tools/d3d12/hlsl_lint.py shader.hlsl [more.hlsl]
 
@@ -106,7 +110,12 @@ def check(text, path):
             problems.append(f"{path}:{number}: '{name}()' is not defined in this file "
                             f"and is not an HLSL intrinsic")
 
-    # 3. Whole-number arguments where a float is meant. HLSL would compile
+    # 3. Recursion. HLSL 5.0 has no call stack, so fxc rejects a cycle in the
+    #    call graph - and a cycle is invisible in a shader that otherwise reads
+    #    correctly, which is why this check exists rather than a comment.
+    problems += recursive_functions(clean, path)
+
+    # 4. Whole-number arguments where a float is meant. HLSL would compile
     #    `max(x, 0)` and pick the int overload, so this is a warning-shaped
     #    check: it is reported with the rest because the examples are meant to
     #    be read as HLSL, and `0` in a shader about floats reads like a mistake.
@@ -130,6 +139,71 @@ def check(text, path):
                         f"'{argument}'; HLSL will pick the int overload - write "
                         f"'{argument}.0'")
 
+    return problems
+
+
+def function_bodies(clean):
+    """Every function defined in the file, mapped to the body between its braces."""
+    bodies = {}
+    for match in FUNCTION.finditer(clean):
+        name = match.group(1)
+        start = clean.find("{", match.end())
+        if start < 0:
+            continue
+        depth = 0
+        end = start
+        while end < len(clean):
+            if clean[end] == "{":
+                depth += 1
+            elif clean[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            end += 1
+        bodies[name] = clean[start + 1:end]
+    return bodies
+
+
+def call_graph(clean):
+    """Which defined functions each defined function calls."""
+    bodies = function_bodies(clean)
+    graph = {}
+    for name, body in bodies.items():
+        graph[name] = {call.group(1) for call in CALL.finditer(body)} & set(bodies)
+    return graph, bodies
+
+
+def recursive_functions(clean, path):
+    """Every cycle in the call graph, as a path of names."""
+    graph, bodies = call_graph(clean)
+    problems = []
+    seen_cycles = set()
+
+    def walk(name, trail):
+        for callee in sorted(graph.get(name, ())):
+            if callee in trail:
+                cycle = trail[trail.index(callee):] + [callee] if callee != name else [name, name]
+                key = frozenset(cycle)
+                if key in seen_cycles:
+                    continue
+                seen_cycles.add(key)
+                line = 0
+                for number, text in enumerate(clean.split("\n"), start=1):
+                    if re.search(r"\b" + re.escape(cycle[0]) + r"\s*\(", text) and \
+                            re.match(r"\s*(?:static\s+)?(?:const\s+)?[A-Za-z_]", text) and \
+                            cycle[0] in text.split("(")[0]:
+                        line = number
+                        break
+                problems.append(
+                    f"{path}:{line}: '{cycle[0]}' is recursive ({' -> '.join(cycle)}); "
+                    "shader model 5.0 has no call stack, so fxc rejects it with "
+                    "'error X3500: recursive functions not allowed'. Rewrite it as a "
+                    "loop that carries the state forward")
+                continue
+            walk(callee, trail + [callee])
+
+    for name in sorted(graph):
+        walk(name, [name])
     return problems
 
 

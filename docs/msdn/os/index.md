@@ -13,6 +13,7 @@ nowhere else; a path that has to travel belongs in a config file, not in `joinPa
 | [`args`](args.md) | 0..0 | The script's arguments. |
 | [`cwd`](cwd.md) | 0..0 | The current working directory. |
 | [`env`](env.md) | 1..2 | Reads an environment variable. |
+| [`exit`](exit.md) | 0..1 | Ends the script with a status. |
 | [`joinPath`](joinPath.md) | 0..n | Joins path segments with the platform separator. |
 | [`lineSeparator`](lineSeparator.md) | 0..0 | The platform's line separator. |
 | [`platform`](platform.md) | 0..0 | The host platform name. |

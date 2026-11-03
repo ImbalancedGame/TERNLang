@@ -13,8 +13,8 @@ caveats below.
 
 | Area | State | Verified by |
 | --- | --- | --- |
-| Language, interpreter | complete | 40 golden runs, `tools/test.sh` |
-| Language, compiled (`native/`) | complete, same output | `native/run_tests.py` (37), `native/parity.py` (50 programs) |
+| Language, interpreter | complete | 41 golden runs, `tools/test.sh` |
+| Language, compiled (`native/`) | complete, same output and same exit status | `native/run_tests.py` (38), `native/parity.py` (51 programs) |
 | `math` `json` `os` `fs` `text` `lists` `time` `random` `cli` | complete, both back ends | golden tests, parity |
 | `net` (TCP, framing, tokens, frame ceiling, UDP, raw mode) | complete, both back ends | `tests/26_net.tern`, `tests/35_raw_bytes.tern`, `tools/test-tls.sh` |
 | `http` / `https` | complete, both back ends | `tests/28_http.tern`, `tools/test-tls.sh` |
@@ -24,24 +24,24 @@ caveats below.
 | `gl` (libEGL, OpenGL 3.3 core) | complete against a mock driver | `tools/test-gl.sh` |
 | `d3d12` (device, target, HLSL, PSO, draw, window) | complete against a mock driver | `tools/test-d3d12.sh` |
 | Windows target (`--target windows`) | builds and links, no runtime to install | `tools/test-windows.sh` (8 binaries) |
-| MSDN-style reference | 292 pages, generated | `tools/gen-reference.py --check` |
+| MSDN-style reference | 293 pages, generated | `tools/gen-reference.py --check` |
 | Language server (`ide/Server`) | complete, LSP 3.17, typed completion | `tools/test-ide.sh` (58) |
 | TERN Studio, the desktop IDE | complete for editing, running, navigating, searching, committing, terminal, debugging; five themes | `tools/ide/ui_test.py` (133) |
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (33) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
-| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic — each run, not just compiled | `tools/test_examples.py` (91) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic and GPU ray tracer — each run, not just compiled, and their generated HLSL is checked for the mistakes a shader compiler rejects (recursion, unbalanced braces, undefined calls) | `tools/test_examples.py` (97) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
 
 ```
-./tools/test.sh                                       47 passed
-python3 tools/test_runner.py                          33 passed
+./tools/test.sh                                       48 passed
+python3 tools/test_runner.py                          37 passed
 python3 tools/test_package.py                         15 passed
-python3 native/run_tests.py                           37 passed
-python3 native/parity.py                              50 compared, 0 differing
-python3 tools/test_examples.py                        91 passed
+python3 native/run_tests.py                           38 passed
+python3 native/parity.py                              51 compared, 0 differing
+python3 tools/test_examples.py                        97 passed
 python3 tools/test_namespaces.py                      24 passed
 bash tools/test-gl.sh                                 ok
 bash tools/test-tls.sh                                ok
@@ -49,7 +49,7 @@ bash tools/test-windows.sh                            ok
 bash tools/test-d3d12.sh                              ok
 bash tools/test-ide.sh                                58 passed
 python3 tools/debug_test.py                           41 passed
-python3 tools/gen-reference.py --check                292 pages up to date
+python3 tools/gen-reference.py --check                293 pages up to date
 ```
 
 ## Benchmarks
@@ -225,6 +225,20 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **The GPU ray tracer's shader could not compile at all.** `trace()` called
+  itself once per reflection, and shader model 5.0 has no call stack, so fxc
+  rejected the generated HLSL with `error X3500: 'trace': recursive functions
+  not allowed in ps_5_0`. Nothing noticed because the sandbox has no fxc: the
+  HLSL was only ever checked structurally. Reflections are now a loop that
+  carries each bounce's weight forward, which is the same sum - checked against
+  a recursive model of the same shader over 4000 rays, largest channel
+  difference 2.2e-16 - and `tools/d3d12/hlsl_lint.py` now rejects a call cycle
+  (direct or mutual) with the message fxc would have given.
+* **A run that wrote no image still exited 0.** The ray tracer caught the
+  shader failure, printed it, and returned from `main()`, so the shell saw
+  success. `os.exit(code)` now exists in both back ends, is not catchable
+  (a `try` around it does not run), and the example exits 1 on a device or
+  shader failure. `native/parity.py` compares exit statuses as well as output.
 * **The cube's faces broke up for part of the turn.** Neither renderer has a
   depth buffer - the vertex format is a clip-space position and a colour, with
   no depth anywhere - so the order the triangles are submitted in is the order
