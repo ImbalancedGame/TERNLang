@@ -96,6 +96,25 @@ namespace TERN
         }
     }
 
+    /// <summary>
+    /// Thrown by <c>os.exit</c>: the script is ending on purpose, with a status.
+    ///
+    /// Deliberately not a <see cref="TernError"/>: the VM turns a TernError into a
+    /// value that a script's <c>catch</c> can bind, and `exit` is the one thing a
+    /// script should not be able to swallow by accident.
+    /// </summary>
+    public sealed class TernExitException : Exception
+    {
+        public TernExitException(int code)
+            : base($"the script exited with status {code}")
+        {
+            Code = code;
+        }
+
+        /// <summary>The status the script asked for.</summary>
+        public int Code { get; }
+    }
+
     /// <summary>Thrown by the host when a script makes an uncaught error.</summary>
     public sealed class TernError : Exception
     {

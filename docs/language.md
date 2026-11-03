@@ -604,6 +604,29 @@ TypeError: nil has no method 'missing'
   at <module> (app:3)
 ```
 
+### Exit status
+
+A script that is part of a build should say whether it worked. `os.exit` ends
+the program with a status — 0 for success, anything else for failure — which is
+what a shell, a Makefile or CI reads:
+
+```tern
+import "std:os";
+
+let options = cli.parse({"out": "picture.png"});
+if (options == nil) { os.exit(2); }        // --help was printed
+
+if (!wrote_the_file) {
+    println("could not write ${options["out"]}");
+    os.exit(1);
+}
+```
+
+`os.exit` is not an error, so a `try` block cannot swallow it: a script that
+means to stop is not talked out of it by its own handler. Output written before
+the call is flushed first. A status outside 0–255 is a `RangeError`, which *is*
+catchable — the program is still running when that one is raised.
+
 ---
 
 ## 12. Modules and imports

@@ -895,6 +895,19 @@ then make a renderer fail in a way that names nothing.
         "example": ["println(len(os.lineSeparator));"],
         "see": ["os.platform"],
     },
+    "os.exit": {
+        "summary": "Ends the script with a status.",
+        "params": [("code", "int", "Optional status, 0 by default: 0 for success, anything else for failure.")],
+        "returns": ("nil", "Never returns: the process ends."),
+        "errors": [("RangeError", "The status is not between 0 and 255.")],
+        "remarks": "The status is what the shell, the IDE and a build step see, so a script that "
+                   "did not do its job should exit non-zero rather than print a message and return 0. "
+                   "`exit` is not an error and cannot be caught: a `try` block around it does not run, "
+                   "which is what a script that really means to stop needs. Output written so far is "
+                   "flushed first, in both back ends.",
+        "example": ["if (options == nil) { println(\"nothing to do\"); os.exit(2); }"],
+        "see": ["cli.parse"],
+    },
     "os.env": {
         "summary": "Reads an environment variable.",
         "params": [("name", "string", "The variable."),

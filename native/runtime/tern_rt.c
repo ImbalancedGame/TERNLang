@@ -5429,6 +5429,18 @@ static Value os_setenv(int argc, Value *argv) {
     return v_nil();
 }
 
+// `os.exit(code)`: ends the process with that status. Not catchable, because it
+// is not an error: the interpreter throws an exception the VM does not convert
+// into a script value, and here there is no try block that could see it.
+static Value os_exit(int argc, Value *argv) {
+    int64_t code = argc > 0 ? need_int(argv[0], "exit", 1) : 0;
+    if (code < 0 || code > 255) {
+        tern_panic("RangeError", "exit takes a status from 0 to 255, not %lld", (long long)code);
+    }
+    fflush(NULL);
+    exit((int)code);
+}
+
 // `os.joinPath(a, b, ...)`: segments joined with '/' unless a later one is
 // absolute, in which case it replaces what came before.
 static Value os_joinpath(int argc, Value *argv) {
@@ -10087,6 +10099,7 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("env"), make_native_arity("env", os_env, 1, 2));
         map_set(map, str_from_cstr("setEnv"), make_native_arity("setEnv", os_setenv, 2, 2));
         map_set(map, str_from_cstr("joinPath"), make_native_arity("joinPath", os_joinpath, 0, -1));
+        map_set(map, str_from_cstr("exit"), make_native_arity("exit", os_exit, 0, 1));
         return v_obj((Obj *)map);
     }
 

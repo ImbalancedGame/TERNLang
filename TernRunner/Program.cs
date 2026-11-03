@@ -63,6 +63,12 @@ namespace TernRunner
 
                 return 2;
             }
+            catch (TernExitException exit)
+            {
+                // The script asked to stop. Nothing is an error here: the status
+                // it named is the status the process reports.
+                return exit.Code;
+            }
             catch (TernError error)
             {
                 Console.Error.WriteLine(error.Describe());

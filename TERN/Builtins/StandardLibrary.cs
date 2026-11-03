@@ -1017,6 +1017,19 @@ namespace TERN.Builtins
                 return Value.Str(Path.Combine(parts));
             }, "Joins path segments for this platform.");
             Add(map, "lineSeparator", 0, 0, (vm, a) => Value.Str(Environment.NewLine), "The platform line separator.");
+            Add(map, "exit", 0, 1, (vm, a) =>
+            {
+                // A script that is part of a build has to be able to say it
+                // failed: an empty image or a missing output file is otherwise
+                // indistinguishable from success.
+                var code = a.Length == 0 ? 0 : (int)a[0].AsInt();
+                if (code < 0 || code > 255)
+                {
+                    throw vm.Error("RangeError", $"exit takes a status from 0 to 255, not {code}");
+                }
+
+                throw new TernExitException(code);
+            }, "Ends the script with a status: 0 for success, anything else for failure.");
 
             engine.RegisterValue("os", Value.Of(map));
             engine.RegisterStdModule(new StdModule

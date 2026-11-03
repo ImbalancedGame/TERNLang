@@ -1,0 +1,24 @@
+// `os.exit` ends the program where it stands, with a status a shell or a build
+// step can read. It is not an error, so a `try` around it does not run: a
+// script that means to stop must not be talked out of it by its own handler.
+import "std:os";
+
+println("before");
+
+// A status outside 0-255 is a mistake, and that one *is* an error: catchable,
+// and the program carries on afterwards.
+try {
+    os.exit(300);
+    println("unreachable: the status was accepted");
+} catch (error) {
+    println("rejected the status: " + str(error));
+}
+
+try {
+    os.exit(3);
+    println("unreachable: exit returned");
+} catch (error) {
+    println("unreachable: exit was caught");
+}
+
+println("unreachable: after the try");

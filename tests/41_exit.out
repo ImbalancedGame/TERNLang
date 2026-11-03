@@ -1,0 +1,2 @@
+before
+rejected the status: exit takes a status from 0 to 255, not 300
