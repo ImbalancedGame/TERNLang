@@ -65,9 +65,92 @@ typedef struct {
 
 #define WM_CLOSE_ 0x0010u
 #define WM_QUIT_ 0x0012u
+#define WM_MOUSEMOVE_ 0x0200u
+#define WM_LBUTTONDOWN_ 0x0201u
+#define WM_MOUSEWHEEL_ 0x020Au
+#define MK_LBUTTON_ 0x0001u
+#define WHEEL_DELTA_ 120
 #define MSG_NONE 0
 
 static int frames_presented;
+
+// The messages Windows would have queued, and the window procedure it would
+// have called. Both are needed for input: PeekMessage hands a message back, and
+// DispatchMessage is what runs the window procedure that records a drag. The
+// mock used to answer DispatchMessage without calling anyone, so a key press or
+// a mouse move could not reach the program under test at all.
+#define QUEUE_MAX 32
+static struct {
+    uint32_t message;
+    uintptr_t wparam;
+    intptr_t lparam;
+} queue[QUEUE_MAX];
+static int queued;
+
+static intptr_t (*class_proc)(void *, uint32_t, uintptr_t, intptr_t);
+static void *last_capture;
+
+static void queue_message(uint32_t message, uintptr_t wparam, intptr_t lparam) {
+    if (queued >= QUEUE_MAX) {
+        return;
+    }
+    queue[queued].message = message;
+    queue[queued].wparam = wparam;
+    queue[queued].lparam = lparam;
+    queued++;
+}
+
+/// The pointer position the scripted drag has reached, and where it started.
+static int drag_x, drag_y, drag_applied;
+
+/// Reads "dx,dy" and answers whether a drag was asked for.
+static int configured_drag(int *dx, int *dy) {
+    const char *value = getenv("TERN_WINDOW_DRAG");
+    if (!value || !value[0]) {
+        return 0;
+    }
+    return sscanf(value, "%d,%d", dx, dy) == 2;
+}
+
+/// Queues what a person would have done during the frame just presented:
+/// a button press on the first frame, then a mouse move per frame, plus a wheel
+/// notch and a key press when those are asked for. Opt-in, so an ordinary test
+/// run sees no input at all - which is also a case worth testing, and is the
+/// default.
+static void queue_scripted_input(void) {
+    int dx = 0, dy = 0;
+    if (!configured_drag(&dx, &dy)) {
+        return;
+    }
+    if (!drag_applied) {
+        // The press, at a fixed spot: the mock's client area is small, and the
+        // runtime never reads this position back, only the movement.
+        queue_message(WM_LBUTTONDOWN_, MK_LBUTTON_, (intptr_t)((100 << 16) | 100));
+        drag_x = 100;
+        drag_y = 100;
+    }
+    drag_x += dx;
+    drag_y += dy;
+    queue_message(WM_MOUSEMOVE_, MK_LBUTTON_, (intptr_t)((drag_y << 16) | drag_x));
+    drag_applied = 1;
+
+    const char *wheel = getenv("TERN_WINDOW_WHEEL");
+    if (wheel && wheel[0]) {
+        int notches = atoi(wheel);
+        if (notches != 0) {
+            // The high half of wParam is the signed delta, and lParam is the
+            // pointer in screen coordinates - the one position the runtime must
+            // not take as a client coordinate.
+            queue_message(WM_MOUSEWHEEL_, (uintptr_t)((uint32_t)(notches * WHEEL_DELTA_) << 16),
+                          (intptr_t)((200 << 16) | 200));
+        }
+    }
+
+    const char *key = getenv("TERN_WINDOW_KEY");
+    if (key && key[0]) {
+        queue_message(0x0100u, (uintptr_t)atoi(key), 0);   // WM_KEYDOWN
+    }
+}
 
 /// One frame reached the screen. Both ways of getting it there end here: the
 /// blit calls it directly, and the swap chain's mock calls it through this same
@@ -86,6 +169,7 @@ void mock_window_frame(int width, int height, uint32_t checksum) {
     fprintf(stderr, "mock_user32: frame %d %dx%d checksum 0x%08x\n",
             frames_presented, width, height, checksum);
     fflush(stderr);
+    queue_scripted_input();
 }
 static int frames_to_run = -1;
 static int window_open;
@@ -117,6 +201,10 @@ uint16_t RegisterClassExW(const WndClassEx *windowClass) {
         fprintf(stderr, "mock_user32: RegisterClassExW got no class name\n");
         return 0;
     }
+    // Kept, because DispatchMessage has to call it: the window procedure is
+    // where the runtime records a drag, and a mock that swallows the message
+    // instead would let every input bug through.
+    class_proc = windowClass->proc;
     return 1;
 }
 
@@ -176,6 +264,17 @@ int PeekMessageW(Msg *message, void *hwnd, uint32_t min, uint32_t max, uint32_t 
     if (!message) {
         return 0;
     }
+    if (queued > 0) {
+        // Oldest first, and one per call: a real queue is a queue.
+        memset(message, 0, sizeof *message);
+        message->hwnd = (void *)0x1000;
+        message->message = queue[0].message;
+        message->wparam = queue[0].wparam;
+        message->lparam = queue[0].lparam;
+        memmove(&queue[0], &queue[1], sizeof queue[0] * (size_t)(queued - 1));
+        queued--;
+        return 1;
+    }
     if (window_open && frames_presented >= configured_frames()) {
         // The user closed it: this is what PostQuitMessage leaves in the queue.
         memset(message, 0, sizeof *message);
@@ -192,8 +291,20 @@ int TranslateMessage(const Msg *message) {
 }
 
 intptr_t DispatchMessageW(const Msg *message) {
-    (void)message;
-    return 0;
+    if (!message || !class_proc || !message->hwnd) {
+        return 0;
+    }
+    return class_proc(message->hwnd, message->message, message->wparam, message->lparam);
+}
+
+void *SetCapture(void *hwnd) {
+    last_capture = hwnd;
+    return hwnd;
+}
+
+int ReleaseCapture(void) {
+    last_capture = NULL;
+    return 1;
 }
 
 int DestroyWindow(void *hwnd) {

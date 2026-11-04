@@ -28,6 +28,13 @@ namespace TERN.Builtins
         private const uint WmClose = 0x0010;
         private const uint WmDestroy = 0x0002;
         private const uint WmQuit = 0x0012;
+        private const uint WmMouseMove = 0x0200;
+        private const uint WmLButtonDown = 0x0201;
+        private const uint WmLButtonUp = 0x0202;
+        private const uint WmRButtonDown = 0x0204;
+        private const uint WmRButtonUp = 0x0205;
+        private const uint WmMouseWheel = 0x020A;
+        private const int WheelDelta = 120;
         private const uint VkEscape = 0x1B;
         private const uint SrcCopy = 0x00CC0020;
         private const uint DibRgbColors = 0;
@@ -117,6 +124,8 @@ namespace TERN.Builtins
         private delegate void SleepFn(uint milliseconds);
         private delegate int MultiByteToWideCharFn(uint codePage, uint flags, [MarshalAs(UnmanagedType.LPStr)] string text,
                                                    int count, IntPtr wide, int wideCount);
+        private delegate IntPtr SetCaptureFn(IntPtr hwnd);
+        private delegate bool ReleaseCaptureFn();
 
         private sealed class Api
         {
@@ -139,6 +148,10 @@ namespace TERN.Builtins
             public StretchDibFn? StretchDib;
             public SleepFn? Sleep;
             public MultiByteToWideCharFn? Widen;
+            // Optional: without capture a drag that leaves the window stops
+            // being reported, which is a worse orbit rather than a broken one.
+            public SetCaptureFn? SetCapture;
+            public ReleaseCaptureFn? ReleaseCapture;
         }
 
         private static Api? _api;
@@ -152,6 +165,20 @@ namespace TERN.Builtins
         private byte[] _dib = Array.Empty<byte>();
         private int _dibWidth;
         private int _dibHeight;
+
+        // Input, as of the last message pump. The deltas and the key list are
+        // consumed by d3d12.input(); the button state and the pointer position
+        // are current values that survive the read, because "is the button still
+        // down" has an answer even when nothing moved.
+        private int _pointerX;
+        private int _pointerY;
+        private bool _pointerSeen;
+        private int _dragX;
+        private int _dragY;
+        private int _wheel;
+        private bool _left;
+        private bool _right;
+        private readonly List<int> _keys = new();
 
         private D3D12Window(IntPtr hwnd, int width, int height)
         {
@@ -235,6 +262,8 @@ namespace TERN.Builtins
                 LoadCursor = Export<LoadCursorFn>(user32, "LoadCursorW"),
                 GetClientRect = Export<GetClientRectFn>(user32, "GetClientRect"),
                 AdjustWindowRect = Export<AdjustWindowRectFn>(user32, "AdjustWindowRect"),
+                SetCapture = Export<SetCaptureFn>(user32, "SetCapture"),
+                ReleaseCapture = Export<ReleaseCaptureFn>(user32, "ReleaseCapture"),
                 StretchDib = Export<StretchDibFn>(gdi32, "StretchDIBits"),
             };
 
@@ -276,6 +305,11 @@ namespace TERN.Builtins
 
                     return IntPtr.Zero;
                 }
+
+                if (window.HandleMessage(message, wparam, lparam))
+                {
+                    return IntPtr.Zero;
+                }
             }
 
             return _api?.DefWindowProc?.Invoke(hwnd, message, wparam, lparam) ?? IntPtr.Zero;
@@ -286,6 +320,123 @@ namespace TERN.Builtins
         /// must stop presenting into a window that is no longer there.
         /// </summary>
         internal bool Closed;
+
+        /// <summary>
+        /// Records the mouse and keyboard messages an orbit is built from, and
+        /// answers whether the message was one of them.
+        /// </summary>
+        /// <remarks>
+        /// lParam carries the client coordinates as two signed 16-bit halves in
+        /// the button messages and in the move; a wheel message carries the
+        /// delta in the high half of wParam, in the same sign-extended 16 bits,
+        /// and its lParam is in screen coordinates - which is why the pointer
+        /// position is not taken from it.
+        /// </remarks>
+        private bool HandleMessage(uint message, IntPtr wparam, IntPtr lparam)
+        {
+            switch (message)
+            {
+                case WmKeyDown:
+                {
+                    // Bit 30 says the key was already down: one press is one
+                    // event, and the auto-repeat that follows is not another.
+                    var repeat = ((long)lparam & 0x40000000L) != 0;
+                    if (!repeat && _keys.Count < MaxKeys)
+                    {
+                        _keys.Add((int)wparam);
+                    }
+
+                    return true;
+                }
+
+                case WmMouseMove:
+                {
+                    var x = (short)((long)lparam & 0xFFFF);
+                    var y = (short)(((long)lparam >> 16) & 0xFFFF);
+                    if (_pointerSeen && (_left || _right))
+                    {
+                        _dragX += x - _pointerX;
+                        _dragY += y - _pointerY;
+                    }
+
+                    _pointerX = x;
+                    _pointerY = y;
+                    _pointerSeen = true;
+                    return true;
+                }
+
+                case WmLButtonDown:
+                case WmRButtonDown:
+                case WmLButtonUp:
+                case WmRButtonUp:
+                {
+                    var down = message is WmLButtonDown or WmRButtonDown;
+                    var was = _left || _right;
+                    if (message is WmLButtonDown or WmLButtonUp)
+                    {
+                        _left = down;
+                    }
+                    else
+                    {
+                        _right = down;
+                    }
+
+                    // A press records where it happened, so the first move after
+                    // it is measured from the press rather than from wherever
+                    // the pointer was the last time it entered the window.
+                    _pointerX = (short)((long)lparam & 0xFFFF);
+                    _pointerY = (short)(((long)lparam >> 16) & 0xFFFF);
+                    _pointerSeen = true;
+                    if (down && !was)
+                    {
+                        _api?.SetCapture?.Invoke(_hwnd);
+                    }
+                    else if (!down && !_left && !_right)
+                    {
+                        _api?.ReleaseCapture?.Invoke();
+                    }
+
+                    return true;
+                }
+
+                case WmMouseWheel:
+                {
+                    _wheel += (short)(((long)wparam >> 16) & 0xFFFF) / WheelDelta;
+                    return true;
+                }
+
+                default:
+                    return false;
+            }
+        }
+
+        private const int MaxKeys = 16;
+
+        /// <summary>
+        /// The input collected since the last call, and clears the part of it
+        /// that is a change rather than a state: drag deltas, wheel notches and
+        /// the keys pressed. What <c>d3d12.input</c> hands a script.
+        /// </summary>
+        internal WindowInput TakeInput()
+        {
+            var input = new WindowInput
+            {
+                DragX = _dragX,
+                DragY = _dragY,
+                Wheel = _wheel,
+                Left = _left,
+                Right = _right,
+                PointerX = _pointerX,
+                PointerY = _pointerY,
+                Keys = _keys.ToArray(),
+            };
+
+            _dragX = 0;
+            _dragY = 0;
+            _wheel = 0;
+            _keys.Clear();
+            return input;
+        }
 
         public static D3D12Window? Create(int width, int height, string title)
         {
@@ -451,11 +602,36 @@ namespace TERN.Builtins
             if (_hwnd != IntPtr.Zero)
             {
                 Live.Remove(_hwnd);
-                _api?.DestroyWindow?.Invoke(_hwnd);
+                // A window the user already closed has destroyed its own handle,
+                // and Windows is free to have handed the same value to something
+                // else since: destroying it again is how a window closes the
+                // wrong window.
+                if (!Closed)
+                {
+                    _api?.DestroyWindow?.Invoke(_hwnd);
+                }
             }
 
             Closed = true;
         }
+    }
+
+    /// <summary>
+    /// What the window has seen since the last <c>d3d12.input</c>: pixels moved
+    /// with a button down (y positive downwards, the way the mouse moves),
+    /// wheel notches (positive away from the user), the button state right now,
+    /// where the pointer is, and the keys pressed.
+    /// </summary>
+    internal struct WindowInput
+    {
+        public int DragX;
+        public int DragY;
+        public int Wheel;
+        public bool Left;
+        public bool Right;
+        public int PointerX;
+        public int PointerY;
+        public int[] Keys;
     }
 
     /// <summary>

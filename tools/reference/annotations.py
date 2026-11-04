@@ -908,15 +908,29 @@ FUNCTIONS = {
         "see": ["d3d12.draw"],
     },
     "d3d12.draw": {
-        "summary": "Draws triangles.",
+        "summary": "Draws triangles, with the shader's constants.",
         "params": [("device", "int", "A device handle."), ("pipeline", "int", "A pipeline handle."),
-                   ("vertices", "list of number", "Six floats per vertex: `x, y, r, g, b, a`.")],
+                   ("vertices", "list of number", "Six floats per vertex: `x, y, r, g, b, a`."),
+                   ("constants", "list of number", "Optional. Up to 64 numbers, in the shader's "
+                                                   "`register(b0)`, from the start.")],
         "returns": None,
-        "errors": [("ArgumentError", "The vertex count is not a multiple of six."),
+        "errors": [("ArgumentError", "The vertex count is not a multiple of six, or there are "
+                                     "more than 64 constants."),
                    ("D3D12Error", "The vertex buffer cannot be created or the pipeline is not open.")],
         "remarks": "Each call uploads into a fresh upload-heap buffer: correct and simple. A "
-                   "renderer that draws thousands of times a frame would rotate buffers instead.",
-        "example": ["d3d12.draw(target, pipeline, [-0.5, -0.5, 1, 0, 0, 1, 0.5, -0.5, 0, 1, 0, 1, 0, 0.5, 0, 0, 1, 1]);"],
+                   "renderer that draws thousands of times a frame would rotate buffers instead.\n\n"
+                   "The constants are what a *camera* is made of: they arrive as the shader's "
+                   "`cbuffer` in `register(b0)`, so a value that changes every frame - an eye "
+                   "position, a matrix, a clock - costs sixteen floats on the command list "
+                   "instead of a shader compile. The root signature declares all 64 dwords, and "
+                   "a draw sets as many as it is given from offset 0; the rest keep whatever the "
+                   "previous draw left there, so pass every value the shader reads.\n\n"
+                   "Whole numbers are accepted and are converted to floats, because a shader "
+                   "cannot add an `int` to a `float4`.",
+        "example": [
+            "let camera = [-1.0, 0.0, 0.0, 0.73, 0.0, 1.0, 0.0, 0.55, 0.0, 0.0, -1.0, 0.0, 0.0, 1.15, 4.2, 0.0];",
+            "d3d12.draw(target, pipeline, fullscreen_triangle(), camera);",
+        ],
         "see": ["d3d12.pipeline", "d3d12.pixels"],
     },
     "d3d12.pixels": {
@@ -1000,6 +1014,41 @@ FUNCTIONS = {
             "}",
         ],
         "see": ["d3d12.window", "d3d12.pixels"],
+    },
+    "d3d12.input": {
+        "summary": "The mouse and keyboard since the last call.",
+        "params": [("window", "int", "A window handle.")],
+        "returns": ("map", "`dx`, `dy`, `wheel`, `left`, `right`, `x`, `y` and `keys`."),
+        "errors": [("D3D12Error", "There is no open window with that handle.")],
+        "remarks": "The map has one entry per thing an orbit camera needs:\n\n"
+                   "| Key | Type | Meaning |\n"
+                   "| --- | ---- | ------- |\n"
+                   "| `dx`, `dy` | int | Pixels the pointer moved while a button was held. |\n"
+                   "| `wheel` | int | Notches turned, positive away from the user. |\n"
+                   "| `left`, `right` | bool | Whether that button is down now. |\n"
+                   "| `x`, `y` | int | The pointer, in client pixels, y down. |\n"
+                   "| `keys` | list of int | Virtual-key codes pressed since the last call. |\n\n"
+                   "*`dx`, `dy`, `wheel` and `keys` are consumed by the call*: a second `input` "
+                   "with no messages in between answers zeroes and an empty list, so a loop that "
+                   "reads them twice does not turn the camera twice. The button state and the "
+                   "pointer are not consumed, because they describe the world rather than an "
+                   "event.\n\n"
+                   "The drag is measured from the button press, not from wherever the pointer "
+                   "happened to be, so the first move after a click is small and the camera does "
+                   "not jump. A drag that leaves the window still counts: the window takes the "
+                   "mouse capture on the press and gives it back on the release. Auto-repeat is "
+                   "filtered out, so holding a key gives one event, not thirty a second - at most "
+                   "sixteen keys are kept per call.\n\n"
+                   "The messages are collected by `d3d12.present`, which pumps the queue; reading "
+                   "`input` without presenting returns whatever the last present collected, which "
+                   "on a fresh window is nothing.",
+        "example": [
+            "let input = d3d12.input(window);",
+            "if (input[\"left\"]) {",
+            "    yaw = yaw + input[\"dx\"] * 0.01;",
+            "}",
+        ],
+        "see": ["d3d12.window", "d3d12.present"],
     },
     "d3d12.closeWindow": {
         "summary": "Closes a window.",

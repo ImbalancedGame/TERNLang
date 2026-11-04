@@ -360,6 +360,37 @@ typedef struct {
     unsigned flags;
 } D3D12_ROOT_SIGNATURE_DESC;    // 40
 
+// A root parameter is a tag, a union and another tag: the tag at 0, the union
+// at 8 (it holds a pointer, so it is 8-byte aligned and 16 bytes long whatever
+// member is in use) and the visibility at 24. Setting a root constant from the
+// wrong offset is not a compile error and not even a call to the wrong
+// function - it is a number the shader reads as something else - so the
+// offsets are asserted, here and against the real d3d12.h by
+// tools/d3d12/gen_layout_check.py.
+typedef struct {
+    unsigned shader_register;
+    unsigned register_space;
+    unsigned value_count;
+} D3D12_ROOT_CONSTANTS;         // 12
+
+typedef struct {
+    unsigned num_descriptor_ranges;
+    const void *descriptor_ranges;
+} D3D12_DESCRIPTOR_TABLE;       // 16, and it is what makes the union 16 bytes
+
+typedef struct {
+    int parameter_type;         // D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS = 1
+    union {
+        D3D12_DESCRIPTOR_TABLE descriptor_table;
+        D3D12_ROOT_CONSTANTS constants;
+        struct {
+            unsigned shader_register;
+            unsigned register_space;
+        } descriptor;
+    } u;
+    int shader_visibility;      // D3D12_SHADER_VISIBILITY_ALL = 0
+} D3D12_ROOT_PARAMETER;         // 32
+
 typedef struct {
     unsigned long long buffer_location;
     unsigned size_in_bytes;
@@ -391,6 +422,11 @@ typedef struct {
 #define D3D12_HEAP_TYPE_UPLOAD_ 2
 #define D3D12_RESOURCE_STATE_GENERIC_READ_ 2755
 #define D3D12_ROOT_SIGNATURE_FLAG_ALLOW_IA_ 1
+#define D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS_ 1
+#define D3D12_SHADER_VISIBILITY_ALL_ 0
+// The whole root-signature budget: 64 dwords, every one of them a constant the
+// shader can read from register(b0).
+#define D3D12_ROOT_CONSTANT_COUNT_ 64
 #define D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_ 3
 #define D3D12_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ 4
 #define D3D12_FILL_MODE_SOLID_ 3
@@ -438,6 +474,11 @@ _Static_assert(sizeof(D3D12_BLEND_DESC) == 328, "blend state size");
 _Static_assert(sizeof(D3D12_RASTERIZER_DESC) == 44, "rasterizer state size");
 _Static_assert(sizeof(D3D12_DEPTH_STENCIL_DESC) == 52, "depth stencil state size");
 _Static_assert(sizeof(D3D12_ROOT_SIGNATURE_DESC) == 40, "root signature desc size");
+_Static_assert(sizeof(D3D12_ROOT_CONSTANTS) == 12, "root constants size");
+_Static_assert(sizeof(D3D12_ROOT_PARAMETER) == 32, "root parameter size");
+_Static_assert(offsetof(D3D12_ROOT_PARAMETER, u) == 8, "root parameter union offset");
+_Static_assert(offsetof(D3D12_ROOT_PARAMETER, shader_visibility) == 24,
+               "root parameter visibility offset");
 _Static_assert(sizeof(D3D12_VERTEX_BUFFER_VIEW) == 16, "vertex buffer view size");
 _Static_assert(sizeof(D3D12_VIEWPORT) == 24, "viewport size");
 _Static_assert(offsetof(D3D12_VIEWPORT, max_depth) == 20, "viewport max depth offset");
@@ -492,6 +533,7 @@ _Static_assert(offsetof(D3D12_GRAPHICS_PIPELINE_STATE_DESC, render_target_format
 #define TERN_SLOT_ID3D12Resource_GetGPUVirtualAddress 11
 #define TERN_SLOT_ID3D12GraphicsCommandList_OMSetRenderTargets 46
 #define TERN_SLOT_ID3D12GraphicsCommandList_SetGraphicsRootSignature 30
+#define TERN_SLOT_ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants 36
 #define TERN_SLOT_ID3D12GraphicsCommandList_SetPipelineState 25
 #define TERN_SLOT_ID3D12GraphicsCommandList_RSSetViewports 21
 #define TERN_SLOT_ID3D12GraphicsCommandList_RSSetScissorRects 22
@@ -1293,9 +1335,29 @@ static void *d3d12_compile_stage(const char *source, const char *target, const c
     return code;
 }
 
-static void *d3d12_empty_root_signature(void *device) {
+/// The one root parameter every pipeline has: 64 32-bit values in b0, which is
+/// the whole root-signature budget. The old signature was empty - the shaders
+/// took nothing, so a value that changes per frame had to go into the shader
+/// text, and changing it meant recompiling. A camera that orbits cannot work
+/// that way: this is what lets `d3d12.draw(target, program, vertices, values)`
+/// put a new camera in front of the same compiled shader.
+static D3D12_ROOT_PARAMETER d3d12_constants_parameter(void) {
+    D3D12_ROOT_PARAMETER parameter;
+    memset(&parameter, 0, sizeof parameter);
+    parameter.parameter_type = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS_;   // 1
+    parameter.u.constants.shader_register = 0;                              // b0
+    parameter.u.constants.register_space = 0;
+    parameter.u.constants.value_count = D3D12_ROOT_CONSTANT_COUNT_;
+    parameter.shader_visibility = D3D12_SHADER_VISIBILITY_ALL_;             // 0
+    return parameter;
+}
+
+static void *d3d12_root_signature(void *device) {
+    D3D12_ROOT_PARAMETER parameter = d3d12_constants_parameter();
     D3D12_ROOT_SIGNATURE_DESC description;
     memset(&description, 0, sizeof description);
+    description.num_parameters = 1;
+    description.parameters = &parameter;
     description.flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_IA_;
 
     PfnSerializeRootSignature serialize =
@@ -1335,7 +1397,7 @@ static void *d3d12_make_program(TernD3D12Target *target, const char *vertex_sour
                                 const char *pixel_source) {
     void *vertex = d3d12_compile_stage(vertex_source, "vs_5_0", "vertex");
     void *pixel = d3d12_compile_stage(pixel_source, "ps_5_0", "pixel");
-    void *signature = d3d12_empty_root_signature(target->device);
+    void *signature = d3d12_root_signature(target->device);
 
     size_t vertex_length = 0, pixel_length = 0;
     const void *vertex_bytes = blob_bytes(vertex, &vertex_length);
@@ -1492,8 +1554,39 @@ static Value n_d3d12_pipeline(int argc, Value *argv) {
     return v_int((int64_t)(size_t)d3d12_make_program(target, vertex->chars, pixel->chars));
 }
 
+/// Reads the optional constants argument of d3d12.draw into `out` and answers
+/// how many dwords there are: a list of numbers, in the order the shader reads
+/// them. A flat cbuffer has an order, and that order is the whole contract.
+static int d3d12_read_constants(Value value, float *out) {
+    if (value.tag == T_NIL) {
+        return 0;
+    }
+    if (value.tag != T_OBJ || value.as.o->type != O_LIST) {
+        tern_panic("TypeError", "d3d12.draw constants must be a list of numbers, not %s",
+                   tern_type_name(value));
+    }
+    List *list = (List *)value.as.o;
+    if (list->count > D3D12_ROOT_CONSTANT_COUNT_) {
+        tern_panic("RangeError",
+                   "d3d12.draw takes at most %d constants, and this list has %d",
+                   D3D12_ROOT_CONSTANT_COUNT_, (int)list->count);
+    }
+    for (int i = 0; i < list->count; i++) {
+        Value item = list->items[i];
+        if (item.tag == T_INT) {
+            out[i] = (float)item.as.i;
+        } else if (item.tag == T_FLOAT) {
+            out[i] = (float)item.as.f;
+        } else {
+            tern_panic("TypeError",
+                       "d3d12.draw constant %d is %s, and constants are numbers",
+                       i, tern_type_name(item));
+        }
+    }
+    return (int)list->count;
+}
+
 static Value n_d3d12_draw(int argc, Value *argv) {
-    (void)argc;
     TernD3D12Target *target = d3d12_slot_arg(argv[0]);
     if (argv[1].tag != T_INT) {
         tern_panic("TypeError", "expected a pipeline handle, not %s", tern_type_name(argv[1]));
@@ -1503,6 +1596,11 @@ static Value n_d3d12_draw(int argc, Value *argv) {
         tern_panic("D3D12Error", "no pipeline with handle %d", handle);
     }
 
+    // Read before anything is recorded: a bad list should not leave a half
+    // drawn frame on the list, and the error is the same either way.
+    float constants[D3D12_ROOT_CONSTANT_COUNT_];
+    int constant_count = argc > 3 ? d3d12_read_constants(argv[3], constants) : 0;
+
     D3D12_VERTEX_BUFFER_VIEW view = d3d12_upload_vertices(target, argv[2]);
     int count = view.size_in_bytes / D3D12_VERTEX_STRIDE;
 
@@ -1511,6 +1609,12 @@ static Value n_d3d12_draw(int argc, Value *argv) {
     ((PfnOMSetRenderTargets)TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_OMSetRenderTargets))(target->list, 1, &target->rtv, 0, NULL);
     ((void (*)(void *, void *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_SetGraphicsRootSignature))(
         target->list, target->signatures[handle - 1]);                        // SetGraphicsRootSignature
+    if (constant_count > 0) {
+        // Root parameter 0, from the start of the shader's b0.
+        ((void (*)(void *, unsigned, unsigned, const float *, unsigned))TERN_SLOT(
+            target->list, TERN_SLOT_ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants))(
+            target->list, 0, (unsigned)constant_count, constants, 0);
+    }
     ((void (*)(void *, void *))TERN_SLOT(target->list, TERN_SLOT_ID3D12GraphicsCommandList_SetPipelineState))(
         target->list, target->programs[handle - 1]);                          // SetPipelineState
     // The state that decides whether anything is drawn at all. Without these
@@ -1955,6 +2059,47 @@ static Value n_d3d12_present(int argc, Value *argv) {
     int open = tern_window_present(window, tight, target->width, target->height);
     free(tight);
     return v_bool(open ? 1 : 0);
+}
+
+/// The input the window has collected since the last call:
+///
+///     {"dx": 0, "dy": 0, "wheel": 0, "left": false, "right": false,
+///      "x": 0, "y": 0, "keys": []}
+///
+/// dx and dy are pixels the pointer moved with a button down, dy positive
+/// downwards; wheel counts notches, positive away from the user; keys holds the
+/// virtual-key codes of keys pressed since the last call (37 arrows, 32 space,
+/// 65 'A'). The deltas and the keys are consumed by the call. left and right are
+/// the state right now, which is what tells a drag apart from a click.
+static Value n_d3d12_input(int argc, Value *argv) {
+    (void)argc;
+    Value handle_value = argv[0];
+    if (handle_value.tag != T_INT) {
+        tern_panic("TypeError", "expected a window handle, not %s", tern_type_name(handle_value));
+    }
+    TernWindow *window = tern_window_at((int)handle_value.as.i);
+    if (!window) {
+        tern_panic("D3D12Error", "no open window with handle %lld",
+                   (long long)handle_value.as.i);
+    }
+
+    TernWindowInput input = tern_window_take_input(window);
+
+    Map *state = map_new();
+    map_set(state, str_from_cstr("dx"), v_int(input.drag_x));
+    map_set(state, str_from_cstr("dy"), v_int(input.drag_y));
+    map_set(state, str_from_cstr("wheel"), v_int(input.wheel));
+    map_set(state, str_from_cstr("left"), v_bool(input.left != 0));
+    map_set(state, str_from_cstr("right"), v_bool(input.right != 0));
+    map_set(state, str_from_cstr("x"), v_int(input.pointer_x));
+    map_set(state, str_from_cstr("y"), v_int(input.pointer_y));
+
+    List *keys = list_new(input.key_count);
+    for (int i = 0; i < input.key_count; i++) {
+        list_push(keys, v_int(input.keys[i]));
+    }
+    map_set(state, str_from_cstr("keys"), v_obj((Obj *)keys));
+    return v_obj((Obj *)state);
 }
 
 static Value n_d3d12_close_window(int argc, Value *argv) {

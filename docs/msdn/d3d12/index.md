@@ -23,8 +23,9 @@ input is `POSITION` (`float3`) followed by `COLOR` (`float4`).
 | [`closeWindow`](closeWindow.md) | 1..1 | Closes a window. |
 | [`create`](create.md) | 2..2 | Creates a device and an offscreen render target. |
 | [`debug`](debug.md) | 0..1 | Turns the Direct3D 12 debug layer on, and says whether it is running. |
-| [`draw`](draw.md) | 3..3 | Draws triangles. |
+| [`draw`](draw.md) | 3..4 | Draws triangles, with the shader's constants. |
 | [`info`](info.md) | 0..0 | Describes the adapter and the binding. |
+| [`input`](input.md) | 1..1 | The mouse and keyboard since the last call. |
 | [`pipeline`](pipeline.md) | 3..3 | Compiles HLSL and builds a pipeline state. |
 | [`pixels`](pixels.md) | 1..1 | Reads the target back as RGBA bytes. |
 | [`present`](present.md) | 2..2 | Shows the target in the window. |

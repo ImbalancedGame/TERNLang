@@ -1,0 +1,102 @@
+// The operand stack a function is given is sized by the compiler's own count of
+// what is on it, and both back ends size a frame from that number: the
+// interpreter its value stack, the compiled binary its `Value st[]` array.
+//
+// The count used to drift in five places, and the symptom was a compiled binary
+// that wrote past the end of its frame and segfaulted - while the interpreter,
+// whose stack is on the heap and generously sized, carried on and hid it. This
+// test is the shapes that drifted, together with the values they are meant to
+// produce, and `native/run_tests.py` is what turns a regression here into a
+// crash rather than a wrong number.
+
+import "std:math";
+
+const FIELD = 0.55;
+
+// A fused arithmetic-and-store, then a list literal longer than the stack the
+// drift left behind. `let tan_x = FIELD * width / height;` used to cost the
+// function two slots it was still going to need.
+fn camera(width, height) {
+    let tan_x = FIELD * width / height;
+    return [
+        tan_x, tan_x, tan_x, tan_x,
+        tan_x, tan_x, tan_x, tan_x,
+        tan_x, tan_x, tan_x, tan_x,
+        tan_x, tan_x, tan_x, tan_x,
+    ];
+}
+
+println(len(camera(640, 480)), round(camera(640, 480)[0], 4));
+
+// A method chain: each `Invoke` leaves its result in the receiver's slot, so
+// counting only the arguments made every link of the chain one slot cheaper
+// than it was.
+fn words(text) {
+    let parts = text.trim().replace(",", " ").lower().words();
+    return parts;
+}
+
+println(words("  One, two ,THREE  "));
+
+// A ternary, whose else branch is jumped to from before the then branch's value
+// exists.
+fn pick(n) {
+    return n <= 1 ? "tiny" : n < 10 ? "small" : "large";
+}
+
+println(pick(0), pick(5), pick(50));
+
+// A prefix increment as a statement: the discarded value used to be pushed
+// anyway, and left behind for the next statement to trip over.
+fn bump(count) {
+    ++count;
+    ++count;
+    let doubled = [count, count, count, count, count, count, count, count];
+    return doubled;
+}
+
+println(bump(3));
+
+// A match whose arms each produce the value of the whole match.
+fn describe(value) {
+    let text = match value {
+        0 => "zero",
+        1..9 => "digit",
+        _ => "many",
+    };
+    return text;
+}
+
+println(describe(0), describe(7), describe(70));
+
+// A try/catch entered by a throw: the handler runs with the raised value
+// already pushed, from a point where the stack was as deep as the throw site.
+fn guarded(n) {
+    try {
+        if n < 0 {
+            throw "negative";
+        }
+        let values = [n, n, n, n, n, n, n, n, n, n];
+        return "fine " + str(values.length);
+    } catch (error) {
+        return "caught " + str(error);
+    }
+}
+
+println(guarded(4));
+println(guarded(-4));
+
+// A pattern that does not match, which builds its message from `repr` of the
+// thing that did not match: the only `Call` in the compiler that is not a
+// source-level call.
+fn destructure(pair) {
+    let [left, right] = pair;
+    return str(left) + "/" + str(right);
+}
+
+println(destructure([3, 4]));
+try {
+    destructure(5);
+} catch (error) {
+    println(str(error));
+}

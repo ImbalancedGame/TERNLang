@@ -810,7 +810,19 @@ namespace TERN.Builtins
             throw new TernError("ArgumentError", $"cannot parse '{text}' as a number");
         }
 
-        private static Value RoundFloat(ReadOnlySpan<Value> a)
+        /// <summary>
+        /// One rounding rule for both spellings, <c>math.round(x, digits)</c> and
+        /// <c>x.round(digits)</c>: a digit count of zero or less rounds to a whole
+        /// number, and a positive one scales, rounds and scales back.
+        /// </summary>
+        /// <remarks>
+        /// The global form used to pass the digit count straight to
+        /// <c>Math.Round</c>, which only accepts 0..15 - so <c>round(2.5, -1)</c>
+        /// killed the process with a .NET stack trace instead of answering 3.0, and
+        /// the compiled backend, which had its own copy of this arithmetic, quietly
+        /// ignored the second argument and answered 1.0 for <c>round(0.7333, 4)</c>.
+        /// </remarks>
+        internal static Value RoundFloat(ReadOnlySpan<Value> a)
         {
             var value = a[0].AsDouble();
             var digits = a.Length > 1 ? (int)RequireInt(a[1], "round", 1) : 0;

@@ -57,6 +57,12 @@ namespace TERN.Builtins
         private const uint RootSignatureFlagAllowInputAssembler = 1;
         private const int FillModeSolid = 3;
         private const int CullModeNone = 1;
+        private const int RootParameterType32BitConstants = 1;
+        private const int ShaderVisibilityAll = 0;
+        // The whole root-signature budget: 64 dwords, every one of them a value
+        // the shader can read from register(b0).
+        private const int RootConstantCount = 64;
+
         private const int ComparisonAlways = 8;
         private const int BlendOne = 2;
         private const int BlendOpAdd = 1;
@@ -142,14 +148,16 @@ namespace TERN.Builtins
                 return new Value(target.MakeProgram(vm, vertex, pixel));
             }, "Compiles HLSL and builds a pipeline: d3d12.pipeline(handle, vertex, pixel).");
 
-            Add(map, "draw", 3, 3, (vm, a) =>
+            Add(map, "draw", 3, 4, (vm, a) =>
             {
                 var target = targets.Get(vm, a[0]);
                 var program = Program(vm, target, a[1]);
                 var vertices = Vertices(vm, a[2]);
-                target.Draw(vm, program, vertices);
+                var constants = a.Length > 3 ? Constants(vm, a[3]) : null;
+                target.Draw(vm, program, vertices, constants);
                 return Value.Nil;
-            }, "Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle.");
+            }, "Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. " +
+               "An optional list of numbers is copied into the shader's register(b0) constants.");
 
             Add(map, "pixels", 1, 1, (vm, a) =>
             {
@@ -237,6 +245,31 @@ namespace TERN.Builtins
                 return Value.Bool(window.Present(pixels, target.Width, target.Height));
             }, "Shows the target in the window: d3d12.present(window, device); false once it is closed.");
 
+            Add(map, "input", 1, 1, (vm, a) =>
+            {
+                var window = windows.Get(vm, a[0]);
+                var input = window.TakeInput();
+                var state = new TernMap(8);
+                state.Set(Value.Str("dx"), new Value(input.DragX));
+                state.Set(Value.Str("dy"), new Value(input.DragY));
+                state.Set(Value.Str("wheel"), new Value(input.Wheel));
+                state.Set(Value.Str("left"), Value.Bool(input.Left));
+                state.Set(Value.Str("right"), Value.Bool(input.Right));
+                state.Set(Value.Str("x"), new Value(input.PointerX));
+                state.Set(Value.Str("y"), new Value(input.PointerY));
+                var keys = new TernList(input.Keys.Length);
+                foreach (var key in input.Keys)
+                {
+                    keys.Add(new Value(key));
+                }
+
+                state.Set(Value.Str("keys"), Value.Of(keys));
+                return Value.Of(state);
+            },
+                "The input since the last call: {dx, dy, wheel, left, right, x, y, keys}. " +
+                "dx/dy are pixels dragged with a button down, wheel counts notches, keys are the " +
+                "virtual-key codes pressed; those three are consumed by the call, the button state is not.");
+
             Add(map, "closeWindow", 1, 1, (vm, a) =>
             {
                 windows.Remove(vm, a[0]);
@@ -316,6 +349,40 @@ namespace TERN.Builtins
             }
 
             return handle;
+        }
+
+        /// <summary>
+        /// The optional constants argument of <c>d3d12.draw</c>: a list of up to
+        /// 64 numbers, in the order the shader reads them from <c>register(b0)</c>.
+        /// </summary>
+        private static float[] Constants(VM vm, in Value value)
+        {
+            if (value.Kind != ValueKind.List)
+            {
+                throw vm.Error("TypeError",
+                    $"d3d12.draw constants must be a list of numbers, not {vm.TypeName(value)}");
+            }
+
+            var list = value.AsList();
+            if (list.Count > RootConstantCount)
+            {
+                throw vm.Error("RangeError",
+                    $"d3d12.draw takes at most {RootConstantCount} constants, and this list has {list.Count}");
+            }
+
+            var constants = new float[list.Count];
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (!list[i].IsNumber)
+                {
+                    throw vm.Error("TypeError",
+                        $"d3d12.draw constant {i} is {vm.TypeName(list[i])}, and constants are numbers");
+                }
+
+                constants[i] = (float)list[i].AsDouble();
+            }
+
+            return constants;
         }
 
         private static float[] Vertices(VM vm, in Value value)
@@ -638,6 +705,41 @@ namespace TERN.Builtins
             public uint NumStaticSamplers;
             public IntPtr StaticSamplers;
             public uint Flags;
+        }
+
+        /// <summary>
+        /// D3D12_ROOT_CONSTANTS: three unsigned ints, 12 bytes.
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RootConstants
+        {
+            public uint ShaderRegister;
+            public uint RegisterSpace;
+            public uint Num32BitValues;
+        }
+
+        /// <summary>
+        /// D3D12_ROOT_PARAMETER: a tag at 0, an anonymous union at 8 and another
+        /// tag at 24 - 32 bytes, because the union holds a pointer and so is
+        /// 8-byte aligned and 16 bytes wide whatever member is used.
+        /// </summary>
+        /// <remarks>
+        /// Written out with explicit offsets rather than as a sequential struct
+        /// holding a real union: the C# side never reads the union as anything
+        /// but root constants, and an explicit layout is the one form the
+        /// marshaller cannot quietly rearrange. The numbers are checked against
+        /// the real <c>d3d12.h</c> by
+        /// <c>tools/d3d12/gen_layout_check.py</c> - for the native mirror, which
+        /// is asserted against the same header - and the mock driver reads this
+        /// struct with the SDK's layout before the first pipeline is built, so a
+        /// mistake here fails a test rather than a GPU.
+        /// </remarks>
+        [StructLayout(LayoutKind.Explicit, Size = 32)]
+        private struct RootParameter
+        {
+            [FieldOffset(0)] public int ParameterType;
+            [FieldOffset(8)] public RootConstants Constants;
+            [FieldOffset(24)] public int ShaderVisibility;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -1032,6 +1134,7 @@ namespace TERN.Builtins
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long CreateGraphicsPipelineStateFn(IntPtr self, ref GraphicsPipelineStateDesc desc, IntPtr iid, out IntPtr pipeline);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate long CreateRootSignatureFn(IntPtr self, uint nodeMask, IntPtr blob, IntPtr length, IntPtr iid, out IntPtr signature);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetGraphicsRootSignatureFn(IntPtr self, IntPtr signature);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetGraphicsRoot32BitConstantsFn(IntPtr self, uint rootParameterIndex, uint count, IntPtr data, uint destinationOffset);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetPipelineStateFn(IntPtr self, IntPtr pipeline);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void IASetPrimitiveTopologyFn(IntPtr self, int topology);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate void SetVertexBuffersFn(IntPtr self, uint slot, uint count, ref VertexBufferView view);
@@ -1584,22 +1687,61 @@ namespace TERN.Builtins
                         "Direct3D 12 is not available on this system: D3D12SerializeRootSignature is missing");
                 }
 
-                // An empty root signature: the vertex data comes from a vertex
-                // buffer, and the shaders take no constants.
-                var description = new RootSignatureDesc { Flags = RootSignatureFlagAllowInputAssembler };
-                var hr = serialize(ref description, RootSignatureVersion1, out var blob, out var errors);
-                Release(errors);
-                if (hr < 0 || blob == IntPtr.Zero)
+                // One parameter, 64 dwords of root constants in b0: the whole
+                // root-signature budget, and the only thing a shader here can
+                // read that is not baked into its text. Vertex data still comes
+                // from a vertex buffer.
+                var parameter = new RootParameter
                 {
-                    throw vm.Error("D3D12Error", "the root signature could not be serialized");
-                }
+                    ParameterType = RootParameterType32BitConstants,
+                    Constants = new RootConstants
+                    {
+                        ShaderRegister = 0, RegisterSpace = 0, Num32BitValues = RootConstantCount,
+                    },
+                    ShaderVisibility = ShaderVisibilityAll,
+                };
+                var parameterSize = Marshal.SizeOf<RootParameter>();
+                var parameterPointer = Marshal.AllocHGlobal(parameterSize);
+                try
+                {
+                    Marshal.StructureToPtr(parameter, parameterPointer, false);
+                    var description = new RootSignatureDesc
+                    {
+                        NumParameters = 1,
+                        Parameters = parameterPointer,
+                        Flags = RootSignatureFlagAllowInputAssembler,
+                    };
+                    var hr = serialize(ref description, RootSignatureVersion1, out var blob, out var errors);
+                    // The driver's own words when there are any: "could not be
+                    // serialized" sends the reader to the source of this file,
+                    // and "the constants are not 64 values in b0" sends them to
+                    // the line that filled them in.
+                    var complaint = BlobText(errors);
+                    Release(errors);
+                    if (hr < 0 || blob == IntPtr.Zero)
+                    {
+                        throw vm.Error("D3D12Error",
+                            complaint.Length != 0
+                                ? $"the root signature could not be serialized: {complaint}"
+                                : "the root signature could not be serialized");
+                    }
 
+                    return CreateRootSignature(vm, blob);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(parameterPointer);
+                }
+            }
+
+            private IntPtr CreateRootSignature(VM vm, IntPtr blob)
+            {
                 try
                 {
                     var length = (IntPtr)(int)Slot<GetBufferSizeFn>(blob, 4)(blob);
                     var bytes = Slot<GetBufferPointerFn>(blob, 3)(blob);
                     var signature = IntPtr.Zero;
-                    hr = IidRootSignature.With(iid =>
+                    var hr = IidRootSignature.With(iid =>
                         Slot<CreateRootSignatureFn>(_device, 16)(_device, 0, bytes, length, iid, out signature));
                     if (hr < 0 || signature == IntPtr.Zero)
                     {
@@ -1730,7 +1872,7 @@ namespace TERN.Builtins
                 Padding = new byte[2],
             };
 
-            public void Draw(VM vm, int program, float[] vertices)
+            public void Draw(VM vm, int program, float[] vertices, float[]? constants = null)
             {
                 var count = vertices.Length / 6;
                 var packed = new float[count * VertexFloats];
@@ -1762,6 +1904,24 @@ namespace TERN.Builtins
                 Slot<SetScissorRectsFn>(_list, 22)(_list, 1, ref scissor);
 
                 Slot<SetGraphicsRootSignatureFn>(_list, 30)(_list, _signatures[program - 1]);
+                if (constants is { Length: > 0 })
+                {
+                    // Root parameter 0, from the start of the shader's b0. The
+                    // values are floats on the stack of this call, which the
+                    // command list copies out before it returns, so there is
+                    // nothing to keep alive and nothing to free.
+                    var pinned = GCHandle.Alloc(constants, GCHandleType.Pinned);
+                    try
+                    {
+                        Slot<SetGraphicsRoot32BitConstantsFn>(_list, 36)(
+                            _list, 0, (uint)constants.Length, pinned.AddrOfPinnedObject(), 0);
+                    }
+                    finally
+                    {
+                        pinned.Free();
+                    }
+                }
+
                 Slot<SetPipelineStateFn>(_list, 25)(_list, _pipelines[program - 1]);
                 Slot<IASetPrimitiveTopologyFn>(_list, 20)(_list, TopologyTriangleList);
                 Slot<SetVertexBuffersFn>(_list, 44)(_list, 0, 1, ref view);

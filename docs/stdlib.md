@@ -55,8 +55,9 @@ receiver, so `list.push(value)` is written `push(value)` under `list`.
 | `closeWindow` | `closeWindow(arg)` | Closes a window and forgets its handle. |
 | `create` | `create(arg, arg)` | Creates an offscreen device and render target, returning a handle. |
 | `debug` | `debug([arg])` | Turns the Direct3D 12 debug layer on (call before create) and reports whether it is running. |
-| `draw` | `draw(arg, arg, arg)` | Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. |
+| `draw` | `draw(arg, arg, arg, [arg])` | Draws triangles: vertices are x, y, r, g, b, a floats, three per triangle. An optional list of numbers is copied into the shader's register(b0) constants. |
 | `info` | `info()` | Describes the adapter: {name, nodes, build}. |
+| `input` | `input(arg)` | The input since the last call: {dx, dy, wheel, left, right, x, y, keys}. dx/dy are pixels dragged with a button down, wheel counts notches, keys are the virtual-key codes pressed; those three are consumed by the call, the button state is not. |
 | `pipeline` | `pipeline(arg, arg, arg)` | Compiles HLSL and builds a pipeline: d3d12.pipeline(handle, vertex, pixel). |
 | `pixels` | `pixels(arg)` | Reads the target back as RGBA bytes, bottom row first, like gl.pixels. |
 | `present` | `present(arg, arg)` | Shows the target in the window: d3d12.present(window, device); false once it is closed. |

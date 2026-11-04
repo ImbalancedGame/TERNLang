@@ -30,7 +30,7 @@ caveats below.
 | Packaging (`tools/package.py`) | builds the PyInstaller command and prunes Qt; the entry point runs | `tools/test_package.py` (12) |
 | Starting the CLI (`tools/runner.py`) | assembly, script or `TERN_CLI`; the choice is an argv prefix, so no shell is assumed | `tools/test_runner.py` (33) |
 | Debugger (`ide/Debug`, `TERN.Debug.dll`) | breakpoints (with conditions), watches, stepping, stack, locals, evaluate | `tools/debug_test.py` (41) |
-| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic and GPU ray tracer — each run, not just compiled, and their generated HLSL is checked for the mistakes a shader compiler rejects (recursion, unbalanced braces, undefined calls) | `tools/test_examples.py` (97) |
+| Examples (`examples/`) | HTTP server, RCON client, SFTP deploy, rotating cube, Direct3D 12 diagnostic and GPU ray tracer — each run, not just compiled, and their generated HLSL is checked for the mistakes a shader compiler rejects (recursion, unbalanced braces, undefined calls, a constant buffer wider than the root signature) | `tools/test_examples.py` (103) |
 
 Every suite runs before a commit, and the working tree is expected to be green
 in all of them:
@@ -175,8 +175,16 @@ Ordered by what would bite a user first.
    and prints what each did, so the failure names itself, and it reports the
    binding revision that produced it.
 4. **The window layer is Windows only.** `d3d12.window` opens a real Win32
-   window and `d3d12.present` puts the frame in it, through a flip-model swap
-   chain where one can be made. `user32`, `gdi32`, `kernel32` and `dxgi` are
+   window, `d3d12.present` puts the frame in it through a flip-model swap chain
+   where one can be made, and `d3d12.input` reads the mouse and the keyboard
+   back out of it - drag deltas, wheel notches, buttons, pointer and key codes,
+   with the drag measured from the press and the mouse captured while a button
+   is down. What cannot be tested here is a *person* using it: the mock queues
+   scripted messages (`TERN_WINDOW_DRAG`, `TERN_WINDOW_WHEEL`, `TERN_WINDOW_KEY`)
+   and `tools/test-d3d12.sh` checks that the camera constants the shader
+   receives change from frame to frame and match between the two back ends, but
+   the feel of it - whether a 640-pixel drag turns the scene too far - is a
+   judgement only the Windows machine can make. `user32`, `gdi32`, `kernel32` and `dxgi` are
    loaded at run time, so a Linux build answers `nil` and a Linux window needs
    an X11 or Wayland surface — neither exists. The swap chain path also has no
    `ResizeBuffers`: a resized window is stretched by DXGI rather than
@@ -194,7 +202,9 @@ Ordered by what would bite a user first.
    shape for a renderer that draws a thousand times a frame: each `d3d12.draw`
    creates an upload-heap buffer and waits for the GPU. A ring of persistently
    mapped buffers is the next step, and it needs the fence work that goes with
-   it.
+   it. The root constants are the exception and already have the right shape:
+   the camera travels as 64 dwords on the command list, so an orbit costs
+   sixteen `SetGraphicsRoot32BitConstants` values and no allocation at all.
 7. **Neither renderer has a depth buffer.** `d3d12.draw` and `gl.draw` take a
    clip-space position and a colour per vertex and nothing else, so everything
    is at the same depth and the order the triangles arrive in is the order they
@@ -228,6 +238,42 @@ Out of scope by request: DLSS, and FTP (SFTP is the supported transfer, because
 SSH is what the servers actually offer).
 
 ## Recently fixed
+
+* **The GPU ray tracer was a screenshot, not a camera.** The example drew one
+  frame, wrote a PNG and closed - there was no window in it at all, and no way
+  to look at the scene from anywhere but the one place the shader had baked in.
+  It now opens a window and orbits: drag with the left button to turn, wheel to
+  zoom, arrows or `R` to nudge or reset, Escape to leave. The camera is sixteen
+  floats handed to the shader through the root signature each frame, so the
+  shader is compiled once - `d3d12.draw` grew a fourth argument (up to 64
+  numbers into `register(b0)`) and `d3d12.input` arrived to say what the mouse
+  did. `--window=false` keeps the old one-frame-and-a-file behaviour, which is
+  what a build agent runs, and the resting camera is still the CPU tracer's, so
+  the two pictures still match pixel for pixel.
+
+* **The compiler's operand-stack count was wrong in five places, and a native
+  frame was two slots too small because of it.** Found while adding the camera:
+  `let tan_x = FIELD * width / height;` before a sixteen-element list literal
+  produced a native binary that wrote past the end of its `Value st[MaxStack]`
+  array and segfaulted - the interpreter was only accidentally safe, because it
+  sizes its stack from the same wrong number but allocates it on the heap. The
+  causes, all one-off: the arithmetic-and-store fusion undid its own push
+  instead of its pop, `Invoke` did not count the receiver, the `Call` in a
+  failed pattern match did not count the callee, prefix `++` pushed a value
+  even when the value was discarded, and the labels in a ternary, a `match` and
+  a `try` handler inherited the depth of the branch that fell through rather
+  than of the branch that jumped. Every statement now checks that it left the
+  stack where it found it, and the disagreement is `TRN0219` - a compiler
+  message naming the statement, rather than a wrong frame.
+
+* **`math.round(x, digits)` disagreed with itself, in both directions.** The
+  global form handed the digit count straight to the framework's `Round`, which
+  accepts 0..15: `math.round(2.567, -1)` killed the interpreter with a .NET
+  stack trace rather than answering `3.0`. The compiled backend had its own copy
+  of the arithmetic and dropped the second argument entirely, so
+  `math.round(2.56789, 2)` was `3.0` there and `2.57` here. Both now use the
+  rule the `x.round(digits)` method has always had - zero or fewer digits rounds
+  to a whole number - and `tests/09_builtins.tern` pins it.
 
 * **`maps` was the one benchmark TERN lost, and the table was not the reason.**
   The generated C formatted each interpolated number with `snprintf("%lld")`

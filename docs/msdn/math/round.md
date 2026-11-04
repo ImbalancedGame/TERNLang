@@ -24,6 +24,8 @@ math.round(value, digits?)
 
 Halves round away from zero, so `round(2.5)` is `3.0` and `round(-2.5)` is `-3.0`. Use `int()` on the result when an integer is wanted.
 
+A digit count of zero or less rounds to a whole number - `round(2.567, 0)` and `round(2.567, -1)` are both `3.0` - which is also what the `x.round(digits)` method does, so the two spellings cannot disagree.
+
 ## Example
 
 ```tern

@@ -1280,8 +1280,19 @@ Codes worth recognising, because the message alone does not say where to look:
 unsupported assignment operator, `TRN0213` unbounded range outside a slice,
 `TRN0214` more than two names in a `for`, `TRN0215` a pattern declaration with
 no initializer, `TRN0216` a name bound twice in one pattern, `TRN0218` a `std:`
-module this build does not have, `TRN0221` a struct method that captures an
-outer variable.
+module this build does not have, `TRN0219` an internal disagreement about the
+operand stack (below), `TRN0221` a struct method that captures an outer
+variable.
+
+`TRN0219` is never the script's fault and never the script's problem to solve:
+it means the compiler's own count of what a statement left on the operand stack
+did not come back to where it started, so the frame size it works out for the
+function cannot be trusted. Both back ends size a frame from that number - the
+interpreter its operand stack, the compiled C its `Value st[]` array - so the
+check exists to turn a wrong frame into one compiler message instead of a
+corrupt run. Every statement is meant to begin and end with the same depth; when
+this fires, the stack-tracking in the compiler is what needs the fix, and the
+report should say which statement disagreed.
 
 `TRN0218` is about the runner rather than the script: a `std:` module is
 compiled into it, so the message lists the ones the build does have. If the
