@@ -458,6 +458,10 @@ namespace TERN.Compiler
 
                         return;
 
+                    case SpreadExpr spread:
+                        Expression(spread.Operand);
+                        return;
+
                     case ListExpr list:
                         foreach (var item in list.Items)
                         {

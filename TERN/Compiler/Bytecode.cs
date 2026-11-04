@@ -61,6 +61,13 @@ namespace TERN.Compiler
         LoadModule,     // A = module constant
         Concat,         // A = part count
 
+        // spread: build a literal element by element so `...xs` can splice
+        ListAppend,     // [list, value] -> [list] with value appended
+        ListExtend,     // [list, iterable] -> [list] with every element appended
+        MapSet,         // [map, key, value] -> [map] with the entry set
+        MapMerge,       // [map, other] -> [map] with other's entries set
+        CallList,       // [callee, arguments] -> [result]; the list is the argument list
+
         // arithmetic
         Add,
         Sub,

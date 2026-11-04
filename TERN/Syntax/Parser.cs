@@ -1104,7 +1104,7 @@ namespace TERN.Syntax
 
                     while (!Check(TokenKind.RightParen) && !Check(TokenKind.EndOfFile))
                     {
-                        arguments.Add(ParseExpression());
+                        arguments.Add(ParseSpreadOrExpression());
                         if (!Match(TokenKind.Comma))
                         {
                             break;
@@ -1295,9 +1295,18 @@ namespace TERN.Syntax
                     return ParseIfExpression();
 
                 case TokenKind.DotDotDot:
-                    Error("spread is only valid inside a list or call", token, "TRN0114");
+                    // Parsed, not just skipped, so the operand's own errors are
+                    // reported once and the rest of the expression still parses:
+                    // `let x = ...a;` is one mistake, not two.
                     Advance();
-                    return new LiteralExpr { Value = null, Offset = token.Offset, Line = token.Line };
+                    var spreadOperand = ParseExpression();
+                    Error("spread is only valid inside a list, a map or a call", token, "TRN0114");
+                    return new SpreadExpr
+                    {
+                        Operand = spreadOperand,
+                        Offset = token.Offset,
+                        Line = token.Line,
+                    };
 
                 default:
                     Error($"expected an expression but found '{Describe(token)}'", token, "TRN0115");
@@ -1380,7 +1389,7 @@ namespace TERN.Syntax
 
             while (!Check(TokenKind.RightBracket) && !Check(TokenKind.EndOfFile))
             {
-                items.Add(ParseExpression());
+                items.Add(ParseSpreadOrExpression());
                 if (!Match(TokenKind.Comma))
                 {
                     break;
@@ -1391,6 +1400,23 @@ namespace TERN.Syntax
             return new ListExpr { Items = items, Offset = start.Offset, Line = start.Line };
         }
 
+        /// <summary>
+        /// <c>...x</c> where a value is expected: the one place a spread may
+        /// appear is inside a list, a map or a call, and every one of those
+        /// parses its elements through here.
+        /// </summary>
+        private Expr ParseSpreadOrExpression()
+        {
+            if (!Check(TokenKind.DotDotDot))
+            {
+                return ParseExpression();
+            }
+
+            var dots = Advance();
+            var operand = ParseExpression();
+            return new SpreadExpr { Operand = operand, Offset = dots.Offset, Line = dots.Line };
+        }
+
         private Expr ParseMapLiteral()
         {
             var start = Advance(); // {
@@ -1399,6 +1425,28 @@ namespace TERN.Syntax
 
             while (!Check(TokenKind.RightBrace) && !Check(TokenKind.EndOfFile))
             {
+                // `{...other, k: v}` merges another map in. A spread carries no
+                // value of its own, so it gets a nil one: the pair lists stay the
+                // same length and the compiler tells the two apart by the key.
+                if (Check(TokenKind.DotDotDot))
+                {
+                    var spread = ParseSpreadOrExpression();
+                    keys.Add(spread);
+                    values.Add(new LiteralExpr
+                    {
+                        Value = null,
+                        Offset = spread.Offset,
+                        Line = spread.Line,
+                    });
+
+                    if (!Match(TokenKind.Comma))
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
                 // Allow bare identifier keys: { name: "tern" }
                 Expr key;
                 if (Check(TokenKind.Identifier) && Peek(1).Kind == TokenKind.Colon)

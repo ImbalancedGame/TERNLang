@@ -1,0 +1,8 @@
+// `...` is only a spread inside a list, a map or a call. Everywhere else it is
+// a mistake the parser names, and it parses the operand first so one bad
+// spread is one error rather than a cascade.
+//
+// This test only checks the compiler, so it is not run natively.
+
+let source = [1, 2];
+let nope = ...source;

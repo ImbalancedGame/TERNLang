@@ -2032,6 +2032,10 @@ namespace TERN.Compiler
                         CompileFunctionLiteral(lambda.Function, out _);
                         return;
 
+                    case ListExpr list when HasSpread(list.Items):
+                        CompileSpreadList(list);
+                        return;
+
                     case ListExpr list:
                     {
                         foreach (var item in list.Items)
@@ -2042,6 +2046,10 @@ namespace TERN.Compiler
                         Emit(Op.NewList, list.Items.Count, 0, 0, pop: list.Items.Count, push: 1);
                         return;
                     }
+
+                    case MapExpr map when map.Keys.Exists(key => key is SpreadExpr):
+                        CompileSpreadMap(map);
+                        return;
 
                     case MapExpr map:
                     {
@@ -2054,6 +2062,16 @@ namespace TERN.Compiler
                         Emit(Op.NewMap, map.Keys.Count, 0, 0, pop: map.Keys.Count * 2, push: 1);
                         return;
                     }
+
+                    case SpreadExpr spread:
+                        // The parser only builds one inside a list, a map or a
+                        // call, and each of those compiles it itself. Reaching
+                        // this case means one of them forgot.
+                        Module.Error("TRN0222",
+                            "internal: a spread reached the expression compiler on its own - please report this",
+                            spread);
+                        CompileExpression(spread.Operand);
+                        return;
 
                     case MatchExpr match:
                         CompileMatch(match);
@@ -2469,6 +2487,20 @@ namespace TERN.Compiler
 
             private void CompileCall(CallExpr call)
             {
+                // A spread makes the argument count unknowable until run time, so
+                // neither the local/global fast paths nor Invoke (which carries a
+                // fixed count) can be used: the arguments are collected into a
+                // list, and CallList unpacks them. The callee is compiled as an
+                // ordinary expression, which is what makes a bound method work
+                // here: `xs.push(...more)` loads the method already bound to xs.
+                if (HasSpread(call.Arguments))
+                {
+                    CompileExpression(call.Callee);
+                    CompileSpreadParts(call.Arguments);
+                    Emit(Op.CallList, 0, 0, 0, pop: 2, push: 1);
+                    return;
+                }
+
                 // Direct call to a global (e.g. print(...)) or a local function.
                 if (call.Callee is IdentifierExpr identifier)
                 {
@@ -2514,6 +2546,84 @@ namespace TERN.Compiler
                 foreach (var argument in arguments)
                 {
                     CompileExpression(argument);
+                }
+            }
+
+            private static bool HasSpread(List<Expr> parts)
+            {
+                foreach (var part in parts)
+                {
+                    if (part is SpreadExpr)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            /// <summary>
+            /// <c>[a, ...xs, b]</c>: an empty list, then each part appended or
+            /// spliced in turn. The plain form - NewList with the count on it -
+            /// stays the one every list without a spread compiles to, because it
+            /// is a single instruction and one allocation.
+            /// </summary>
+            private void CompileSpreadList(ListExpr list)
+            {
+                Emit(Op.NewList, 0, 0, 0, pop: 0, push: 1);
+                foreach (var item in list.Items)
+                {
+                    if (item is SpreadExpr spread)
+                    {
+                        CompileExpression(spread.Operand);
+                        Emit(Op.ListExtend, 0, 0, 0, pop: 2, push: 1);
+                        continue;
+                    }
+
+                    CompileExpression(item);
+                    Emit(Op.ListAppend, 0, 0, 0, pop: 2, push: 1);
+                }
+            }
+
+            /// <summary>
+            /// <c>{...defaults, "size": size}</c>: an empty map, then each spread
+            /// merged and each pair set in order. Later entries win, including a
+            /// spread that comes after a pair, which is the only order in which
+            /// "defaults first, overrides after" reads as it looks.
+            /// </summary>
+            private void CompileSpreadMap(MapExpr map)
+            {
+                Emit(Op.NewMap, 0, 0, 0, pop: 0, push: 1);
+                for (var i = 0; i < map.Keys.Count; i++)
+                {
+                    if (map.Keys[i] is SpreadExpr spread)
+                    {
+                        CompileExpression(spread.Operand);
+                        Emit(Op.MapMerge, 0, 0, 0, pop: 2, push: 1);
+                        continue;
+                    }
+
+                    CompileExpression(map.Keys[i]);
+                    CompileExpression(map.Values[i]);
+                    Emit(Op.MapSet, 0, 0, 0, pop: 3, push: 1);
+                }
+            }
+
+            /// <summary>The arguments of a spread call, collected into a list.</summary>
+            private void CompileSpreadParts(List<Expr> parts)
+            {
+                Emit(Op.NewList, 0, 0, 0, pop: 0, push: 1);
+                foreach (var part in parts)
+                {
+                    if (part is SpreadExpr spread)
+                    {
+                        CompileExpression(spread.Operand);
+                        Emit(Op.ListExtend, 0, 0, 0, pop: 2, push: 1);
+                        continue;
+                    }
+
+                    CompileExpression(part);
+                    Emit(Op.ListAppend, 0, 0, 0, pop: 2, push: 1);
                 }
             }
 
@@ -2564,6 +2674,8 @@ namespace TERN.Compiler
                         return WritesName(index.Target, name) || WritesName(index.Index, name);
                     case MemberExpr member:
                         return WritesName(member.Target, name);
+                    case SpreadExpr spread:
+                        return WritesName(spread.Operand, name);
                     case ListExpr list:
                     {
                         foreach (var item in list.Items)

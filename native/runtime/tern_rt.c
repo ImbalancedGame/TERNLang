@@ -1950,8 +1950,12 @@ Value tern_iter_new(Value iterable) {
         it->kind = 3;
     } else if (iterable.tag == T_OBJ && iterable.as.o->type == O_RANGE) {
         it->kind = 2;
+    } else if (iterable.tag == T_NIL) {
+        tern_panic("TypeError", "cannot iterate nil");
     } else {
-        tern_panic("TypeError", "cannot iterate over %s", tern_type_name(iterable));
+        // Wording shared with the VM's CreateIterator: a script that iterates
+        // the wrong thing has to read the same either way it was run.
+        tern_panic("TypeError", "%s is not iterable", tern_type_name(iterable));
     }
     return v_obj((Obj *)it);
 }

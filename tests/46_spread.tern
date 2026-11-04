@@ -1,0 +1,70 @@
+// `...` splices a value's elements into a list, a map or a call. It is the
+// difference between passing a list and passing what is in it.
+
+let pair = [1, 2];
+let more = [3, 4];
+
+// A list literal: spread in place, any number of times, anywhere in it.
+println([...pair]);                       // [1, 2]
+println([...pair, ...more]);              // [1, 2, 3, 4]
+println([0, ...pair, 9, ...more, 10]);    // [0, 1, 2, 9, 3, 4, 10]
+println([...""]);                         // []
+println([1, ...[], 2]);                   // [1, 2]
+
+// Anything `for` can iterate can be spread: text gives characters, a range
+// gives numbers, and a map gives its values, in the order the map holds them.
+println([..."abc"]);                      // ["a", "b", "c"]
+println([...0..<3]);                      // [0, 1, 2]
+println([...{"x": 1, "y": 2}]);           // [1, 2]
+
+// A spread is a copy: the source is untouched, and appending to the result
+// cannot change it.
+let copy = [...pair];
+copy.push(99);
+println(str(pair) + " " + str(copy));     // [1, 2] [1, 2, 99]
+
+// A map literal merges first and sets second; whichever comes later wins.
+let defaults = {"size": 640, "window": true};
+let chosen = {...defaults, "size": 1280};
+println(chosen["size"]);                  // 1280
+println(chosen["window"]);                // true
+println({...defaults, ...{"size": 800}}["size"]);   // 800
+println(len({...defaults, "extra": 1}));  // 3
+println(keys({...defaults}).join(","));   // size,window
+
+// A call spreads into arguments, mixed with ordinary ones. The callee may be a
+// function, a builtin or a bound method.
+fn sum3(a, b, c) { return a + b + c; }
+println(sum3(...[1, 2, 3]));              // 6
+println(sum3(1, ...[2, 3]));              // 6
+println(sum3(...[1, 2], 3));              // 6
+let three = [4, 5, 6];
+println(sum3(...three));                  // 15
+
+fn total(...rest) {
+    let sum = 0;
+    for value in rest { sum += value; }
+    return sum;
+}
+println(total(...[1, 2, 3], 4));          // 10
+println(max(...[3, 9, 4]));               // 9
+
+struct Point { x = 0; y = 0; }
+let point = Point(...[3, 4]);
+println(str(point.x) + "," + str(point.y));   // 3,4
+
+// A spread call is a call like any other expression, so it composes.
+fn twice(n) { return n * 2; }
+println(twice(max(...[1, 7])));           // 14
+
+// The argument list is built per call, so a spread in a loop reads the list it
+// has at that moment rather than a snapshot from the first pass.
+let seen = [];
+for n in [1, 2, 3] {
+    seen.push(total(...[n, n]));
+}
+println(seen.join(" "));                  // 2 4 6
+
+// Named functions taking the spread's own elements, in a closure.
+let adder = fn(...ns) { return total(...ns); };
+println(adder(...[5, 6]));                // 11
