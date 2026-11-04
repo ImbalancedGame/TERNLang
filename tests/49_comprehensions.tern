@@ -1,0 +1,66 @@
+// A list comprehension is one expression: `[element for name in source if ...]`.
+// It replaces the `[]` + `push` loop that would otherwise say the same thing in
+// four lines.
+
+println([x * 2 for x in [1, 2, 3]]);            // [2, 4, 6]
+
+// Filters are `if` clauses and there may be several; all of them must hold.
+println([x for x in [1, 2, 3, 4] if x % 2 == 0]);            // [2, 4]
+println([x * x for x in 0..<6 if x > 1 if x < 4]);           // [4, 9]
+
+// Anything a `for` loop can iterate: text gives characters, a map gives pairs
+// when two names are bound and values when there is one.
+println([c for c in "abc"]);                                 // ["a", "b", "c"]
+println([v for v in {"a": 1, "b": 2}]);                      // [1, 2]
+println([k + "=" + str(v) for k, v in {"a": 1, "b": 2}]);    // ["a=1", "b=2"]
+
+// The element is an expression, so comprehensions nest and compose.
+println([[y for y in 0..<x] for x in 0..<3]);                 // [[], [0], [0, 1]]
+println(len([w for w in ["one", "two", "three"] if len(w) == 3]));   // 2
+
+// A map comprehension builds a map the same way, with `key: value` before the
+// `for`. Later keys overwrite earlier ones, as in any map literal.
+println({str(x): x * x for x in [1, 2, 3]});                 // {"1": 1, "2": 4, "3": 9}
+println([word + ":" + str(len(word)) for word in ["aa", "b", "ccc"]]);   // ["aa:2", "b:1", "ccc:3"]
+println(len({x % 2: true for x in [1, 2, 3, 4]}));           // 2
+
+// The names are local to the comprehension: they do not leak, and they may
+// reuse a name from outside without changing it.
+let n = 10;
+let doubled = [n for n in [1, 2]];
+println(str(doubled) + " " + str(n));                        // [1, 2] 10
+
+// The source is evaluated once, not once per element.
+let calls = 0;
+fn counted() {
+    calls += 1;
+    return [1, 2, 3];
+}
+println(len([x for x in counted()]));                        // 3
+println("calls " + str(calls));                              // calls 1
+
+// The result is an ordinary list or map: it can be indexed, sorted, passed on.
+let squares = [x * x for x in 0..<5 if x > 0];
+println(squares[0] + " " + str(len(squares)));               // 1 4
+println(squares.reverse().join(","));                        // 16,9,4,1
+
+// An empty source, or a filter nothing passes, is an empty list rather than nil.
+println([x for x in []]);                                    // []
+println([x for x in [1, 2] if x > 9]);                       // []
+
+// A closure in the element captures each pass's own value, exactly as it does
+// in a `for` loop body.
+let makers = [fn() { return value; } for value in [1, 2, 3]];
+println(makers[0]() + " " + makers[1]() + " " + makers[2]());   // 1 2 3
+let readers = {str(n): fn() { return n * 10; } for n in [1, 2]};
+println(readers["1"]() + " " + readers["2"]());                 // 10 20
+
+// Several comprehensions in one function, nested included, share the slots
+// they do not need rather than growing the frame per comprehension.
+fn counts() {
+    let a = [x for x in [1, 2]];
+    let b = {str(y): y for y in [3]};
+    let c = [[w for w in [4]] for v in [5]];
+    return str(len(a)) + str(len(b)) + str(len(c));
+}
+println(counts());                                           // 211

@@ -255,6 +255,31 @@ namespace TERN.Ide
                     WalkExpression(spread.Operand);
                     break;
 
+                // The names a comprehension binds are not declarations this index
+                // records, so it only has to reach the expressions inside: the
+                // element, the filters and the source, which is where the
+                // references a rename has to find live.
+                case ListComprehensionExpr comprehension:
+                    WalkExpression(comprehension.Iterable);
+                    foreach (var condition in comprehension.Conditions)
+                    {
+                        WalkExpression(condition);
+                    }
+
+                    WalkExpression(comprehension.Element);
+                    break;
+
+                case MapComprehensionExpr mapComprehension:
+                    WalkExpression(mapComprehension.Iterable);
+                    foreach (var condition in mapComprehension.Conditions)
+                    {
+                        WalkExpression(condition);
+                    }
+
+                    WalkExpression(mapComprehension.Key);
+                    WalkExpression(mapComprehension.Value);
+                    break;
+
                 case ListExpr list:
                     foreach (var item in list.Items)
                     {

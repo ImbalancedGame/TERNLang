@@ -1,0 +1,2 @@
+50_comprehension_syntax:7:29: error TRN0122: a comprehension takes one 'for'; nest one in the element instead
+50_comprehension_syntax:8:23: error TRN0122: a map comprehension is one 'key: value' followed by 'for'

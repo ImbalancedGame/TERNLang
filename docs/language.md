@@ -559,6 +559,44 @@ to one list, so it is one allocation however many parts it has. A spread call
 collects its arguments into a list first, which is what lets the count be
 unknown until the call happens.
 
+### Comprehensions
+
+A list comprehension builds a list from a source in one expression:
+`[element for name in source if condition]`. The element is any expression,
+the source is anything a `for` loop can iterate, and the filters are optional
+and may be repeated — every one of them has to hold.
+
+```tern
+[x * 2 for x in [1, 2, 3]]                   // [2, 4, 6]
+[x for x in 1..10 if x % 2 == 0]             // [2, 4, 6, 8, 10]
+[x * x for x in 0..<6 if x > 1 if x < 4]     // [4, 9]
+[c for c in "abc"]                           // ["a", "b", "c"]
+[k + "=" + str(v) for k, v in m]             // ["a=1", "b=2"]
+```
+
+A map comprehension is the same with `key: value` in front:
+
+```tern
+{str(x): x * x for x in [1, 2, 3]}           // {"1": 1, "2": 4, "3": 9}
+{word: len(word) for word in words}
+```
+
+The loop variable is scoped to the comprehension: it does not leak afterwards,
+and reusing an outer name inside one leaves the outer one alone. The source is
+evaluated once, not once per element.
+
+One `for` per comprehension; a second one is a parse error (`TRN0122`) rather
+than a nested loop written to look flat — put the inner comprehension in the
+element instead:
+
+```tern
+[[y for y in 0..<x] for x in 0..<3]          // [[], [0], [0, 1]]
+```
+
+A comprehension compiles to the same loop a hand-written one would: an empty
+list, a `for`-style iteration, and an append per element, so it costs nothing
+beyond the loop it replaces.
+
 ### Ranges
 
 ```tern
@@ -1348,7 +1386,9 @@ entry          = (IDENT | STRING) (":" pattern)? ;
 ```
 
 Expressions follow the precedence table in §4 and include: literals, list/map
-displays (each element or entry may be `...expression`), identifiers, `this`,
+displays (each element or entry may be `...expression`), list comprehensions
+(`"[" expression "for" IDENT ("," IDENT)? "in" expression ("if" expression)* "]"`),
+map comprehensions (the same with `key ":" value` in front), identifiers, `this`,
 calls (each argument may be `...expression`), member access, indexing, slicing,
 lambdas, `match`, `if`-expressions, ternaries (`a ? b : c`), ranges (`a..b`),
 slices (`x[a..b]`, `x[..b]`, `x[a..]`), unary/binary operators including `in`,
@@ -1369,8 +1409,9 @@ compilation fails.
 | `TRN03xx` | linter (warnings only) |
 
 Codes worth recognising, because the message alone does not say where to look:
-`TRN0204` a file module that cannot be loaded, `TRN0206` undefined name,
-`TRN0207` too many arguments, `TRN0210` invalid assignment target, `TRN0212`
+`TRN0114` a spread outside a list, a map or a call, `TRN0122` a comprehension
+with a second `for`, `TRN0204` a file module that cannot be loaded,
+`TRN0206` undefined name, `TRN0207` too many arguments, `TRN0210` invalid assignment target, `TRN0212`
 unsupported assignment operator, `TRN0213` unbounded range outside a slice,
 `TRN0214` more than two names in a `for`, `TRN0215` a pattern declaration with
 no initializer, `TRN0216` a name bound twice in one pattern, `TRN0218` a `std:`
