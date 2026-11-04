@@ -168,6 +168,33 @@ namespace TERN.Syntax
         public override string Describe() => "[...]";
     }
 
+    /// <summary>
+    /// <c>[expr for x in xs if cond]</c>. One <c>for</c> clause and any number
+    /// of filters, which is the shape that reads as one sentence; a second
+    /// <c>for</c> would be a nested loop written as if it were not one.
+    /// </summary>
+    public sealed class ListComprehensionExpr : Expr
+    {
+        public required Expr Element { get; init; }
+        public required List<string> Names { get; init; }
+        public required Expr Iterable { get; init; }
+        public required List<Expr> Conditions { get; init; }
+
+        public override string Describe() => "[... for ...]";
+    }
+
+    /// <summary><c>{key: value for x in xs if cond}</c>.</summary>
+    public sealed class MapComprehensionExpr : Expr
+    {
+        public required Expr Key { get; init; }
+        public required Expr Value { get; init; }
+        public required List<string> Names { get; init; }
+        public required Expr Iterable { get; init; }
+        public required List<Expr> Conditions { get; init; }
+
+        public override string Describe() => "{... for ...}";
+    }
+
     public sealed class MapExpr : Expr
     {
         /// <summary>

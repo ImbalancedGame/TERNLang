@@ -1387,17 +1387,83 @@ namespace TERN.Syntax
             var start = Advance(); // [
             var items = new List<Expr>();
 
-            while (!Check(TokenKind.RightBracket) && !Check(TokenKind.EndOfFile))
+            if (Check(TokenKind.RightBracket))
             {
-                items.Add(ParseSpreadOrExpression());
-                if (!Match(TokenKind.Comma))
+                Advance();
+                return new ListExpr { Items = items, Offset = start.Offset, Line = start.Line };
+            }
+
+            var first = ParseSpreadOrExpression();
+            if (Check(TokenKind.For) && first is not SpreadExpr)
+            {
+                var (names, iterable, conditions) = ParseComprehensionClause();
+                Expect(TokenKind.RightBracket, "']'");
+                return new ListComprehensionExpr
+                {
+                    Element = first,
+                    Names = names,
+                    Iterable = iterable,
+                    Conditions = conditions,
+                    Offset = start.Offset,
+                    Line = start.Line,
+                };
+            }
+
+            items.Add(first);
+            while (Match(TokenKind.Comma))
+            {
+                if (Check(TokenKind.RightBracket) || Check(TokenKind.EndOfFile))
                 {
                     break;
                 }
+
+                items.Add(ParseSpreadOrExpression());
             }
 
             Expect(TokenKind.RightBracket, "']'");
             return new ListExpr { Items = items, Offset = start.Offset, Line = start.Line };
+        }
+
+        /// <summary>
+        /// The half of a comprehension after the element: <c>for a, b in xs</c>
+        /// and then any number of <c>if condition</c> filters.
+        /// </summary>
+        private (List<string> Names, Expr Iterable, List<Expr> Conditions) ParseComprehensionClause()
+        {
+            Expect(TokenKind.For, "'for'");
+
+            var names = new List<string>();
+            var firstName = Expect(TokenKind.Identifier, "a name to bind each element to");
+            names.Add(firstName.Text);
+            while (Match(TokenKind.Comma))
+            {
+                names.Add(Expect(TokenKind.Identifier, "a second name").Text);
+            }
+
+            if (names.Count > 2)
+            {
+                Error("a comprehension binds at most two names (a, b)", firstName, "TRN0214");
+            }
+
+            Expect(TokenKind.In, "'in'");
+            var iterable = ParseExpression();
+
+            var conditions = new List<Expr>();
+            while (Match(TokenKind.If))
+            {
+                conditions.Add(ParseExpression());
+            }
+
+            if (Check(TokenKind.For))
+            {
+                Error("a comprehension takes one 'for'; nest one in the element instead",
+                    Current, "TRN0122");
+                // Consumed and thrown away, so the rest of the literal still
+                // parses: one mistake should read as one error.
+                ParseComprehensionClause();
+            }
+
+            return (names, iterable, conditions);
         }
 
         /// <summary>
@@ -1467,6 +1533,39 @@ namespace TERN.Syntax
                 var value = ParseExpression();
                 keys.Add(key);
                 values.Add(value);
+
+                // `{k: v for x in xs}` - only as the whole literal, and only
+                // after the first entry, so `{a: 1, b: 2}` is untouched.
+                if (Check(TokenKind.For) && (keys.Count > 1 || keys[0] is SpreadExpr))
+                {
+                    Error("a map comprehension is one 'key: value' followed by 'for'",
+                        Current, "TRN0122");
+                    ParseComprehensionClause();
+                    Expect(TokenKind.RightBrace, "'}'");
+                    return new MapExpr
+                    {
+                        Keys = keys,
+                        Values = values,
+                        Offset = start.Offset,
+                        Line = start.Line,
+                    };
+                }
+
+                if (Check(TokenKind.For) && keys.Count == 1)
+                {
+                    var (names, iterable, conditions) = ParseComprehensionClause();
+                    Expect(TokenKind.RightBrace, "'}'");
+                    return new MapComprehensionExpr
+                    {
+                        Key = key,
+                        Value = value,
+                        Names = names,
+                        Iterable = iterable,
+                        Conditions = conditions,
+                        Offset = start.Offset,
+                        Line = start.Line,
+                    };
+                }
 
                 if (!Match(TokenKind.Comma))
                 {

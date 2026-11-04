@@ -1,0 +1,8 @@
+// A comprehension is one `for`. A second one is refused rather than quietly
+// nested, and a map comprehension is one `key: value` and nothing else.
+//
+// This test only checks the compiler, so it is not run natively.
+
+let xs = [1, 2];
+let nested = [x for x in xs for y in xs];
+let two = {a: 1, b: 2 for x in xs};

@@ -2032,6 +2032,14 @@ namespace TERN.Compiler
                         CompileFunctionLiteral(lambda.Function, out _);
                         return;
 
+                    case ListComprehensionExpr comprehension:
+                        CompileListComprehension(comprehension);
+                        return;
+
+                    case MapComprehensionExpr comprehension:
+                        CompileMapComprehension(comprehension);
+                        return;
+
                     case ListExpr list when HasSpread(list.Items):
                         CompileSpreadList(list);
                         return;
@@ -2607,6 +2615,111 @@ namespace TERN.Compiler
                     CompileExpression(map.Values[i]);
                     Emit(Op.MapSet, 0, 0, 0, pop: 3, push: 1);
                 }
+            }
+
+            /// <summary>
+            /// <c>[x * 2 for x in xs if x > 0]</c>: build an empty list in a
+            /// hidden local, then iterate the way a <c>for</c> loop does, appending
+            /// the element each pass. Only existing opcodes are used, so the two
+            /// back ends cannot drift apart on it.
+            /// </summary>
+            private void CompileComprehensionLoop(
+                List<string> names,
+                Expr iterable,
+                int resultSlot,
+                List<Expr>? conditions,
+                Action element)
+            {
+                CompileExpression(iterable);
+                Emit(Op.IterNew, 0, 0, 0, pop: 1, push: 1);
+                var iteratorSlot = DeclareLocal("$iter", isConst: true);
+                EmitStoreLocalPlain(iteratorSlot);
+
+                var start = _code.Count;
+                PushScope();
+                foreach (var name in names)
+                {
+                    DeclareLocal(name, isConst: true);
+                }
+
+                EmitLoadLocal(iteratorSlot);
+                var next = Emit(Op.IterNext, 0, names.Count, 0, pop: 1, push: names.Count);
+                for (var i = names.Count - 1; i >= 0; i--)
+                {
+                    Emit(Op.StoreLocal, FindLocalSlot(names[i]), 0, 0, pop: 1, push: 0);
+                }
+
+                foreach (var condition in conditions ?? new List<Expr>())
+                {
+                    CompileExpression(condition);
+                    // Not the element this time: back round for the next value.
+                    Emit(Op.JumpIfFalse, start, 0, 0, pop: 1, push: 0);
+                }
+
+                element();
+                PopScope();
+
+                Emit(Op.Jump, start, 0, 0, pop: 0, push: 0);
+                PatchA(next, _code.Count);
+                EmitLoadLocal(resultSlot);
+            }
+
+            private void CompileListComprehension(ListComprehensionExpr comprehension)
+            {
+                var firstSlot = _nextSlot;
+                var firstLocal = _locals.Count;
+                Emit(Op.NewList, 0, 0, 0, pop: 0, push: 1);
+                var resultSlot = DeclareLocal("$result", isConst: true);
+                EmitStoreLocalPlain(resultSlot);
+
+                CompileComprehensionLoop(comprehension.Names, comprehension.Iterable, resultSlot,
+                    comprehension.Conditions, () =>
+                    {
+                        EmitLoadLocal(resultSlot);
+                        CompileExpression(comprehension.Element);
+                        Emit(Op.ListAppend, 0, 0, 0, pop: 2, push: 1);
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                    });
+
+                ReleaseComprehensionSlots(firstSlot, firstLocal);
+            }
+
+            private void CompileMapComprehension(MapComprehensionExpr comprehension)
+            {
+                var firstSlot = _nextSlot;
+                var firstLocal = _locals.Count;
+                Emit(Op.NewMap, 0, 0, 0, pop: 0, push: 1);
+                var resultSlot = DeclareLocal("$result", isConst: true);
+                EmitStoreLocalPlain(resultSlot);
+
+                CompileComprehensionLoop(comprehension.Names, comprehension.Iterable, resultSlot,
+                    comprehension.Conditions, () =>
+                    {
+                        EmitLoadLocal(resultSlot);
+                        CompileExpression(comprehension.Key);
+                        CompileExpression(comprehension.Value);
+                        Emit(Op.MapSet, 0, 0, 0, pop: 3, push: 1);
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                    });
+
+                ReleaseComprehensionSlots(firstSlot, firstLocal);
+            }
+
+            /// <summary>
+            /// The hidden locals of a comprehension are dead once its result is on
+            /// the stack, and nothing in the source could name them, so their slots
+            /// go back to the enclosing block: a function with twenty
+            /// comprehensions in it does not ask for forty slots more than it
+            /// needed.
+            /// </summary>
+            private void ReleaseComprehensionSlots(int firstSlot, int firstLocal)
+            {
+                if (_locals.Count > firstLocal)
+                {
+                    _locals.RemoveRange(firstLocal, _locals.Count - firstLocal);
+                }
+
+                _nextSlot = firstSlot;
             }
 
             /// <summary>The arguments of a spread call, collected into a list.</summary>

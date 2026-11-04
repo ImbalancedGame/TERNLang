@@ -88,6 +88,12 @@ namespace TERN.Ide
                 case SpreadExpr:
                     return ReceiverType.Unknown;
 
+                case ListComprehensionExpr:
+                    return ReceiverType.Builtin("list");
+
+                case MapComprehensionExpr:
+                    return ReceiverType.Builtin("map");
+
                 case ListExpr:
                     return ReceiverType.Builtin("list");
 

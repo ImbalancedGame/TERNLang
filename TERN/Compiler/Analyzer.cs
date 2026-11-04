@@ -295,6 +295,20 @@ namespace TERN.Compiler
 
             private void Sub(Stmt statement) => Statement(statement);
 
+            /// <summary>Runs a comprehension's element in the scope its names introduce.</summary>
+            private void Comprehension(List<string> names, Node at, Action body)
+            {
+                var previous = Push();
+                foreach (var name in names)
+                {
+                    CheckShadowing(name, at);
+                    _scope.Bind(name, at, "comprehension");
+                }
+
+                body();
+                Pop(previous);
+            }
+
             private void Block(BlockStmt block)
             {
                 var previous = Push();
@@ -460,6 +474,38 @@ namespace TERN.Compiler
 
                     case SpreadExpr spread:
                         Expression(spread.Operand);
+                        return;
+
+                    // A comprehension binds its names for the element and the
+                    // filters only, exactly as a `for` loop binds them for its
+                    // body - so anything else in the list still sees the outer
+                    // scope, and a name used in the element is known here rather
+                    // than reported as undefined.
+                    case ListComprehensionExpr comprehension:
+                        Expression(comprehension.Iterable);
+                        Comprehension(comprehension.Names, comprehension, () =>
+                        {
+                            foreach (var condition in comprehension.Conditions)
+                            {
+                                Condition(condition);
+                            }
+
+                            Expression(comprehension.Element);
+                        });
+                        return;
+
+                    case MapComprehensionExpr mapComprehension:
+                        Expression(mapComprehension.Iterable);
+                        Comprehension(mapComprehension.Names, mapComprehension, () =>
+                        {
+                            foreach (var condition in mapComprehension.Conditions)
+                            {
+                                Condition(condition);
+                            }
+
+                            Expression(mapComprehension.Key);
+                            Expression(mapComprehension.Value);
+                        });
                         return;
 
                     case ListExpr list:
