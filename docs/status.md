@@ -165,7 +165,24 @@ Ordered by what would bite a user first.
    `Create*` call given the wrong interface id, for as long as the binding has
    existed. The ids are right now and the mock enforces them, but the remaining
    claims — descriptor heap offsets, the root signature blob, the PSO
-   description, the readback pitch — have still only met a fake. Running
+   description, the readback pitch — have still only met a fake.
+
+   The first one to fail on real hardware was the PSO description, and it was
+   not the description: `CreateGraphicsPipelineState` answered `0x80070057`
+   (E_INVALIDARG) for the GPU ray tracer because its pixel shader indexed a
+   `static const float4 SPHERES[4][2]` with a loop variable. fxc does not fold
+   that into immediates — it lays the array out in `$Globals`, which binds
+   *after* the explicit `cbuffer` at `b0`, so the shader asked for `b1` and the
+   root signature had only `b0`. Direct3D 12 validates exactly that at PSO
+   creation (`STATE_CREATION ERROR #688:
+   CREATEGRAPHICSPIPELINESTATE_VS_ROOT_SIGNATURE_MISMATCH`) and returns
+   E_INVALIDARG, which the script saw as "the pipeline state could not be
+   created" and nothing else. The scene now travels in the same `b0` buffer as
+   the camera — 48 of the 64 dwords — and `tools/d3d12/hlsl_lint.py` rejects the
+   pattern outright, because there is no shader compiler here to watch for it.
+   That fix has not been on a GPU either: the next run on the Windows machine is
+   what confirms it, and `d3d12.debug(true)` before `d3d12.create` is what turns
+   the next E_INVALIDARG into a message that names the binding. Running
    `examples/rotating_cube.tern` on the Windows machine is the cheap test;
    `tools/tern tools/d3d12/probe.tern` and `tools/gl/probe.tern` on a machine
    with a GPU are the thorough ones. The structure mirror is already checked
@@ -239,6 +256,18 @@ SSH is what the servers actually offer).
 
 ## Recently fixed
 
+* **The GPU ray tracer's pipeline state was refused on real hardware**
+  (`0x80070057`, reported 2026-11-04). The description was right and the
+  shaders compiled; what failed was the binding. The pixel shader indexed a
+  `static const` array with a loop variable, which fxc lays out in `$Globals`
+  at `b1`, and the root signature declares only `b0` — Direct3D 12 checks
+  exactly that at `CreateGraphicsPipelineState` (`STATE_CREATION #688`) and
+  answers E_INVALIDARG without saying why. The scene now travels in the same
+  `b0` buffer as the camera (48 of the 64 dwords), `tools/d3d12/hlsl_lint.py`
+  rejects the pattern, and a refused pipeline state now prints the driver's
+  binding revision and asks for `d3d12.debug(true)` so the next report names the
+  binding instead of the error code. Still owned by the Windows machine: nothing
+  here can run a driver.
 * **The GPU ray tracer was a screenshot, not a camera.** The example drew one
   frame, wrote a PNG and closed - there was no window in it at all, and no way
   to look at the scene from anywhere but the one place the shader had baked in.

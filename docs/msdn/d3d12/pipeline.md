@@ -29,7 +29,7 @@ Also creates the (empty) root signature. The input layout is fixed: `POSITION` a
 
 | Error | Raised when |
 | --- | --- |
-| `D3D12Error` | The compiler is missing, or names the first error in the shader. |
+| `D3D12Error` | The compiler is missing, or names the first error in the shader; or the driver refused the pipeline state, which means the shaders ask for a binding the root signature does not have - call `d3d12.debug(true)` before `d3d12.create` to hear the driver say which. |
 
 ## Example
 

@@ -41,7 +41,7 @@
 // built before the fix that caused it: the two are indistinguishable without a
 // stamp, and the fix looked like it had failed. Bump it whenever the D3D12 or
 // window code changes what a failure means.
-#define TERN_D3D12_BUILD "2026-10-31.9"
+#define TERN_D3D12_BUILD "2026-11-04.1"
 
 // --- the structures, with the offsets the SDK headers give them -------------
 

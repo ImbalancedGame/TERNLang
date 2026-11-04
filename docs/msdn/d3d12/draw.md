@@ -27,6 +27,8 @@ Each call uploads into a fresh upload-heap buffer: correct and simple. A rendere
 
 The constants are what a *camera* is made of: they arrive as the shader's `cbuffer` in `register(b0)`, so a value that changes every frame - an eye position, a matrix, a clock - costs sixteen floats on the command list instead of a shader compile. The root signature declares all 64 dwords, and a draw sets as many as it is given from offset 0; the rest keep whatever the previous draw left there, so pass every value the shader reads.
 
+Everything the shader reads has to arrive this way, because `b0` is the only binding the root signature declares. A `static const` array indexed by a variable - the obvious way to bake a scene into a shader - is compiled into a second constant buffer (`$Globals`, which binds after `b0`), and Direct3D 12 then refuses the pipeline state with `E_INVALIDARG`: the script sees only "the pipeline state could not be created (0x80070057)" and no reason. Put the array inside the `cbuffer` and pass its values here; the GPU ray tracer carries its camera and its four spheres in 48 of the 64 dwords.
+
 Whole numbers are accepted and are converted to floats, because a shader cannot add an `int` to a `float4`.
 
 ## Errors

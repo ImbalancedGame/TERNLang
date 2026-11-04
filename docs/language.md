@@ -141,14 +141,33 @@ the empty collections were falsy, which neither back end has ever done.
 let x = 1;        // mutable
 const LIMIT = 10; // immutable: assignment is a compile error
 x = 2;            // ok
-x += 5;           // compound assignment: += -= *= /= %=
+x += 5;           // compound assignment: += -= *= /= %= **= &= |= ^= <<= >>=
 x++;              // increment/decrement on a bare variable
 --x;
 ```
 
+Three of the assignment operators test the target before deciding whether the
+value is wanted, and the value is *not evaluated* when it is not:
+
+```tern
+counts[word] ??= 0;             // counts[word] = counts[word] ?? 0, one lookup
+nickname ||= person["name"];    // the value only when the target is falsy
+flag &&= check();               // check() only when the target is truthy
+```
+
+They are `<target> ??= v`, `<target> ||= v` and `<target> &&= v`, and each is
+worth the whole of its long form when the value is a call: `m[k] ??= expensive()`
+calls `expensive` once per miss, not once per read plus once per miss. The
+target's own subexpressions run once either way - `m[f()] ??= v` calls `f` once,
+whether or not the value is needed - and the expression is worth the target's
+value afterwards, so `let n = (x ??= 0);` works. `||=` and `&&=` follow the
+truthiness in section 2, which means `0` counts as truthy: `n ||= 5` leaves a
+zero alone, and `??=` is the one to reach for when zero is not a value the
+target can have.
+
 * Declarations are block scoped. A block may shadow an outer name.
-* Assignment to an undeclared name is `TRN0201`.
-* Assigning to a `const` is `TRN0202`.
+* Assignment to an undeclared name is `TRN0206`.
+* Assigning to a `const` is `TRN0209`.
 * A declaration without an initializer is `nil`: `let pending;`.
 
 ### Declaring by pattern
@@ -180,7 +199,7 @@ From lowest to highest precedence:
 
 | Level | Operators                        | Associativity |
 | ----- | -------------------------------- | ------------- |
-| 1     | `=` `+=` `-=` `*=` `/=` `%=`     | right         |
+| 1     | `=` `+=` `-=` `*=` `/=` `%=` `**=` `&=` `\|=` `^=` `<<=` `>>=` `??=` `\|\|=` `&&=` | right |
 | 2     | `cond ? a : b` (ternary)         | right         |
 | 3     | `??`                             | right         |
 | 4     | `or` `\|\|`                      | left          |
@@ -380,6 +399,30 @@ do {
 ```
 
 `break` and `continue` work in all loop forms.
+
+### Labeled loops
+
+A name and a colon before any loop names it, and `break name;` or
+`continue name;` then leaves or repeats *that* loop instead of the innermost
+one. It is the way out of two nested loops without a flag that every pass has
+to test:
+
+```tern
+outer: for row in rows {
+    for column in columns {
+        if blocked(row, column) { break outer; }
+        visit(row, column);
+    }
+}
+```
+
+The label belongs to the loop, not to the statement after it: `name: while`,
+`name: for`, `name: loop` and `name: do` are the four forms, and
+`name: let x = 1;` is an error (`TRN0121`). A `break` or `continue` naming a
+loop that does not enclose it is an error too (`TRN0220`). A
+`finally` between the jump and the loop it leaves runs, and locals captured by
+a closure keep the value they had — leaving a loop early cannot change a value
+a closure already captured.
 
 ---
 
@@ -1239,12 +1282,14 @@ structDecl     = "struct" IDENT "{" (field ("," field)*)? method* "}" ;
 field          = IDENT ("=" expression)? ;
 importDecl     = "import" STRING ("as" IDENT)? ";"? ;
 ifStmt         = "if" expression block ("else" (ifStmt | block))? ;
-whileStmt      = "while" expression block ;
-loopStmt       = "loop" block ;
-forStmt        = "for" ((IDENT ("," IDENT)?) | pattern) "in" expression block ;
-doWhileStmt    = "do" block "while" expression ";"? ;
+whileStmt      = (IDENT ":")? "while" expression block ;
+loopStmt       = (IDENT ":")? "loop" block ;
+forStmt        = (IDENT ":")? "for" ((IDENT ("," IDENT)?) | pattern) "in" expression block ;
+doWhileStmt    = (IDENT ":")? "do" block "while" expression ";"? ;
 tryStmt        = "try" block ("catch" ("(" IDENT ")")? block)? ("finally" block)? ;
 throwStmt      = "throw" expression ";"? ;
+breakStmt      = "break" IDENT? ";"? ;
+continueStmt   = "continue" IDENT? ";"? ;
 block          = "{" statement* "}" ;
 pattern        = alternative ("|" alternative)* ;
 alternative    = literal | range | "_" | IDENT | listPattern | mapPattern ;
@@ -1281,7 +1326,8 @@ unsupported assignment operator, `TRN0213` unbounded range outside a slice,
 `TRN0214` more than two names in a `for`, `TRN0215` a pattern declaration with
 no initializer, `TRN0216` a name bound twice in one pattern, `TRN0218` a `std:`
 module this build does not have, `TRN0219` an internal disagreement about the
-operand stack (below), `TRN0221` a struct method that captures an outer
+operand stack (below), `TRN0220` a `break` or `continue` that names no
+enclosing loop, `TRN0221` a struct method that captures an outer
 variable.
 
 `TRN0219` is never the script's fault and never the script's problem to solve:

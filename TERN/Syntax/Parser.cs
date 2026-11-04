@@ -152,7 +152,7 @@ namespace TERN.Syntax
             return new BlockStmt { Statements = statements, Offset = 0, Line = 1 };
         }
 
-        private Stmt? ParseStatement()
+        private Stmt? ParseStatement(string? label = null)
         {
             var token = Current;
 
@@ -181,16 +181,16 @@ namespace TERN.Syntax
                     return ParseIf();
 
                 case TokenKind.While:
-                    return ParseWhile();
+                    return ParseWhile(label);
 
                 case TokenKind.Loop:
-                    return ParseLoop();
+                    return ParseLoop(label);
 
                 case TokenKind.Do:
-                    return ParseDoWhile();
+                    return ParseDoWhile(label);
 
                 case TokenKind.For:
-                    return ParseFor();
+                    return ParseFor(label);
 
                 case TokenKind.Break:
                     Advance();
@@ -199,8 +199,14 @@ namespace TERN.Syntax
                         Error("'break' outside of a loop", token, "TRN0103");
                     }
 
+                    // `break outer;` - the name is only a label when it is on the
+                    // same line, so `break` followed by a statement that happens to
+                    // start with an identifier stays a plain break.
+                    var breakLabel = Current.Kind == TokenKind.Identifier && Current.Line == token.Line
+                        ? Advance().Text
+                        : null;
                     EndStatement();
-                    return new BreakStmt { Offset = token.Offset, Line = token.Line };
+                    return new BreakStmt { Offset = token.Offset, Line = token.Line, Label = breakLabel };
 
                 case TokenKind.Continue:
                     Advance();
@@ -209,8 +215,11 @@ namespace TERN.Syntax
                         Error("'continue' outside of a loop", token, "TRN0104");
                     }
 
+                    var continueLabel = Current.Kind == TokenKind.Identifier && Current.Line == token.Line
+                        ? Advance().Text
+                        : null;
                     EndStatement();
-                    return new ContinueStmt { Offset = token.Offset, Line = token.Line };
+                    return new ContinueStmt { Offset = token.Offset, Line = token.Line, Label = continueLabel };
 
                 case TokenKind.Return:
                     return ParseReturn();
@@ -229,6 +238,23 @@ namespace TERN.Syntax
 
                 case TokenKind.LeftBrace:
                     return ParseBlock();
+
+                // `outer: for ...` - a name, a colon, and then the loop it names.
+                // Nothing else takes a label, so anything else here is a mistake
+                // worth naming rather than a statement that quietly loses one.
+                case TokenKind.Identifier when Peek(1).Kind == TokenKind.Colon && label is null:
+                {
+                    var name = Advance();
+                    Advance();
+                    var inner = ParseStatement(name.Text);
+                    if (StatementLabel(inner) == name.Text)
+                    {
+                        return inner;
+                    }
+
+                    Error($"a label must name a loop, as in '{name.Text}: for ...'", name, "TRN0121");
+                    return inner;
+                }
 
                 default:
                     return ParseExpressionStatement();
@@ -496,7 +522,18 @@ namespace TERN.Syntax
             };
         }
 
-        private Stmt ParseWhile()
+        /// <summary>The label a statement carries, or null when it can carry none.</summary>
+        private static string? StatementLabel(Stmt? statement) => statement switch
+        {
+            WhileStmt loop => loop.Label,
+            LoopStmt loop => loop.Label,
+            DoWhileStmt loop => loop.Label,
+            ForStmt loop => loop.Label,
+            ForInStmt loop => loop.Label,
+            _ => null,
+        };
+
+        private Stmt ParseWhile(string? label = null)
         {
             var keyword = Advance();
             var condition = ParseExpression();
@@ -508,22 +545,23 @@ namespace TERN.Syntax
             {
                 Condition = condition,
                 Body = body,
+                Label = label,
                 Offset = keyword.Offset,
                 Line = keyword.Line,
             };
         }
 
-        private Stmt ParseLoop()
+        private Stmt ParseLoop(string? label = null)
         {
             var keyword = Advance();
             _loopDepth++;
             var body = ParseBodyStatement();
             _loopDepth--;
 
-            return new LoopStmt { Body = body, Offset = keyword.Offset, Line = keyword.Line };
+            return new LoopStmt { Body = body, Label = label, Offset = keyword.Offset, Line = keyword.Line };
         }
 
-        private Stmt ParseDoWhile()
+        private Stmt ParseDoWhile(string? label = null)
         {
             var keyword = Advance();
             _loopDepth++;
@@ -538,18 +576,19 @@ namespace TERN.Syntax
             {
                 Body = body,
                 Condition = condition,
+                Label = label,
                 Offset = keyword.Offset,
                 Line = keyword.Line,
             };
         }
 
-        private Stmt ParseFor()
+        private Stmt ParseFor(string? label = null)
         {
             var keyword = Advance();
 
             if (Check(TokenKind.LeftParen))
             {
-                return ParseCStyleFor(keyword);
+                return ParseCStyleFor(keyword, label);
             }
 
             // `for [k, v] in pairs` binds by pattern; a plain loop keeps its names
@@ -572,6 +611,7 @@ namespace TERN.Syntax
                     Pattern = binding,
                     Iterable = subjects,
                     Body = looped,
+                    Label = label,
                     Offset = keyword.Offset,
                     Line = keyword.Line,
                 };
@@ -599,12 +639,13 @@ namespace TERN.Syntax
                 Names = names,
                 Iterable = iterable,
                 Body = body,
+                Label = label,
                 Offset = keyword.Offset,
                 Line = keyword.Line,
             };
         }
 
-        private Stmt ParseCStyleFor(Token keyword)
+        private Stmt ParseCStyleFor(Token keyword, string? label = null)
         {
             Expect(TokenKind.LeftParen, "'('");
 
@@ -646,6 +687,7 @@ namespace TERN.Syntax
                 Condition = condition,
                 Increment = increment,
                 Body = body,
+                Label = label,
                 Offset = keyword.Offset,
                 Line = keyword.Line,
             };
@@ -799,7 +841,8 @@ namespace TERN.Syntax
             if (op is TokenKind.Equal or TokenKind.PlusEqual or TokenKind.MinusEqual or TokenKind.StarEqual
                 or TokenKind.SlashEqual or TokenKind.PercentEqual or TokenKind.StarStarEqual
                 or TokenKind.AmpEqual or TokenKind.PipeEqual or TokenKind.CaretEqual
-                or TokenKind.ShiftLeftEqual or TokenKind.ShiftRightEqual)
+                or TokenKind.ShiftLeftEqual or TokenKind.ShiftRightEqual
+                or TokenKind.QuestionQuestionEqual or TokenKind.AmpAmpEqual or TokenKind.PipePipeEqual)
             {
                 var token = Advance();
 

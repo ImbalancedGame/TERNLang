@@ -413,7 +413,15 @@ class Generator:
         elif op == "StoreUpvalue":
             line("cl->up[%d]->value = st[--sp];" % a)
         elif op == "CloseUpvalues":
-            pass   # captured locals are heap cells already
+            # A captured local is a heap cell here, and the VM's close is what
+            # gives each pass through a loop its own: the closures made so far
+            # keep the cell they captured, and the frame carries on with a new
+            # one, so `for i in xs { fns.push(fn() { return i; }); }` answers
+            # 1 2 3 rather than 3 3 3. Without this the two back ends disagreed
+            # on exactly that program.
+            for slot in sorted(captured):
+                if slot >= a:
+                    line("cap[%d] = cell_new(cap[%d]->value);" % (slot, slot))
 
         elif op == "ArgOrJump":
             line("if (%s.tag != T_MISSING) goto L%d;" % (self.loc(a, captured), b))

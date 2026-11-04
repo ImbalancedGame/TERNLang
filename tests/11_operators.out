@@ -34,3 +34,14 @@ operator '&' requires integers but got float
 operator '&' requires integers but got string
 operator '&' requires integers but got float
 true false true true
+99 1
+99 1
+0 0
+5 5
+7 7
+false false
+first 1
+first 2
+deep deep
+closed
+kept

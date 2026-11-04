@@ -1,0 +1,76 @@
+// A label before a loop names it, and `break name;` / `continue name;` leave or
+// repeat that loop rather than the innermost one. Without labels the only way
+// out of two nested loops is a flag and a test on every pass.
+
+let seen = [];
+outer: for row in [1, 2, 3] {
+    for column in [1, 2, 3] {
+        if column == 2 { break outer; }
+        seen.push(str(row) + ":" + str(column));
+    }
+}
+println(seen.join(" "));                       // 1:1
+
+// `continue` on the outer loop skips the rest of the inner one and starts the
+// next pass of the outer loop, which is what a flag could not say at all.
+let kept = [];
+rows: for row in [1, 2, 3] {
+    for column in [1, 2] {
+        if row == 2 { continue rows; }
+        kept.push(str(row) + str(column));
+    }
+}
+println(kept.join(" "));                       // 11 12 31 32
+
+// Every loop form can carry one, not just `for`.
+let turns = 0;
+spinning: loop {
+    turns += 1;
+    waiting: while true {
+        if turns == 2 { break waiting; }
+        break spinning;
+    }
+    if turns > 3 { break; }
+}
+println("turns " + str(turns));                // turns 1
+
+let attempts = 0;
+retry: do {
+    attempts += 1;
+    if attempts < 3 { continue retry; }
+} while (attempts < 5);
+println("attempts " + str(attempts));          // attempts 5
+
+// A `finally` between the jump and its target runs, once per block crossed.
+let trail = [];
+leaving: for row in [1, 2] {
+    try {
+        for column in [1, 2] {
+            if column == 1 { break leaving; }
+            trail.push("body");
+        }
+    } finally {
+        trail.push("finally" + str(row));
+    }
+}
+println(trail.join(","));                      // finally1
+
+// The loop variable a closure captures is still per-iteration: leaving early
+// does not change the values already captured.
+let makers = [];
+for value in [10, 20, 30] {
+    if value == 30 { break; }
+    makers.push(fn() { return value; });
+}
+println(str(makers[0]()) + " " + str(makers[1]()));   // 10 20
+
+// The label is part of the loop, so two loops may share a fresh name, and an
+// unlabelled break is still the innermost loop.
+let inner = 0;
+a: for x in [1, 2] {
+    for y in [1, 2] {
+        if y == 2 { break; }
+        inner += 1;
+    }
+}
+println("inner " + str(inner));                // inner 2

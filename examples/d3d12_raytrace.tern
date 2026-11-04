@@ -7,18 +7,21 @@
 //   tern run examples/d3d12_raytrace.tern --emit-hlsl shot.hlsl
 //   tern run examples/d3d12_raytrace.tern --ascii         # preview in the terminal
 //
-// The scene is a list of spheres in TERN. The pixel shader that traces it is
-// HLSL, and it is generated from that list: every sphere is baked into the
-// source as a row of a constant array, and the shader compiles at run time with
-// d3dcompiler_47.dll when the pipeline is built. That is the older way of
-// writing a shader - gen the program, compile it, run it - and it costs nothing
-// here, because the scene does not change from frame to frame.
+// The scene is a list of spheres in TERN and the pixel shader that traces it is
+// HLSL, generated as text and compiled at run time by d3dcompiler_47.dll when
+// the pipeline is built. What is *not* in the text is the data: the camera and
+// the spheres travel to the shader every frame as the root signature's constants
+// (register(b0)), which is what d3d12.draw's fourth argument fills.
 //
-// The camera is the part that does change, and it does not go in the text: every
-// frame hands the shader sixteen floats through the root signature's constants
-// (register(b0)), which is what d3d12.draw's fourth argument is for. The other
-// way round is a d3dcompiler run and a fresh pipeline state per mouse move,
-// which is a shader compiler doing the work of a matrix multiply.
+// That is not only tidier, it is what the driver accepts. A `static const`
+// array indexed by a variable - the obvious way to bake a scene into a shader -
+// is compiled into a second constant buffer ($Globals, at b1), and a pipeline
+// state whose shader wants a binding the root signature does not have is
+// refused with E_INVALIDARG, which reaches the script as "the pipeline state
+// could not be created (0x80070057)" and names nothing. Everything the shader
+// reads therefore lives in the one cbuffer, and the whole of it arrives through
+// the 64 dwords the root signature provides: sixteen for the camera, eight
+// float4s (two per sphere) for the scene.
 //
 // The same scene is traced on the CPU by examples/raytracer.tern, which is the
 // program to run beside this one: two implementations of the same maths, one in
@@ -59,22 +62,6 @@ fn hlsl_float(value) {
     return text;
 }
 
-fn hlsl_scene(scene) {
-    let lines = [];
-    lines.push("static const float4 SPHERES[" + str(len(scene)) + "][2] = {");
-    for s in scene {
-        // Two float4s per sphere - centre and radius, colour and mirror -
-        // because a float4x4 row would waste a slot and an array of eight
-        // floats is not indexed as cheaply.
-        lines.push("    { float4(" + hlsl_float(s[0]) + ", " + hlsl_float(s[1]) + ", " +
-                   hlsl_float(s[2]) + ", " + hlsl_float(s[3]) + "),");
-        lines.push("      float4(" + hlsl_float(s[4]) + ", " + hlsl_float(s[5]) + ", " +
-                   hlsl_float(s[6]) + ", " + hlsl_float(s[7]) + ") },");
-    }
-    lines.push("};");
-    return lines;
-}
-
 /// How many bounces a ray may take: one primary ray and three reflections,
 /// which is what the CPU tracer in examples/raytracer.tern does.
 const BOUNCES = 4;
@@ -100,16 +87,19 @@ const DRAG = 0.0035;
 /// Radians a second of the automatic turn `--seconds` asks for.
 const SPIN = 0.5;
 
-fn hlsl_camera() {
+fn hlsl_camera(spheres) {
     return [
-        "// The camera, from TERN, through the root signature: four float4s in b0.",
-        "// This is what d3d12.draw's fourth argument fills, and it is why the",
-        "// picture can follow the mouse without this file being recompiled.",
-        "cbuffer Camera : register(b0) {",
+        "// The camera and the scene, from TERN, through the root signature: four",
+        "// float4s of camera and two per sphere, 48 dwords of the 64 the root",
+        "// signature has. This is what d3d12.draw's fourth argument fills, which",
+        "// is why the picture can follow the mouse without the shader being",
+        "// recompiled, and why nothing the shader reads needs a second binding.",
+        "cbuffer Scene : register(b0) {",
         "    float4 CAM_RIGHT;    // xyz: the right vector, w: tan(half the horizontal fov)",
         "    float4 CAM_UP;       // xyz: the up vector,    w: tan(half the vertical fov)",
         "    float4 CAM_FORWARD;  // xyz: the direction being looked along",
         "    float4 CAM_EYE;      // xyz: where the eye is",
+        "    float4 SPHERES[" + str(spheres * 2) + "];   // per sphere: centre and radius, colour and mirror",
         "};",
         "static const float3 LIGHT = float3(-3.0, 4.0, 2.5);",
         "static const float3 SKY_TOP = float3(0.08, 0.10, 0.20);",
@@ -133,8 +123,7 @@ fn pixel_shader(width, height, scene) {
     let lines = [];
     lines.push("static const float RES_X = " + hlsl_float(width) + ";");
     lines.push("static const float RES_Y = " + hlsl_float(height) + ";");
-    for line in hlsl_camera() { lines.push(line); }
-    for line in hlsl_scene(scene) { lines.push(line); }
+    for line in hlsl_camera(len(scene)) { lines.push(line); }
     for line in [
         "",
         "// The distance to a sphere, or -1 for a miss. The quadratic assumes a",
@@ -188,7 +177,7 @@ fn pixel_shader(width, height, scene) {
         "        float nearest = -1.0;",
         "        int which = -1;",
         "        for (int i = 0; i < " + str(len(scene)) + "; i++) {",
-        "            float t = hit_sphere(origin, direction, SPHERES[i][0]);",
+        "            float t = hit_sphere(origin, direction, SPHERES[i * 2]);",
         "            if (t > 0.0 && (nearest < 0.0 || t < nearest)) {",
         "                nearest = t;",
         "                which = i;",
@@ -219,9 +208,9 @@ fn pixel_shader(width, height, scene) {
         "            normal = float3(0.0, 1.0, 0.0);",
         "            mirror = 0.18 * fade;",
         "        } else {",
-        "            float4 centre_radius = SPHERES[which][0];",
-        "            base = SPHERES[which][1].rgb;",
-        "            mirror = SPHERES[which][1].a;",
+        "            float4 centre_radius = SPHERES[which * 2];",
+        "            base = SPHERES[which * 2 + 1].rgb;",
+        "            mirror = SPHERES[which * 2 + 1].a;",
         "            normal = (hit - centre_radius.xyz) / centre_radius.w;",
         "        }",
         "        // Two-sided, so the inside of a sphere is lit rather than black.",
@@ -235,7 +224,7 @@ fn pixel_shader(width, height, scene) {
         "        // cannot shadow a point above it.",
         "        float lit = 1.0;",
         "        for (int j = 0; j < " + str(len(scene)) + "; j++) {",
-        "            float blocked = hit_sphere(hit + normal * 0.002, to_light, SPHERES[j][0]);",
+        "            float blocked = hit_sphere(hit + normal * 0.002, to_light, SPHERES[j * 2]);",
         "            if (blocked > 0.0 && blocked < light_distance) { lit = 0.12; }",
         "        }",
         "",
@@ -329,11 +318,23 @@ fn camera_constants(width, height, yaw, pitch, distance) {
     ];
 }
 
-/// Clears the target and traces it once from this camera. The whole of a frame.
-fn paint(target, program, width, height, yaw, pitch, distance, vertices) {
+/// The eight floats per sphere the shader indexes: centre and radius, colour
+/// and mirror, in that order.
+fn scene_constants(scene) {
+    let values = [];
+    for s in scene {
+        for value in s { values.push(value); }
+    }
+    return values;
+}
+
+/// Clears the target and traces it once from this camera. The whole of a frame:
+/// sixteen floats of camera, then eight per sphere, which is 48 of the 64 the
+/// root signature can carry.
+fn paint(target, program, width, height, yaw, pitch, distance, vertices, scene) {
     d3d12.clear(target, 0.0, 0.0, 0.0, 1);
     d3d12.draw(target, program, vertices,
-               camera_constants(width, height, yaw, pitch, distance));
+               camera_constants(width, height, yaw, pitch, distance) + scene_constants(scene));
 }
 
 // --- the window --------------------------------------------------------------
@@ -346,7 +347,7 @@ fn paint(target, program, width, height, yaw, pitch, distance, vertices) {
 // only then: a ray tracer that re-traces a still picture sixty times a second
 // heats a laptop to show the same pixels.
 
-fn orbit(window, target, program, width, height, vertices, seconds, yaw0, pitch0, distance0) {
+fn orbit(window, target, program, width, height, vertices, scene, seconds, yaw0, pitch0, distance0) {
     let yaw = yaw0;
     let pitch = pitch0;
     let distance = distance0;
@@ -402,7 +403,7 @@ fn orbit(window, target, program, width, height, vertices, seconds, yaw0, pitch0
         }
 
         if (!moved) { continue; }
-        paint(target, program, width, height, yaw, pitch, distance, vertices);
+        paint(target, program, width, height, yaw, pitch, distance, vertices, scene);
         frames = frames + 1;
     }
 
@@ -517,7 +518,7 @@ fn main() {
 
     let vertices = fullscreen_triangle();
     let started = time.millis();
-    paint(target, pipeline, width, height, yaw, pitch, distance, vertices);
+    paint(target, pipeline, width, height, yaw, pitch, distance, vertices, scene);
     let elapsed = time.millis() - started;
     println("one frame traced in " + str(elapsed) + " ms.");
 
@@ -531,7 +532,7 @@ fn main() {
         if (window == nil) {
             println("no window on this machine, so this is the still frame.");
         } else {
-            frames = orbit(window, target, pipeline, width, height, vertices,
+            frames = orbit(window, target, pipeline, width, height, vertices, scene,
                            seconds, yaw, pitch, distance);
             println("window closed after " + str(frames + 1) + " frames.");
         }

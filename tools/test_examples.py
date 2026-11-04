@@ -676,8 +676,8 @@ def test_shaders(checks):
     checks.check("it writes its image", os.path.exists(ray_png))
     checks.check("the emitted shader has the scene baked into it",
                  os.path.exists(ray_source)
-                 and "SPHERES[4][2]" in open(ray_source, encoding="utf-8").read(),
-                 "no baked scene")
+                 and "SPHERES[8]" in open(ray_source, encoding="utf-8").read(),
+                 "no scene array")
 
     # The camera is the part that changes every frame, so it is not in the
     # source: it arrives through the root signature. A shader with the old baked
@@ -685,7 +685,7 @@ def test_shaders(checks):
     # still picture however far the mouse dragged.
     source = open(ray_source, encoding="utf-8").read() if os.path.exists(ray_source) else ""
     checks.check("the camera comes from the root signature, not from the source",
-                 "cbuffer Camera : register(b0)" in source
+                 "cbuffer Scene : register(b0)" in source
                  and "CAM_EYE" in source and "LOOK_AT" not in source,
                  source[:300])
     checks.check("and the shader reads all four camera vectors",
@@ -746,6 +746,22 @@ def test_shaders(checks):
     checks.check("and one that recurses through another function",
                  any("recursive" in problem for problem in hlsl_lint.check(mutual, "mutual.hlsl")),
                  str(hlsl_lint.check(mutual, "mutual.hlsl")[:2]))
+    # A static array read with a variable index is not an immediate: fxc puts it
+    # in $Globals, which binds after b0, and the pipeline state is then refused
+    # with E_INVALIDARG. This is the shape the GPU ray tracer's scene had before
+    # 2026-11-04, and the reason it never created a pipeline state on a GPU.
+    baked = (
+        "static const float4 SPHERES[4][2] = {\n"
+        "    { float4(0.0, 0.0, 0.0, 0.5), float4(1.0, 0.0, 0.0, 0.0) },\n"
+        "};\n"
+        "float hit(int i) { return SPHERES[i][0].w; }\n"
+        "float4 main(float4 pixel : SV_Position) : SV_Target {\n"
+        "    return float4(hit((int)pixel.x), 0.0, 0.0, 1.0);\n"
+        "}\n")
+    problems = hlsl_lint.check(baked, "baked.hlsl")
+    checks.check("the lint rejects a static array indexed by a variable",
+                 any("$Globals" in problem and "E_INVALIDARG" in problem for problem in problems),
+                 str(problems[:2]))
     checks.check("an ordinary shader is still accepted",
                  not hlsl_lint.check(
                      "float3 lift(float3 p) { return p * 2.0; }\n"

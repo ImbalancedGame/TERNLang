@@ -83,6 +83,9 @@ namespace TERN.Compiler
         {
             public required int ContinueTarget { get; init; }
             public required List<int> BreakJumps { get; init; }
+
+            /// <summary>The name from <c>outer: for ...</c>, or null.</summary>
+            public string? Label { get; init; }
             public required int FinallyDepth { get; init; }
             public required int ScopeDepth { get; init; }
             public List<int>? ContinueJumps { get; init; }
@@ -1034,6 +1037,7 @@ namespace TERN.Compiler
                     BreakJumps = new List<int>(),
                     FinallyDepth = _finally.Count,
                     ScopeDepth = _scopeDepth,
+                    Label = statement.Label,
                 };
                 _loops.Add(loop);
 
@@ -1062,6 +1066,7 @@ namespace TERN.Compiler
                     BreakJumps = new List<int>(),
                     FinallyDepth = _finally.Count,
                     ScopeDepth = _scopeDepth,
+                    Label = statement.Label,
                 };
                 _loops.Add(loop);
 
@@ -1087,6 +1092,7 @@ namespace TERN.Compiler
                     BreakJumps = new List<int>(),
                     FinallyDepth = _finally.Count,
                     ScopeDepth = _scopeDepth,
+                    Label = statement.Label,
                     ContinueJumps = new List<int>(),
                 };
                 _loops.Add(loop);
@@ -1203,6 +1209,7 @@ namespace TERN.Compiler
                     BreakJumps = new List<int>(),
                     FinallyDepth = _finally.Count,
                     ScopeDepth = _scopeDepth,
+                    Label = statement.Label,
                     ContinueJumps = new List<int>(),
                 };
                 _loops.Add(loop);
@@ -1255,6 +1262,7 @@ namespace TERN.Compiler
                     BreakJumps = new List<int>(),
                     FinallyDepth = _finally.Count,
                     ScopeDepth = _scopeDepth,
+                    Label = statement.Label,
                     ContinueJumps = new List<int>(),
                 };
                 _loops.Add(loop);
@@ -1341,6 +1349,7 @@ namespace TERN.Compiler
                     BreakJumps = new List<int>(),
                     FinallyDepth = _finally.Count,
                     ScopeDepth = _scopeDepth,
+                    Label = statement.Label,
                     ContinueJumps = new List<int>(),
                 };
                 _loops.Add(loop);
@@ -1402,8 +1411,15 @@ namespace TERN.Compiler
                     return;
                 }
 
-                EmitPendingFinallyForTransfer();
-                var loop = _loops[^1];
+                var index = TargetLoop(statement.Label, "break", statement);
+                if (index < 0)
+                {
+                    return;
+                }
+
+                var loop = _loops[index];
+                LeaveLoopBody(loop, index);
+
                 loop.BreakJumps.Add(Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0));
 
                 // Unreachable code after break is discarded by the depth bookkeeping only;
@@ -1418,8 +1434,14 @@ namespace TERN.Compiler
                     return;
                 }
 
-                EmitPendingFinallyForTransfer();
-                var loop = _loops[^1];
+                var index = TargetLoop(statement.Label, "continue", statement);
+                if (index < 0)
+                {
+                    return;
+                }
+
+                var loop = _loops[index];
+                LeaveLoopBody(loop, index);
 
                 if (loop.ContinueJumps is not null)
                 {
@@ -1428,6 +1450,66 @@ namespace TERN.Compiler
                 else
                 {
                     Emit(Op.Jump, loop.ContinueTarget, 0, 0, pop: 0, push: 0);
+                }
+            }
+
+            /// <summary>
+            /// Which loop a <c>break</c> or <c>continue</c> leaves: the named one,
+            /// or the innermost. Returns -1, having reported the problem, when the
+            /// name matches no enclosing loop.
+            /// </summary>
+            private int TargetLoop(string? label, string what, Node at)
+            {
+                if (label is null)
+                {
+                    return _loops.Count - 1;
+                }
+
+                for (var i = _loops.Count - 1; i >= 0; i--)
+                {
+                    if (_loops[i].Label == label)
+                    {
+                        return i;
+                    }
+                }
+
+                Module.Error("TRN0220",
+                    $"there is no loop labelled '{label}' for this '{what}' to leave", at);
+                return -1;
+            }
+
+            /// <summary>
+            /// Everything that has to happen on the way out of the loops between
+            /// here and <paramref name="target"/>: the <c>finally</c> blocks this
+            /// jump crosses run, and the locals of the scopes it leaves are closed
+            /// so a closure made in one of them keeps the value it was given.
+            /// </summary>
+            private void LeaveLoopBody(LoopContext target, int targetIndex)
+            {
+                EmitPendingFinallyForTransfer(targetIndex);
+                CloseUpvaluesOfScopesDeeperThan(target.ScopeDepth);
+            }
+
+            /// <summary>
+            /// <c>CloseUpvalues</c> for the innermost local that a closure could
+            /// hold on to at or above <paramref name="scopeDepth"/>. One is enough:
+            /// the instruction closes every open upvalue from that slot upwards,
+            /// which is every scope this jump is leaving.
+            /// </summary>
+            private void CloseUpvaluesOfScopesDeeperThan(int scopeDepth)
+            {
+                if (scopeDepth < 0 || scopeDepth >= _scopeMarks.Count)
+                {
+                    return;
+                }
+
+                for (var i = _scopeMarks[scopeDepth]; i < _locals.Count; i++)
+                {
+                    if (_locals[i].Captured)
+                    {
+                        Emit(Op.CloseUpvalues, _locals[i].Slot, 0, 0, pop: 0, push: 0);
+                        return;
+                    }
                 }
             }
 
@@ -1563,22 +1645,42 @@ namespace TERN.Compiler
             }
 
             /// <summary>Inlines pending <c>finally</c> blocks before a control transfer.</summary>
-            private void EmitPendingFinallyForTransfer()
+            private void EmitPendingFinallyForTransfer(int loopIndex = -1)
             {
                 if (_finally.Count == 0)
                 {
                     return;
                 }
 
-                var saved = new List<FinallyContext>(_finally);
-                _finally.Clear();
-
-                for (var i = saved.Count - 1; i >= 0; i--)
+                // A finally belongs to the loops that were open when its `try`
+                // started, so a jump to the loop at `loopIndex` runs the ones
+                // entered inside it and leaves the rest for their own exits.
+                var first = 0;
+                while (first < _finally.Count && _finally[first].LoopDepth <= loopIndex)
                 {
-                    CompileStatement(saved[i].Block);
+                    first++;
                 }
 
-                _finally.AddRange(saved);
+                if (first == _finally.Count)
+                {
+                    return;
+                }
+
+                var saved = new List<FinallyContext>(_finally);
+                _finally.RemoveRange(first, _finally.Count - first);
+
+                try
+                {
+                    for (var i = saved.Count - 1; i >= first; i--)
+                    {
+                        CompileStatement(saved[i].Block);
+                    }
+                }
+                finally
+                {
+                    _finally.Clear();
+                    _finally.AddRange(saved);
+                }
             }
 
             /// <summary>
@@ -2756,6 +2858,12 @@ namespace TERN.Compiler
 
             private void CompileAssign(AssignExpr assign, bool keepValue = true)
             {
+                if (IsShortCircuitAssign(assign.Operator))
+                {
+                    CompileShortCircuitAssign(assign, keepValue);
+                    return;
+                }
+
                 var simple = assign.Operator == TokenKind.Equal;
 
                 Op? compoundOp = simple ? null : CompoundOpcode(assign.Operator);
@@ -2946,6 +3054,158 @@ namespace TERN.Compiler
 
                 Module.Error("TRN0210", "invalid assignment target", assign);
                 CompileExpression(assign.Value);
+            }
+
+            /// <summary>
+            /// The three assignment operators that are a test first: <c>x ??= v</c>
+            /// gives v to x only when x is nil, <c>||=</c> only when it is falsy, and
+            /// <c>&&=</c> only when it is truthy. What makes them worth their own
+            /// path is that the value is not evaluated at all when the test passes -
+            /// <c>m[k] ??= expensive()</c> is one call, not one call per miss plus
+            /// one - so they cannot be a load, an operator and a store.
+            /// </summary>
+            private static bool IsShortCircuitAssign(TokenKind kind) =>
+                kind is TokenKind.QuestionQuestionEqual or TokenKind.PipePipeEqual or TokenKind.AmpAmpEqual;
+
+            /// <summary>The test that decides whether the value is wanted.</summary>
+            private static Op ShortCircuitTest(TokenKind kind) => kind switch
+            {
+                TokenKind.QuestionQuestionEqual => Op.JumpIfNotNullKeep,
+                TokenKind.PipePipeEqual => Op.JumpIfTrueKeep,
+                _ => Op.JumpIfFalseKeep,
+            };
+
+            /// <summary>
+            /// <c>target op= value</c>, compiling to: read the target, jump past the
+            /// value when the test says the value is not wanted, otherwise evaluate
+            /// it and store it. Both paths end with the target's new value on the
+            /// stack, because that is what the expression is worth - and the caller
+            /// pops it when the assignment was a statement.
+            /// </summary>
+            private void CompileShortCircuitAssign(AssignExpr assign, bool keepValue)
+            {
+                var test = ShortCircuitTest(assign.Operator);
+
+                void Finish()
+                {
+                    if (!keepValue)
+                    {
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                    }
+                }
+
+                if (assign.Target is IdentifierExpr identifier)
+                {
+                    if (TryResolveLocal(identifier.Name, out var local))
+                    {
+                        if (local.IsConst)
+                        {
+                            Module.Error("TRN0209", $"cannot assign to constant '{identifier.Name}'", assign);
+                        }
+
+                        EmitLoadLocal(local.Slot);
+                        var done = Emit(test, 0, 0, 0, pop: 0, push: 0);
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                        CompileExpression(assign.Value);
+                        EmitStoreLocal(local.Slot);
+                        EmitLoadLocal(local.Slot);
+                        PatchTo(done, _code.Count);
+                        Finish();
+                        return;
+                    }
+
+                    var upvalue = ResolveUpvalue(identifier.Name);
+                    if (upvalue >= 0)
+                    {
+                        Emit(Op.LoadUpvalue, upvalue, 0, 0, pop: 0, push: 1);
+                        var done = Emit(test, 0, 0, 0, pop: 0, push: 0);
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                        CompileExpression(assign.Value);
+                        Emit(Op.StoreUpvalue, upvalue, 0, 0, pop: 1, push: 0);
+                        Emit(Op.LoadUpvalue, upvalue, 0, 0, pop: 0, push: 1);
+                        PatchTo(done, _code.Count);
+                        Finish();
+                        return;
+                    }
+
+                    if (_scope.TryResolve(identifier.Name, out var globalSlot))
+                    {
+                        if (_scope.IsConst(globalSlot))
+                        {
+                            Module.Error("TRN0209", $"cannot assign to constant '{identifier.Name}'", assign);
+                        }
+
+                        Emit(Op.LoadGlobal, globalSlot, 0, 0, pop: 0, push: 1);
+                        var done = Emit(test, 0, 0, 0, pop: 0, push: 0);
+                        Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                        CompileExpression(assign.Value);
+                        Emit(Op.StoreGlobal, globalSlot, 0, 0, pop: 1, push: 0);
+                        Emit(Op.LoadGlobal, globalSlot, 0, 0, pop: 0, push: 1);
+                        PatchTo(done, _code.Count);
+                        Finish();
+                        return;
+                    }
+
+                    Module.Error("TRN0206", $"undefined variable '{identifier.Name}'", assign);
+                    EmitLoadConstant(Value.Nil);
+                    Finish();
+                    return;
+                }
+
+                // A member or an index is evaluated once into temporaries: the
+                // receiver must not run twice when the value is wanted, and must
+                // still not run at all when it is not.
+                PushScope();
+                if (assign.Target is MemberExpr member)
+                {
+                    CompileExpression(member.Target);
+                    var receiverSlot = DeclareLocal("$recv", isConst: true);
+                    EmitStoreLocal(receiverSlot);
+
+                    EmitLoadLocal(receiverSlot);
+                    Emit(Op.LoadField, AddStringConstant(member.Name), 0, 0, pop: 1, push: 1);
+                    var done = Emit(test, 0, 0, 0, pop: 0, push: 0);
+                    Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                    EmitLoadLocal(receiverSlot);
+                    CompileExpression(assign.Value);
+                    // StoreField leaves the stored value on the stack, which is the
+                    // value of the expression.
+                    Emit(Op.StoreField, AddStringConstant(member.Name), 0, 0, pop: 2, push: 1);
+                    PatchTo(done, _code.Count);
+                    PopScope();
+                    Finish();
+                    return;
+                }
+
+                if (assign.Target is IndexExpr index)
+                {
+                    CompileExpression(index.Target);
+                    var targetSlot = DeclareLocal("$target", isConst: true);
+                    EmitStoreLocal(targetSlot);
+
+                    CompileExpression(index.Index);
+                    var indexSlot = DeclareLocal("$index", isConst: true);
+                    EmitStoreLocal(indexSlot);
+
+                    EmitLoadLocal(targetSlot);
+                    EmitLoadLocal(indexSlot);
+                    Emit(Op.LoadIndex, 0, 0, 0, pop: 2, push: 1);
+                    var done = Emit(test, 0, 0, 0, pop: 0, push: 0);
+                    Emit(Op.Pop, 0, 0, 0, pop: 1, push: 0);
+                    EmitLoadLocal(targetSlot);
+                    EmitLoadLocal(indexSlot);
+                    CompileExpression(assign.Value);
+                    Emit(Op.StoreIndex, 0, 0, 0, pop: 3, push: 1);
+                    PatchTo(done, _code.Count);
+                    PopScope();
+                    Finish();
+                    return;
+                }
+
+                PopScope();
+                Module.Error("TRN0210", "invalid assignment target", assign);
+                EmitLoadConstant(Value.Nil);
+                Finish();
             }
 
             private static Op? CompoundOpcode(TokenKind kind) => kind switch

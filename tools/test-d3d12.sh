@@ -414,18 +414,18 @@ fi
 
 # The camera really moved: four presents, four draws, and the constants each
 # draw carried are the camera, not the same sixteen numbers four times.
-if [ "$(grep -c 'root constants 16 ' "$WORK/orbit_interp.err")" != 4 ]; then
+if [ "$(grep -c 'root constants 48 ' "$WORK/orbit_interp.err")" != 4 ]; then
     echo "d3d12: the ray tracer did not draw once per frame" >&2
     cat "$WORK/orbit_interp.err" >&2
     exit 1
 fi
-if [ "$(grep 'root constants 16 ' "$WORK/orbit_interp.err" | sort -u | wc -l)" -lt 3 ]; then
+if [ "$(grep 'root constants 48 ' "$WORK/orbit_interp.err" | sort -u | wc -l)" -lt 3 ]; then
     echo "d3d12: the camera did not move with the mouse" >&2
-    grep 'root constants 16 ' "$WORK/orbit_interp.err" >&2
+    grep 'root constants 48 ' "$WORK/orbit_interp.err" >&2
     exit 1
 fi
-if ! diff -u <(grep 'root constants 16 ' "$WORK/orbit_interp.err") \
-             <(grep 'root constants 16 ' "$WORK/orbit_native.err"); then
+if ! diff -u <(grep 'root constants 48 ' "$WORK/orbit_interp.err") \
+             <(grep 'root constants 48 ' "$WORK/orbit_native.err"); then
     echo "d3d12: the two back ends orbit to different cameras" >&2
     exit 1
 fi
@@ -439,7 +439,7 @@ import math, sys
 
 cameras = []
 for line in open(sys.argv[1], encoding="utf-8"):
-    if line.startswith("mock_d3d12: root constants 16 "):
+    if line.startswith("mock_d3d12: root constants 48 "):
         cameras.append([float(value) for value in line.split()[4:]])
 assert len(cameras) == 4, len(cameras)
 
@@ -475,7 +475,7 @@ print("d3d12: the wheel zooms and the basis stays orthonormal")
 CAMERA
 then
     echo "d3d12: the wheel or the drag did not do what the camera says it did" >&2
-    grep 'root constants 16 ' "$WORK/orbit_interp.err" >&2
+    grep 'root constants 48 ' "$WORK/orbit_interp.err" >&2
     exit 1
 fi
 unset TERN_D3D12_TRACE_CONSTANTS

@@ -1,0 +1,9 @@
+// A label only names a loop, and the name has to exist: both are errors the
+// compiler can see without running anything.
+fn main() {
+    for x in [1, 2] {
+        break nowhere;
+    }
+}
+
+main();
