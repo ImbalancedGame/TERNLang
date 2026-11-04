@@ -27,7 +27,8 @@ TERN = runner.command(REPO)
 
 # Scripts that exercise the compiler's diagnostics instead of running.
 COMPILER_ONLY = {"12_lint", "24_parse_errors", "38_for_names", "45_label_errors",
-                 "48_spread_syntax", "50_comprehension_syntax"}
+                 "48_spread_syntax", "50_comprehension_syntax",
+                 "52_parameter_type_syntax"}
 
 # Examples that cannot be run with no arguments and no peer: one listens on a
 # socket, one logs in to an RCON server, one shells out to sftp, and the cube

@@ -1,0 +1,35 @@
+hi there
+42
+string given int: parameter 'name' must be string, not int
+int given float: parameter 'n' must be int, not float
+int given text: parameter 'n' must be int, not string
+3.0 3.75
+1 2.5
+number given text: parameter 'n' must be number, not string
+nil x
+optional given int: parameter 'text' must be string or nil, not int
+11
+default replaced by text: parameter 'b' must be int, not string
+3
+struct given map: parameter 'point' must be Point, not map
+[3, 6]
+list given text: parameter 'values' must be list, not string
+fn given int: parameter 'action' must be fn, not int
+a,b
+nil 7
+4
+lambda given text: parameter 'value' must be int, not string
+[x]
+method given int: parameter 'contents' must be string, not int
+int string nil
+body does not run: parameter 'f' must be int, not string
+6
+captured parameter: parameter 'step' must be int, not string
+3
+recursive parameter: parameter 'n' must be int, not string
+false
+bool given int: parameter 'flag' must be bool, not int
+6
+range given list: parameter 'span' must be range, not list
+7,8
+method given plain fn: parameter 'action' must be method, not function

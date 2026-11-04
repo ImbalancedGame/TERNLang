@@ -1937,6 +1937,61 @@ Value tern_set_index(Value target, Value index, Value value) {
     return value;
 }
 
+// --- annotated parameters --------------------------------------------------
+//
+// The compiler emits one CheckType per annotated parameter, after the defaults
+// are filled in. The rules are the interpreter's, character for character: the
+// names are what typeof answers with, `number` covers both numeric kinds, `fn`
+// covers methods, a trailing `?` also accepts nil, and any other name is
+// compared as written so a struct's own name works.
+
+bool tern_type_matches(const char *spec, const char *actual) {
+    size_t length = strlen(spec);
+    int nullable = length > 0 && spec[length - 1] == '?';
+    size_t name_length = nullable ? length - 1 : length;
+
+    // `any` is the one annotation nil is always allowed to satisfy.
+    if (name_length == 3 && strncmp(spec, "any", 3) == 0) {
+        return true;
+    }
+
+    if (strcmp(actual, "nil") == 0 || strcmp(actual, "missing") == 0) {
+        return nullable || (name_length == 3 && strncmp(spec, "nil", 3) == 0);
+    }
+
+    #define NAME_IS(text) (name_length == strlen(text) && strncmp(spec, text, name_length) == 0)
+    if (NAME_IS("number") || NAME_IS("float")) {
+        return strcmp(actual, "int") == 0 || strcmp(actual, "float") == 0;
+    }
+    if (NAME_IS("int")) return strcmp(actual, "int") == 0;
+    if (NAME_IS("string") || NAME_IS("text")) return strcmp(actual, "string") == 0;
+    if (NAME_IS("bool")) return strcmp(actual, "bool") == 0;
+    if (NAME_IS("list")) return strcmp(actual, "list") == 0;
+    if (NAME_IS("map")) return strcmp(actual, "map") == 0;
+    if (NAME_IS("range")) return strcmp(actual, "range") == 0;
+    if (NAME_IS("function") || NAME_IS("fn")) {
+        return strcmp(actual, "function") == 0 || strcmp(actual, "method") == 0;
+    }
+    if (NAME_IS("method")) return strcmp(actual, "method") == 0;
+    #undef NAME_IS
+
+    return name_length == strlen(actual) && strncmp(spec, actual, name_length) == 0;
+}
+
+void tern_check_type(Value value, const char *spec, const char *param) {
+    const char *actual = tern_type_name(value);
+    if (tern_type_matches(spec, actual)) {
+        return;
+    }
+
+    size_t length = strlen(spec);
+    if (length > 0 && spec[length - 1] == '?') {
+        tern_panic("TypeError", "parameter '%s' must be %.*s or nil, not %s",
+                   param, (int)(length - 1), spec, actual);
+    }
+    tern_panic("TypeError", "parameter '%s' must be %s, not %s", param, spec, actual);
+}
+
 Value tern_iter_new(Value iterable) {
     Iterator *it = (Iterator *)tern_alloc(sizeof(Iterator), O_ITER);
     it->target = iterable;

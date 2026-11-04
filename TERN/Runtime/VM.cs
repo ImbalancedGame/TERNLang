@@ -1721,6 +1721,25 @@ namespace TERN.Runtime
                             _handlers.Add(new Handler(_frameCount - 1, instruction.A, _sp));
                             break;
 
+                        case Op.CheckType:
+                        {
+                            // One annotated parameter, checked on the way in. Only
+                            // an annotation emits this, so a function without them
+                            // pays nothing for the feature existing.
+                            var value = _stack[--_sp];
+                            var spec = constants[instruction.A].AsString();
+                            var actual = TypeName(value);
+                            if (!MatchesType(spec, actual))
+                            {
+                                var name = constants[instruction.B].AsString();
+                                throw Error("TypeError",
+                                    $"parameter '{name}' must be {DescribeType(spec)}, not {actual}",
+                                    frame, ip);
+                            }
+
+                            break;
+                        }
+
                         case Op.ExitTry:
                             if (_handlers.Count > 0)
                             {
@@ -3540,6 +3559,53 @@ namespace TERN.Runtime
                     throw Error("TypeError", $"{TypeName(target)} does not support indexed assignment");
             }
         }
+
+        /// <summary>
+        /// Whether a value whose type is <paramref name="actual"/> satisfies an
+        /// annotation. The names are the ones <c>typeof</c> answers with, plus
+        /// <c>number</c> for both numeric kinds and <c>fn</c> for methods; a
+        /// trailing <c>?</c> also accepts nil. Any other name is compared as
+        /// written, which is what makes a struct's own name work.
+        /// </summary>
+        public static bool MatchesType(string spec, string actual)
+        {
+            var nullable = spec.EndsWith("?", StringComparison.Ordinal);
+            var name = nullable ? spec.Substring(0, spec.Length - 1) : spec;
+
+            // `any` is the one annotation nil is always allowed to satisfy.
+            if (name == "any")
+            {
+                return true;
+            }
+
+            if (actual is "nil" or "missing")
+            {
+                return nullable || name == "nil";
+            }
+
+            return name switch
+            {
+                "number" => actual is "int" or "float",
+                // A whole number is a float that happens to have no fraction, and
+                // `fn f(x: float)` called with `1` is not the mistake this is for.
+                "float" => actual is "int" or "float",
+                "int" => actual == "int",
+                "string" or "text" => actual == "string",
+                "bool" => actual == "bool",
+                "list" => actual == "list",
+                "map" => actual == "map",
+                "range" => actual == "range",
+                "function" or "fn" => actual is "function" or "method",
+                "method" => actual == "method",
+                _ => string.Equals(name, actual, StringComparison.Ordinal),
+            };
+        }
+
+        /// <summary>The annotation as a message should read it.</summary>
+        public static string DescribeType(string spec) =>
+            spec.EndsWith("?", StringComparison.Ordinal)
+                ? spec.Substring(0, spec.Length - 1) + " or nil"
+                : spec;
 
         public TernIterator CreateIterator(in Value value)
         {

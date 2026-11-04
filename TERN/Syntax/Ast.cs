@@ -434,6 +434,20 @@ namespace TERN.Syntax
     public sealed class Parameter
     {
         public required string Name { get; init; }
+
+        /// <summary>
+        /// The annotation as written, without its <c>?</c>: <c>int</c> in
+        /// <c>fn f(x: int)</c>. Null when the parameter is untyped, which is the
+        /// only form that costs nothing at run time.
+        /// </summary>
+        public string? Type { get; init; }
+
+        /// <summary>True for <c>x: int?</c>, which also accepts nil.</summary>
+        public bool Nullable { get; init; }
+
+        /// <summary>The annotation with its <c>?</c>: what the runtime checks.</summary>
+        public string? TypeSpec => Type is null ? null : Nullable ? Type + "?" : Type;
+
         public Expr? Default { get; init; }
         public bool IsRest { get; init; }
         public int Offset { get; init; }

@@ -1,0 +1,23 @@
+// The compiler's side of typed parameters: the things that are refused before
+// the program runs. Every error below is reported once, against the token that
+// caused it.
+
+// A type name has to be a name. `3` is not one.
+fn bad1(x: 3) { return x; }
+
+// `int` is not a name the parser invents a second time: `x: int: int` is a
+// stray colon, and the parameter list stops at it.
+fn bad2(x: int: int) { return x; }
+
+// A rest parameter already collects a list, so it takes no annotation.
+fn bad3(...xs: int) { return xs; }
+
+// The annotation goes between the name and the default, not before the name.
+fn bad4(x = 1: int) { return x; }
+
+// A `?` belongs to the annotation, not to the name, and there is only one.
+fn bad5(x: int??) { return x; }
+
+// A comma is what separates parameters; a type followed by one more name is a
+// missing comma.
+fn bad6(x: int y: string) { return x; }
