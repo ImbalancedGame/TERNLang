@@ -96,6 +96,9 @@ namespace TERN.Syntax
         SlashEqual,
         PercentEqual,
         StarStarEqual,
+        QuestionQuestionEqual,
+        AmpAmpEqual,
+        PipePipeEqual,
         AmpEqual,
         PipeEqual,
         CaretEqual,
@@ -1157,13 +1160,15 @@ namespace TERN.Syntax
                     return true;
 
                 case '&':
-                    if (next == '&') { Emit2(TokenKind.AmpAmp, 2); return true; }
+                    // `&&=` before `&&`, or the assignment becomes a logic test
+                    // and the `=` an expression on its own.
+                    if (next == '&') { Emit2(third == '=' ? TokenKind.AmpAmpEqual : TokenKind.AmpAmp, third == '=' ? 3 : 2); return true; }
                     if (next == '=') { Emit2(TokenKind.AmpEqual, 2); return true; }
                     Emit2(TokenKind.Amp, 1);
                     return true;
 
                 case '|':
-                    if (next == '|') { Emit2(TokenKind.PipePipe, 2); return true; }
+                    if (next == '|') { Emit2(third == '=' ? TokenKind.PipePipeEqual : TokenKind.PipePipe, third == '=' ? 3 : 2); return true; }
                     if (next == '=') { Emit2(TokenKind.PipeEqual, 2); return true; }
                     Emit2(TokenKind.Pipe, 1);
                     return true;
@@ -1174,7 +1179,7 @@ namespace TERN.Syntax
                     return true;
 
                 case '?':
-                    if (next == '?') { Emit2(TokenKind.QuestionQuestion, 2); return true; }
+                    if (next == '?') { Emit2(third == '=' ? TokenKind.QuestionQuestionEqual : TokenKind.QuestionQuestion, third == '=' ? 3 : 2); return true; }
                     if (next == '.') { Emit2(TokenKind.QuestionDot, 2); return true; }
                     Emit2(TokenKind.Question, 1);
                     return true;

@@ -474,17 +474,22 @@ namespace TERN.Syntax
     {
         public required Expr Condition { get; init; }
         public required Stmt Body { get; init; }
+
+        /// <summary>The name before the colon, for <c>break outer;</c>.</summary>
+        public string? Label { get; init; }
     }
 
     public sealed class DoWhileStmt : Stmt
     {
         public required Stmt Body { get; init; }
         public required Expr Condition { get; init; }
+        public string? Label { get; init; }
     }
 
     public sealed class LoopStmt : Stmt
     {
         public required Stmt Body { get; init; }
+        public string? Label { get; init; }
     }
 
     public sealed class ForInStmt : Stmt
@@ -500,6 +505,7 @@ namespace TERN.Syntax
 
         public required Expr Iterable { get; init; }
         public required Stmt Body { get; init; }
+        public string? Label { get; init; }
     }
 
     public sealed class ForStmt : Stmt
@@ -508,14 +514,18 @@ namespace TERN.Syntax
         public required Expr? Condition { get; init; }
         public required Expr? Increment { get; init; }
         public required Stmt Body { get; init; }
+        public string? Label { get; init; }
     }
 
     public sealed class BreakStmt : Stmt
     {
+        /// <summary>The loop named by <c>break outer;</c>, or null for the nearest.</summary>
+        public string? Label { get; init; }
     }
 
     public sealed class ContinueStmt : Stmt
     {
+        public string? Label { get; init; }
     }
 
     public sealed class ReturnStmt : Stmt

@@ -96,3 +96,47 @@ println(bitFailure(1.5, "a"));
 
 // Lists compare element by element, then by length.
 println([1, 2] < [1, 3], [1, 2] < [1, 2], [1, 2] < [1, 2, 0], [2] > [1, 9, 9]);
+
+// The assignment operators that test their target first. The value is only
+// evaluated when the test says it is wanted - which is the whole point of
+// `m[k] ??= expensive()`, and the difference a load-operator-store version
+// would not show.
+let calls = 0;
+fn valued() { calls = calls + 1; return 99; }
+
+let missing = nil;
+println(missing ??= valued(), calls);
+println(missing ??= valued(), calls);
+
+let zero = 0;               // 0 is truthy here, so ||= leaves it alone
+println(zero ||= 5, zero);
+let filled = nil;
+println(filled ||= 5, filled);
+
+let yes = 1;
+println(yes &&= 7, yes);
+let no = false;
+println(no &&= 7, no);
+
+// A target whose subexpressions have side effects runs them once, wanted or not.
+let lookups = 0;
+fn key() { lookups = lookups + 1; return "k"; }
+let table = {"k": nil};
+println(table[key()] ??= "first", lookups);
+println(table[key()] ??= "second", lookups);
+
+// The same through a field, a local in a function and a captured variable.
+let box = {"inner": {"v": nil}};
+println(box.inner.v ??= "deep", box.inner.v);
+fn scope() {
+    let local = nil;
+    let out = fn() { local ??= "closed"; return local; };
+    out();
+    return local;
+}
+println(scope());
+
+// As a statement the value is dropped, and the assignment still happens.
+let statement = nil;
+statement ??= "kept";
+println(statement);
