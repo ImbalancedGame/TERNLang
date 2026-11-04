@@ -835,7 +835,7 @@ namespace TERN.Builtins
         /// stamp the two look identical, and a fix that worked looks like one
         /// that did not. Keep it equal to <c>TERN_D3D12_BUILD</c>.
         /// </summary>
-        private const string Build = "2026-10-31.9";
+        private const string Build = "2026-11-04.1";
 
         /// <summary>
         /// Why the driver removed the device, in the words the native backend
@@ -1815,7 +1815,17 @@ namespace TERN.Builtins
                             Slot<CreateGraphicsPipelineStateFn>(_device, 10)(_device, ref description, iid, out pipeline));
                         if (hr < 0 || pipeline == IntPtr.Zero)
                         {
-                            throw vm.Error("D3D12Error", $"the pipeline state could not be created (0x{(uint)hr:x8})");
+                            // E_INVALIDARG from this call is the driver saying
+                            // the description and the shaders disagree, and the
+                            // script cannot tell which part. The stored messages
+                            // say: with d3d12.debug(true) before the device was
+                            // created they name the wrong binding, and without
+                            // it there are none to print.
+                            ReportMessages(_infoQueue);
+                            throw vm.Error("D3D12Error",
+                                $"the pipeline state could not be created (0x{(uint)hr:x8}, binding {Build}); " +
+                                "the shaders and the root signature disagree - d3d12.debug(true) " +
+                                "before d3d12.create prints the driver's own reason");
                         }
 
                         _pipelines.Add(pipeline);
@@ -1885,6 +1895,17 @@ namespace TERN.Builtins
                     packed[i * VertexFloats + 4] = vertices[i * 6 + 3];
                     packed[i * VertexFloats + 5] = vertices[i * 6 + 4];
                     packed[i * VertexFloats + 6] = vertices[i * 6 + 5];
+                }
+
+                if (constants is { Length: > RootConstantCount })
+                {
+                    // The root signature is 64 dwords, and the command list
+                    // copies out exactly as many as it is told: a longer list
+                    // would be an out-of-bounds read in the driver, which is a
+                    // removed device rather than an error message.
+                    throw vm.Error("RangeError",
+                        $"d3d12.draw takes at most {RootConstantCount} constants, " +
+                        $"and this list has {constants.Length}");
                 }
 
                 var view = Upload(vm, packed);

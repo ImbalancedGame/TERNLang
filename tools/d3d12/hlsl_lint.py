@@ -77,7 +77,14 @@ CBUFFER_TYPES = {
 }
 CBUFFER_BODY = re.compile(r"\bcbuffer\b([^{]*)\{([^}]*)\}\s*;", re.S)
 CBUFFER_REGISTER = re.compile(r"register\s*\(\s*b(\d+)", re.I)
-DECLARATION = re.compile(r"^\s*([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*;", re.M)
+DECLARATION = re.compile(
+    r"^\s*([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*(\[[^\]]*\])?\s*;", re.M)
+# A `static const` array, with its declared extent: `static const float4 S[4][2]`.
+STATIC_ARRAY = re.compile(
+    r"\bstatic\s+const\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*((?:\[[^\]]*\])+)\s*=")
+# `NAME[...]` where the index is not a literal, which is the case that forces
+# the array into a constant buffer.
+DYNAMIC_INDEX = re.compile(r"\b([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*\]")
 
 
 def strip_comments(text):
@@ -95,6 +102,13 @@ def cbuffer_dwords(body):
         size = CBUFFER_TYPES.get(match.group(1))
         if size is None:
             continue
+        # `float4 SPHERES[8]` is eight registers, not one: an array is laid out
+        # element by element, and getting that wrong would let a cbuffer of four
+        # spheres look like it fits when it does not.
+        extent = 1
+        for count in re.findall(r"\[\s*(\d+)\s*\]", match.group(3) or ""):
+            extent *= int(count)
+        size *= extent
         if size >= 4:
             # A vector of three or four starts a register of its own, and fills
             # it; a matrix fills several.
@@ -177,6 +191,15 @@ def check(text, path):
     # 3. A constant buffer bigger than the root signature can feed.
     problems += constants_budget(clean, path)
 
+    # 3b. A `static const` array read with an index the compiler cannot fold is
+    #     not an immediate: fxc lays it out in $Globals, which binds *after* the
+    #     cbuffer at b0 - so the shader asks for b1 and the root signature does
+    #     not have it. Direct3D 12 refuses the pipeline state with E_INVALIDARG
+    #     at CreateGraphicsPipelineState and the script sees only
+    #     "the pipeline state could not be created (0x80070057)". There is no
+    #     compiler in this sandbox to see it, so the pattern is what is checked.
+    problems += static_arrays_reachable_by_index(clean, path)
+
     # 4. Recursion. HLSL 5.0 has no call stack, so fxc rejects a cycle in the
     #    call graph - and a cycle is invisible in a shader that otherwise reads
     #    correctly, which is why this check exists rather than a comment.
@@ -206,6 +229,33 @@ def check(text, path):
                         f"'{argument}'; HLSL will pick the int overload - write "
                         f"'{argument}.0'")
 
+    return problems
+
+
+def static_arrays_reachable_by_index(clean, path):
+    """Static arrays indexed by a variable, which land in a second cbuffer."""
+    problems = []
+    arrays = {}
+    for match in STATIC_ARRAY.finditer(clean):
+        line = clean[:match.start()].count("\n") + 1
+        arrays[match.group(2)] = line
+    if not arrays:
+        return problems
+
+    reported = set()
+    for match in DYNAMIC_INDEX.finditer(clean):
+        name = match.group(1)
+        if name not in arrays or name in reported:
+            continue
+        reported.add(name)
+        line = clean[:match.start()].count("\n") + 1
+        problems.append(
+            f"{path}:{line}: '{name}' is a static const array indexed by "
+            f"'{match.group(2)}', which the HLSL compiler folds into a second "
+            f"constant buffer ($Globals, after b0) - the root signature provides "
+            f"only b0, so the pipeline state is refused with E_INVALIDARG. Put "
+            f"the array inside the cbuffer at b0 and fill it from d3d12.draw's "
+            f"constants")
     return problems
 
 
