@@ -1,0 +1,20 @@
+// A spread needs something it can iterate, and a map literal needs a map: the
+// two mistakes that are worth a message rather than a crash.
+
+fn takes(a, b) { return a + b; }
+
+fn report(label, body) {
+    try {
+        println(label + ": " + str(body()));
+    } catch (error) {
+        println(label + ": " + str(error));
+    }
+}
+
+report("list of int", fn() { return [...5]; });
+report("list of nil", fn() { return [...nil]; });
+report("map of list", fn() { return {...[1, 2]}; });
+report("call of int", fn() { return takes(...7); });
+// The message names what was spread, so the fix is in the message.
+report("list of text", fn() { return [..."ok"][0]; });
+report("map of int", fn() { return {...5}; });

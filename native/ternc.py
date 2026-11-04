@@ -469,6 +469,36 @@ class Generator:
             line("  for (int i = 0; i < %d; i++) map_set(m, st[base + 2 * i], st[base + 2 * i + 1]);" % a)
             line("  sp = base; st[sp++] = v_obj((Obj *)m); }")
 
+        # ---- spread. The literal is built in place, one element or one source
+        # at a time, which is why the list finally built is the one every
+        # element was appended to: `[a, ...xs, b]` allocates once.
+        elif op == "ListAppend":
+            line("{ Value v = st[--sp];")
+            line("  if (!v_is_list(st[sp - 1])) tern_panic(\"TypeError\", \"a spread needs a list to add to\");")
+            line("  list_push((List *)st[sp - 1].as.o, v); }")
+        elif op == "ListExtend":
+            line("{ Value v = st[--sp];")
+            line("  if (!v_is_list(st[sp - 1])) tern_panic(\"TypeError\", \"a spread needs a list to add to\");")
+            line("  List *l = (List *)st[sp - 1].as.o;")
+            line("  Value it = tern_iter_new(v); Value a, b;")
+            line("  while (tern_iter_next(it, 1, &a, &b)) list_push(l, a); }")
+        elif op == "MapSet":
+            line("{ Value v = st[--sp], k = st[--sp];")
+            line("  if (!v_is_map(st[sp - 1])) tern_panic(\"TypeError\", \"a spread needs a map to add to\");")
+            line("  map_set((Map *)st[sp - 1].as.o, k, v); }")
+        elif op == "MapMerge":
+            line("{ Value v = st[--sp];")
+            line("  if (!v_is_map(st[sp - 1])) tern_panic(\"TypeError\", \"a spread needs a map to add to\");")
+            line("  if (!v_is_map(v)) tern_panic(\"TypeError\", \"a map literal spreads a map, not %s\",")
+            line("                              tern_type_name(v));")
+            line("  Map *to = (Map *)st[sp - 1].as.o;")
+            line("  Value it = tern_iter_new(v); Value a, b;")
+            line("  while (tern_iter_next(it, 2, &a, &b)) map_set(to, a, b); }")
+        elif op == "CallList":
+            line("{ Value args = st[--sp];")
+            line("  if (!v_is_list(args)) tern_panic(\"TypeError\", \"a spread call needs a list of arguments\");")
+            line("  List *l = (List *)args.as.o;")
+            line("  Value r = tern_call(st[sp - 1], l->count, l->items); sp--; st[sp++] = r; }")
         elif op == "NewInstance":
             symbol = self.types.get((index, a))
             if symbol is None:

@@ -83,6 +83,11 @@ namespace TERN.Ide
                         ? ReceiverType.OfStruct(owner)
                         : ReceiverType.Unknown;
 
+                // `...xs` has the type of xs, and nothing else here knows what
+                // that is: the element type is whatever the list holds.
+                case SpreadExpr:
+                    return ReceiverType.Unknown;
+
                 case ListExpr:
                     return ReceiverType.Builtin("list");
 

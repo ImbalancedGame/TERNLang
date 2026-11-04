@@ -147,8 +147,22 @@ namespace TERN.Syntax
         public override string Describe() => "fn";
     }
 
+    /// <summary>
+    /// <c>...x</c> inside a list literal, a map literal or a call: the elements
+    /// of <c>x</c> go where the spread is, rather than <c>x</c> itself. The
+    /// parser only ever builds one in those three places; anywhere else it is a
+    /// parse error, so nothing downstream has to guess what it means.
+    /// </summary>
+    public sealed class SpreadExpr : Expr
+    {
+        public required Expr Operand { get; init; }
+
+        public override string Describe() => "..." + Operand.Describe();
+    }
+
     public sealed class ListExpr : Expr
     {
+        /// <summary>The items, with any <see cref="SpreadExpr"/> spliced in place.</summary>
         public required List<Expr> Items { get; init; }
 
         public override string Describe() => "[...]";
@@ -156,7 +170,14 @@ namespace TERN.Syntax
 
     public sealed class MapExpr : Expr
     {
+        /// <summary>
+        /// The keys, or a <see cref="SpreadExpr"/> where <c>{...m}</c> merges a
+        /// map in. A spread entry has a nil literal as its value, so the two
+        /// lists stay the same length and every existing walk over pairs keeps
+        /// working; the compiler tests the key for a spread.
+        /// </summary>
         public required List<Expr> Keys { get; init; }
+
         public required List<Expr> Values { get; init; }
 
         public override string Describe() => "{...}";

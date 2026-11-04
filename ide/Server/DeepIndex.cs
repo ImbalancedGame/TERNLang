@@ -251,6 +251,10 @@ namespace TERN.Ide
                     WalkExpression(increment.Target);
                     break;
 
+                case SpreadExpr spread:
+                    WalkExpression(spread.Operand);
+                    break;
+
                 case ListExpr list:
                     foreach (var item in list.Items)
                     {

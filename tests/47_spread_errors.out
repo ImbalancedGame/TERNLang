@@ -1,0 +1,6 @@
+list of int: int is not iterable
+list of nil: cannot iterate nil
+map of list: a map literal spreads a map, not list
+call of int: int is not iterable
+list of text: o
+map of int: a map literal spreads a map, not int

@@ -38,7 +38,8 @@ match tickets.length {
 * **Modern syntax** — `let`/`const`, functions with defaults and `...rest`,
   arrow lambdas, block scoping, string interpolation, ternaries.
 * **Real data structures** — lists, insertion-ordered maps, lazy ranges, and
-  user-defined structs with methods and defaults.
+  user-defined structs with methods and defaults, with `...` spread in list and
+  map literals and in calls.
 * **Pattern matching** — literals, ranges (including negative ones),
   or-patterns, guards, list patterns with `...rest` and map patterns that
   destructure by key, nestable and usable as an expression.

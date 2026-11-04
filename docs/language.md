@@ -511,6 +511,54 @@ m + {"e": 5};          // merge returns a new map
 
 Maps preserve insertion order and accept any value as a key.
 
+### Spread
+
+`...` splices a value's elements into a list literal, a map literal or a call.
+It is always the same question — *the elements of this, not this* — and it is
+answered by the same rule everywhere: what a `for` loop would give you.
+
+```tern
+let pair = [1, 2];
+let more = [3, 4];
+
+[...pair]                  // [1, 2]            a copy
+[...pair, ...more]         // [1, 2, 3, 4]
+[0, ...pair, 9]            // [0, 1, 2, 9]
+[..."abc"]                 // ["a", "b", "c"]   text gives characters
+[...0..<3]                 // [0, 1, 2]         a range gives numbers
+[...{"x": 1, "y": 2}]      // [1, 2]            a map gives its values
+
+{...defaults, "size": 1280}    // defaults first, the override after
+{...a, ...b}                   // merged, later entries winning
+{...m}                         // a copy of m
+
+fn sum3(a, b, c) { return a + b + c; }
+sum3(...[1, 2, 3])         // 6
+sum3(1, ...[2, 3])         // 6
+sum3(...[1, 2], 3)         // 6
+```
+
+In a list or a map literal, entries before and after a spread keep their order,
+so `[...a, x, ...b]` reads the way it looks. A spread always copies: appending
+to `[...xs]` cannot change `xs`.
+
+In a call, the spread may be anywhere in the argument list and may be mixed with
+ordinary arguments; a `...rest` parameter collects the result just as it would
+from written-out ones. The callee may be anything callable — a function, a
+builtin, a struct constructor or a bound method (`xs.push(...more)`).
+
+The operand is evaluated once, and must be iterable: a list, a map, a string or a
+range. Anything else is a `TypeError` at run time (`int is not iterable`), and a
+map literal spreading something that is not a map raises
+`a map literal spreads a map, not list`. `...` anywhere else — `let x = ...xs;` —
+is a parse error (`TRN0114`).
+
+Two things follow from the cost: a list without a spread is still one
+instruction (`NewList` with its count), and a spread list is built by appending
+to one list, so it is one allocation however many parts it has. A spread call
+collects its arguments into a list first, which is what lets the count be
+unknown until the call happens.
+
 ### Ranges
 
 ```tern
@@ -1300,7 +1348,8 @@ entry          = (IDENT | STRING) (":" pattern)? ;
 ```
 
 Expressions follow the precedence table in §4 and include: literals, list/map
-displays, identifiers, `this`, calls, member access, indexing, slicing,
+displays (each element or entry may be `...expression`), identifiers, `this`,
+calls (each argument may be `...expression`), member access, indexing, slicing,
 lambdas, `match`, `if`-expressions, ternaries (`a ? b : c`), ranges (`a..b`),
 slices (`x[a..b]`, `x[..b]`, `x[a..]`), unary/binary operators including `in`,
 and assignments to variables, members and index targets.
@@ -1328,7 +1377,7 @@ no initializer, `TRN0216` a name bound twice in one pattern, `TRN0218` a `std:`
 module this build does not have, `TRN0219` an internal disagreement about the
 operand stack (below), `TRN0220` a `break` or `continue` that names no
 enclosing loop, `TRN0221` a struct method that captures an outer
-variable.
+variable it cannot reach, `TRN0222` an internal disagreement about a spread.
 
 `TRN0219` is never the script's fault and never the script's problem to solve:
 it means the compiler's own count of what a statement left on the operand stack

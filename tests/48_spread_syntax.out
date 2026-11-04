@@ -1,0 +1,1 @@
+48_spread_syntax:8:12: error TRN0114: spread is only valid inside a list, a map or a call

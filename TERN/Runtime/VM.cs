@@ -898,6 +898,79 @@ namespace TERN.Runtime
                             break;
                         }
 
+                        case Op.ListAppend:
+                        {
+                            // The list is the literal being built, so appending to
+                            // it in place is safe and is what makes `[a, ...xs, b]`
+                            // one allocation rather than one per element.
+                            var value = _stack[--_sp];
+                            _stack[_sp - 1].AsList().Add(value);
+                            break;
+                        }
+
+                        case Op.ListExtend:
+                        {
+                            var iterable = _stack[--_sp];
+                            ref var slot = ref _stack[_sp - 1];
+                            if (slot.Kind != ValueKind.List)
+                            {
+                                throw Error("TypeError", "a spread needs a list to add to");
+                            }
+
+                            var list = slot.AsList();
+                            var iterator = CreateIterator(iterable);
+                            while (iterator.Next(1, out var item, out _))
+                            {
+                                list.Add(item);
+                            }
+
+                            break;
+                        }
+
+                        case Op.MapSet:
+                        {
+                            var value = _stack[--_sp];
+                            var key = _stack[--_sp];
+                            ref var slot = ref _stack[_sp - 1];
+                            if (slot.Kind != ValueKind.Map)
+                            {
+                                throw Error("TypeError", "a spread needs a map to add to");
+                            }
+
+                            slot.AsMap().Set(key, value);
+                            break;
+                        }
+
+                        case Op.MapMerge:
+                        {
+                            var source = _stack[--_sp];
+                            ref var slot = ref _stack[_sp - 1];
+                            if (slot.Kind != ValueKind.Map)
+                            {
+                                throw Error("TypeError", "a spread needs a map to add to");
+                            }
+
+                            var target = slot.AsMap();
+                            if (source.Kind != ValueKind.Map)
+                            {
+                                // A list of pairs is a common enough mistake to
+                                // name the fix rather than only the type.
+                                throw Error("TypeError",
+                                    $"a map literal spreads a map, not {TypeName(source)}");
+                            }
+
+                            var from = source.AsMap();
+                            for (var i = 0; i < from.SlotCount; i++)
+                            {
+                                if (from.TryGetEntry(i, out var key, out var value))
+                                {
+                                    target.Set(key, value);
+                                }
+                            }
+
+                            break;
+                        }
+
                         case Op.NewInstance:
                         {
                             var argc = instruction.B;
@@ -1407,6 +1480,48 @@ namespace TERN.Runtime
                             var callee = _stack[argsBase - 1];
                             frame.Ip = ip;
                             if (!TryEnterCall(callee, argc, argsBase, argsBase - 1))
+                            {
+                                throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
+                            }
+
+                            if (AbortRequested)
+                            {
+                                AbortRequested = false;
+                                frame.Ip = ip;
+                                var stop = Value.Nil;
+                                if (ReturnFrame(stop, frameFloor))
+                                {
+                                    return stop;
+                                }
+                            }
+
+                            goto nextFrame;
+                        }
+
+                        case Op.CallList:
+                        {
+                            // The argument list is on the stack where the arguments
+                            // would have been: unpack it onto the stack and call
+                            // exactly as Call does, so defaults, `...rest` and
+                            // builtins all behave the same.
+                            var args = _stack[--_sp];
+                            if (args.Kind != ValueKind.List)
+                            {
+                                throw Error("TypeError", "a spread call needs a list of arguments");
+                            }
+
+                            var list = args.AsList();
+                            var argc = list.Count;
+                            var calleeIndex = _sp - 1;
+                            for (var i = 0; i < argc; i++)
+                            {
+                                Push(list[i]);
+                            }
+
+                            var callee = _stack[calleeIndex];
+                            var argsBase = _sp - argc;
+                            frame.Ip = ip;
+                            if (!TryEnterCall(callee, argc, argsBase, calleeIndex))
                             {
                                 throw Error("TypeError", $"{TypeName(callee)} is not callable", frame, ip);
                             }
