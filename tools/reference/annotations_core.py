@@ -689,7 +689,10 @@ FUNCTIONS = {
                    ("digits", "int", "Optional; when given the result is a float.")],
         "returns": ("float", "The rounded value, as a float: `3.0`."),
         "remarks": "Halves round away from zero, so `round(2.5)` is `3.0` and `round(-2.5)` is "
-                   "`-3.0`. Use `int()` on the result when an integer is wanted.",
+                   "`-3.0`. Use `int()` on the result when an integer is wanted.\n\n"
+                   "A digit count of zero or less rounds to a whole number - `round(2.567, 0)` and "
+                   "`round(2.567, -1)` are both `3.0` - which is also what the `x.round(digits)` "
+                   "method does, so the two spellings cannot disagree.",
         "example": ["println(math.round(2.5), math.round(2.567, 2));"],
         "see": ["math.floor", "float.round"],
     },

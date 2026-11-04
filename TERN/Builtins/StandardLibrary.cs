@@ -313,9 +313,7 @@ namespace TERN.Builtins
                 : new Value(Math.Abs(a[0].AsDouble())), "Absolute value.");
             Add(map, "ceil", 1, 1, (vm, a) => new Value(Math.Ceiling(a[0].AsDouble())), "Rounds up.");
             Add(map, "floor", 1, 1, (vm, a) => new Value(Math.Floor(a[0].AsDouble())), "Rounds down.");
-            Add(map, "round", 1, 2, (vm, a) => a.Length > 1
-                ? new Value(Math.Round(a[0].AsDouble(), (int)BuiltinMethods.RequireInt(a[1], "round", 1), MidpointRounding.AwayFromZero))
-                : new Value(Math.Round(a[0].AsDouble(), MidpointRounding.AwayFromZero)), "Rounds to nearest, optional digits.");
+            Add(map, "round", 1, 2, (vm, a) => BuiltinMethods.RoundFloat(a), "Rounds to nearest, optional digits.");
             Add(map, "trunc", 1, 1, (vm, a) => new Value(Math.Truncate(a[0].AsDouble())), "Drops the fractional part.");
             Add(map, "sqrt", 1, 1, (vm, a) => new Value(Math.Sqrt(a[0].AsDouble())), "Square root.");
             Add(map, "cbrt", 1, 1, (vm, a) => new Value(Math.Cbrt(a[0].AsDouble())), "Cube root.");

@@ -1,24 +1,31 @@
-// A ray tracer that runs on the GPU, with the scene written in TERN.
+// A ray tracer that runs on the GPU, in a window you can move around the scene.
 //
-//   tern run examples/d3d12_raytrace.tern                 # raytrace_gpu.png
+//   tern run examples/d3d12_raytrace.tern                 # window: drag to orbit
 //   tern run examples/d3d12_raytrace.tern --size 1280x720
+//   tern run examples/d3d12_raytrace.tern --window=false  # one frame, a PNG
+//   tern run examples/d3d12_raytrace.tern --seconds 10    # turn for ten seconds
 //   tern run examples/d3d12_raytrace.tern --emit-hlsl shot.hlsl
 //   tern run examples/d3d12_raytrace.tern --ascii         # preview in the terminal
 //
 // The scene is a list of spheres in TERN. The pixel shader that traces it is
 // HLSL, and it is generated from that list: every sphere is baked into the
 // source as a row of a constant array, and the shader compiles at run time with
-// d3dcompiler_47.dll when the pipeline is built.
+// d3dcompiler_47.dll when the pipeline is built. That is the older way of
+// writing a shader - gen the program, compile it, run it - and it costs nothing
+// here, because the scene does not change from frame to frame.
 //
-// That is what an empty root signature leaves you - no constant buffer to
-// upload, so the values have to be in the text. It is also the older way of
-// writing a shader: gen the program, compile it, run it. For a ray tracer it
-// costs nothing, because the scene does not change from frame to frame; for a
-// game it would be one compile per frame and much too slow.
+// The camera is the part that does change, and it does not go in the text: every
+// frame hands the shader sixteen floats through the root signature's constants
+// (register(b0)), which is what d3d12.draw's fourth argument is for. The other
+// way round is a d3dcompiler run and a fresh pipeline state per mouse move,
+// which is a shader compiler doing the work of a matrix multiply.
 //
 // The same scene is traced on the CPU by examples/raytracer.tern, which is the
 // program to run beside this one: two implementations of the same maths, one in
-// TERN and one in HLSL, and the pictures should look like each other.
+// TERN and one in HLSL, and the pictures should look like each other. The
+// resting camera here - yaw 0, pitch 0.095, distance 4.219 - is the fixed camera
+// that program uses, so the first frame of one matches the only frame of the
+// other.
 
 import "std:d3d12";
 import "std:os";
@@ -72,11 +79,38 @@ fn hlsl_scene(scene) {
 /// which is what the CPU tracer in examples/raytracer.tern does.
 const BOUNCES = 4;
 
+// The camera, as three numbers a mouse can change. The eye orbits the target:
+// `yaw` is the angle round the world's up axis, `pitch` is how far above the
+// target it is, and `distance` is how far away. Together they are the whole of
+// "rotate around the spheres".
+const TARGET = [0.0, 0.75, 0.0];
+const WORLD_UP = [0.0, 1.0, 0.0];
+const YAW0 = 0.0;
+const PITCH0 = 0.095;
+const DISTANCE0 = 4.219;
+/// How far the camera may climb before the view is upside down.
+const PITCH_LIMIT = 1.25;
+const DISTANCE_MIN = 2.0;
+const DISTANCE_MAX = 12.0;
+/// tan(half the vertical field of view): 0.55 is about 57 degrees.
+const FIELD = 0.55;
+/// Pixels of mouse movement per radian of turn. A full 640-pixel drag turns the
+/// camera about 2.2 radians, which is enough to feel like grabbing the scene.
+const DRAG = 0.0035;
+/// Radians a second of the automatic turn `--seconds` asks for.
+const SPIN = 0.5;
+
 fn hlsl_camera() {
     return [
-        "static const float3 EYE = float3(0.0, 1.15, 4.20);",
-        "static const float3 LOOK_AT = float3(0.0, 0.75, 0.0);",
-        "static const float FIELD = 0.55;",
+        "// The camera, from TERN, through the root signature: four float4s in b0.",
+        "// This is what d3d12.draw's fourth argument fills, and it is why the",
+        "// picture can follow the mouse without this file being recompiled.",
+        "cbuffer Camera : register(b0) {",
+        "    float4 CAM_RIGHT;    // xyz: the right vector, w: tan(half the horizontal fov)",
+        "    float4 CAM_UP;       // xyz: the up vector,    w: tan(half the vertical fov)",
+        "    float4 CAM_FORWARD;  // xyz: the direction being looked along",
+        "    float4 CAM_EYE;      // xyz: where the eye is",
+        "};",
         "static const float3 LIGHT = float3(-3.0, 4.0, 2.5);",
         "static const float3 SKY_TOP = float3(0.08, 0.10, 0.20);",
         "static const float3 SKY_HORIZON = float3(0.55, 0.62, 0.75);",
@@ -99,7 +133,6 @@ fn pixel_shader(width, height, scene) {
     let lines = [];
     lines.push("static const float RES_X = " + hlsl_float(width) + ";");
     lines.push("static const float RES_Y = " + hlsl_float(height) + ";");
-    lines.push("static const float ASPECT = RES_X / RES_Y;");
     for line in hlsl_camera() { lines.push(line); }
     for line in hlsl_scene(scene) { lines.push(line); }
     for line in [
@@ -225,15 +258,13 @@ fn pixel_shader(width, height, scene) {
         "}",
         "",
         "float4 main(float4 pixel : SV_Position) : SV_Target {",
-        "    // SV_Position is in pixels with y down; uv is 0..1 with y up.",
+        "    // SV_Position is in pixels with y down; p is 0..1 with y up.",
         "    float2 p = float2(pixel.x / RES_X, 1.0 - pixel.y / RES_Y);",
-        "    float3 forward = normalize(LOOK_AT - EYE);",
-        "    float3 right = normalize(cross(float3(0.0, 1.0, 0.0), forward));",
-        "    float3 up = cross(forward, right);",
-        "    float3 direction = normalize(forward",
-        "        + right * (p.x - 0.5) * 2.0 * ASPECT * FIELD",
-        "        + up * (p.y - 0.5) * 2.0 * FIELD);",
-        "    float3 colour = trace(EYE, direction);",
+        "    // One ray through the middle of the pixel, off the camera's own axes.",
+        "    float3 direction = normalize(CAM_FORWARD.xyz",
+        "        + CAM_RIGHT.xyz * ((p.x - 0.5) * 2.0 * CAM_RIGHT.w)",
+        "        + CAM_UP.xyz * ((p.y - 0.5) * 2.0 * CAM_UP.w));",
+        "    float3 colour = trace(CAM_EYE.xyz, direction);",
         "    // Gamma: the shading above is linear, and a monitor is not.",
         "    colour = pow(saturate(colour), 1.0 / 2.2);",
         "    return float4(colour, 1.0);",
@@ -241,6 +272,142 @@ fn pixel_shader(width, height, scene) {
         "",
     ] { lines.push(line); }
     return lines.join("\n");
+}
+
+// --- the camera --------------------------------------------------------------
+//
+// Three numbers in, sixteen floats out: the layout of the cbuffer at the top of
+// the generated shader. TERN has no vector type, so the arithmetic is written
+// out - which is also the clearest way to say what an orbit camera is: stand at
+// the target, walk `distance` along a direction, look back at the target.
+//
+//     eye = target + distance * (cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw))
+//
+// At yaw 0 that is straight along +z, and pitch tilts it up; both are measured
+// in radians. The callers clamp pitch, because at exactly +-90 degrees the
+// right vector below has nothing to stand on.
+
+fn camera_eye(yaw, pitch, distance) {
+    let level = cos(pitch) * distance;
+    return [
+        TARGET[0] + level * sin(yaw),
+        TARGET[1] + distance * sin(pitch),
+        TARGET[2] + level * cos(yaw),
+    ];
+}
+
+fn unit(v) {
+    let length = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return [v[0] / length, v[1] / length, v[2] / length];
+}
+
+fn cross(a, b) {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+}
+
+/// The sixteen floats the shader reads from register(b0), in its order: right
+/// and tan(half fov x), up and tan(half fov y), forward, eye.
+fn camera_constants(width, height, yaw, pitch, distance) {
+    let eye = camera_eye(yaw, pitch, distance);
+    let forward = unit([TARGET[0] - eye[0], TARGET[1] - eye[1], TARGET[2] - eye[2]]);
+    // Right-handed, like the shader's old `cross(up, forward)`: the same camera
+    // at rest, so the first frame still matches examples/raytracer.tern.
+    let right = unit(cross(WORLD_UP, forward));
+    let up = cross(forward, right);
+    // The horizontal half-angle carries the aspect ratio, which is why a window
+    // that is not 4:3 does not stretch the spheres into eggs.
+    let tan_x = FIELD * width / height;
+    return [
+        right[0], right[1], right[2], tan_x,
+        up[0], up[1], up[2], FIELD,
+        forward[0], forward[1], forward[2], 0.0,
+        eye[0], eye[1], eye[2], 0.0,
+    ];
+}
+
+/// Clears the target and traces it once from this camera. The whole of a frame.
+fn paint(target, program, width, height, yaw, pitch, distance, vertices) {
+    d3d12.clear(target, 0.0, 0.0, 0.0, 1);
+    d3d12.draw(target, program, vertices,
+               camera_constants(width, height, yaw, pitch, distance));
+}
+
+// --- the window --------------------------------------------------------------
+//
+// The first frame is drawn before the window exists, so the window never opens
+// on a blank surface; after that each pass shows the frame drawn last and reads
+// the input that arrived with it. d3d12.present() pumps the window's messages
+// and d3d12.input() answers what they said since the previous call, so the
+// camera can only move when the mouse did - which is also why the loop redraws
+// only then: a ray tracer that re-traces a still picture sixty times a second
+// heats a laptop to show the same pixels.
+
+fn orbit(window, target, program, width, height, vertices, seconds, yaw0, pitch0, distance0) {
+    let yaw = yaw0;
+    let pitch = pitch0;
+    let distance = distance0;
+    let started = time.millis();
+    let frames = 0;
+    let running = true;
+
+    println("drag with the left mouse button to orbit, the wheel to zoom,");
+    println("R starts again, Escape closes the window.");
+
+    while (running) {
+        running = d3d12.present(window, target);
+        if (!running) { break; }
+
+        let input = d3d12.input(window);
+        let moved = false;
+
+        if (input["left"] && (input["dx"] != 0 || input["dy"] != 0)) {
+            // Dragging right turns the camera left, the way dragging a model
+            // turns it: the scene follows the hand rather than fighting it.
+            yaw = yaw - input["dx"] * DRAG;
+            pitch = clamp(pitch + input["dy"] * DRAG, -PITCH_LIMIT, PITCH_LIMIT);
+            moved = true;
+        }
+
+        if (input["wheel"] != 0) {
+            // A notch is a tenth of the distance, in the direction the wheel
+            // turned: away from you is further away.
+            distance = clamp(distance * pow(1.12, -input["wheel"]),
+                             DISTANCE_MIN, DISTANCE_MAX);
+            moved = true;
+        }
+
+        for key in input["keys"] {
+            if (key == 82) {                      // R
+                yaw = YAW0;
+                pitch = PITCH0;
+                distance = DISTANCE0;
+                moved = true;
+            }
+            if (key == 37) { yaw = yaw + DRAG * 40; moved = true; }   // left arrow
+            if (key == 39) { yaw = yaw - DRAG * 40; moved = true; }   // right arrow
+            if (key == 38) { pitch = clamp(pitch + DRAG * 40, -PITCH_LIMIT, PITCH_LIMIT); moved = true; }
+            if (key == 40) { pitch = clamp(pitch - DRAG * 40, -PITCH_LIMIT, PITCH_LIMIT); moved = true; }
+        }
+
+        if (seconds > 0) {
+            // A clock rather than a mouse: --seconds turns the camera by itself,
+            // which is what a machine with no hands and no display can check.
+            if (time.millis() - started >= seconds * 1000) { break; }
+            yaw = YAW0 + SPIN * (time.millis() - started) / 1000.0;
+            moved = true;
+        }
+
+        if (!moved) { continue; }
+        paint(target, program, width, height, yaw, pitch, distance, vertices);
+        frames = frames + 1;
+    }
+
+    d3d12.closeWindow(window);
+    return frames;
 }
 
 // --- the screen --------------------------------------------------------------
@@ -277,11 +444,21 @@ fn main() {
         "size": "640x480",
         "emit-hlsl": "",
         "ascii": false,
+        "window": true,
+        "seconds": 0.0,
+        "yaw": YAW0,
+        "pitch": PITCH0,
+        "distance": DISTANCE0,
     }, {
         "out": "where the PNG goes",
         "size": "render target, WIDTHxHEIGHT",
         "emit-hlsl": "write the HLSL source here and exit, without a GPU",
         "ascii": "print a text preview as well",
+        "window": "show the frames in a window and orbit with the mouse (--window=false for a still)",
+        "seconds": "turn the camera for this long, then close (0 waits for you)",
+        "yaw": "starting heading, in radians",
+        "pitch": "starting height, in radians above the target",
+        "distance": "starting distance from the target",
     });
     if (options == nil) { return; }
 
@@ -291,6 +468,11 @@ fn main() {
     let height = pixels[1];
     let emit = options["emit-hlsl"];
     let show_ascii = options["ascii"];
+    let want_window = options["window"];
+    let seconds = options["seconds"];
+    let yaw = options["yaw"];
+    let pitch = clamp(options["pitch"], -PITCH_LIMIT, PITCH_LIMIT);
+    let distance = clamp(options["distance"], DISTANCE_MIN, DISTANCE_MAX);
 
     // The shader source is a string built here, not something the GPU compiles,
     // so --emit-hlsl works on a machine with no Direct3D 12 at all - which is
@@ -333,13 +515,32 @@ fn main() {
     println("ray tracing " + str(width) + "x" + str(height) + " on " + d3d12.info()["name"] +
             " with " + str(len(scene)) + " spheres.");
 
-    d3d12.clear(target, 0.0, 0.0, 0.0, 1);
+    let vertices = fullscreen_triangle();
     let started = time.millis();
-    d3d12.draw(target, pipeline, fullscreen_triangle());
-    let written = d3d12.save(target, out);
+    paint(target, pipeline, width, height, yaw, pitch, distance, vertices);
     let elapsed = time.millis() - started;
+    println("one frame traced in " + str(elapsed) + " ms.");
 
-    println("wrote " + out + ": " + str(written) + " bytes in " + str(elapsed) + " ms");
+    // The window is tried unless the script asked for a still, and a machine
+    // without one - or a run with --window=false - gets the file instead. nil
+    // rather than an error, so this stays a program that produces a picture
+    // wherever it runs.
+    let frames = 0;
+    if (want_window) {
+        let window = d3d12.window(width, height, "TERNLang - GPU ray tracer (drag to orbit)");
+        if (window == nil) {
+            println("no window on this machine, so this is the still frame.");
+        } else {
+            frames = orbit(window, target, pipeline, width, height, vertices,
+                           seconds, yaw, pitch, distance);
+            println("window closed after " + str(frames + 1) + " frames.");
+        }
+    }
+
+    let saved = time.millis();
+    let written = d3d12.save(target, out);
+    println("wrote " + out + ": " + str(written) + " bytes in " +
+            str(time.millis() - saved) + " ms");
     if (show_ascii) {
         ascii_preview(width, height, d3d12.pixels(target), 72);
     }

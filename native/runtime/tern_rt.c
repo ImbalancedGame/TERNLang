@@ -2502,7 +2502,21 @@ static Value n_input(int argc, Value *argv) {
 
 static Value m_floor(int argc, Value *argv) { return v_float(floor(v_as_number(arg(argc, argv, 0)))); }
 static Value m_ceil(int argc, Value *argv) { return v_float(ceil(v_as_number(arg(argc, argv, 0)))); }
-static Value m_round(int argc, Value *argv) { return v_float(round(v_as_number(arg(argc, argv, 0)))); }
+// `math.round(x)` and `math.round(x, digits)` are one function with an optional
+// second argument. This used to drop that argument and round to a whole number,
+// so `round(0.7333, 4)` was 1.0 in a compiled binary and 0.7333 interpreted.
+// The rule is the one the interpreter and the `x.round(digits)` method use: a
+// digit count of zero or less rounds to a whole number, a positive one scales,
+// rounds and scales back.
+static Value m_round(int argc, Value *argv) {
+    double value = v_as_number(arg(argc, argv, 0));
+    int digits = argc > 1 ? (int)need_int(arg(argc, argv, 1), "round", 2) : 0;
+    if (digits <= 0) {
+        return v_float(round(value));
+    }
+    double scale = pow(10.0, digits);
+    return v_float(round(value * scale) / scale);
+}
 static Value m_sqrt(int argc, Value *argv) { return v_float(sqrt(v_as_number(arg(argc, argv, 0)))); }
 static Value m_trunc(int argc, Value *argv) { return v_float(trunc(v_as_number(arg(argc, argv, 0)))); }
 static Value m_pow(int argc, Value *argv) {
@@ -10311,7 +10325,7 @@ static Value namespace_map(const char *ns) {
         map_set(map, str_from_cstr("pipeline"),
                 make_native_arity("pipeline", n_d3d12_pipeline, 3, 3));
         map_set(map, str_from_cstr("draw"),
-                make_native_arity("draw", n_d3d12_draw, 3, 3));
+                make_native_arity("draw", n_d3d12_draw, 3, 4));
         map_set(map, str_from_cstr("pixels"),
                 make_native_arity("pixels", n_d3d12_pixels, 1, 1));
         map_set(map, str_from_cstr("save"),
@@ -10324,6 +10338,8 @@ static Value namespace_map(const char *ns) {
                 make_native_arity("window", n_d3d12_window, 3, 3));
         map_set(map, str_from_cstr("present"),
                 make_native_arity("present", n_d3d12_present, 2, 2));
+        map_set(map, str_from_cstr("input"),
+                make_native_arity("input", n_d3d12_input, 1, 1));
         map_set(map, str_from_cstr("closeWindow"),
                 make_native_arity("closeWindow", n_d3d12_close_window, 1, 1));
         return v_obj((Obj *)map);

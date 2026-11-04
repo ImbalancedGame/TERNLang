@@ -52,6 +52,27 @@ println(kind(fn() { d3d12.draw(target, pipeline, "nope"); }));
 println(kind(fn() { d3d12.draw(target, pipeline, [1, 2]); }));
 println(kind(fn() { d3d12.draw(target, pipeline, [1, 2, 3, 4, 5, "x"]); }));
 
+// ------------------------------------------------------------------ constants
+// A fourth argument to d3d12.draw goes into the shader's register(b0). The mock
+// records the values it was handed, so this prints what reached the command
+// list rather than what the script meant to hand it: the camera in the ray
+// tracer travels this way, and a wrong offset here is a camera looking at
+// nothing rather than an error.
+d3d12.clear(target, 0, 0, 0, 1);
+d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1, 1, -1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+           [1.5, -2.25, 3, 4]);
+println("constants:", d3d12.pixels(target)[0..4]);
+
+// 64 is the whole root-signature budget, and 65 is one more than a shader can
+// read, so it is refused where the mistake is rather than by the driver.
+let sixtyFour = [];
+for i in range(0, 64) { sixtyFour.push(i); }
+d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1, 1, -1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1], sixtyFour);
+let sixtyFive = sixtyFour.push(64);
+println(kind(fn() { d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1], sixtyFour); }));
+println(kind(fn() { d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1], [1, "two"]); }));
+println(kind(fn() { d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1], "nope"); }));
+
 // -------------------------------------------------------------- the window
 // On Windows this opens a real window and shows the frame in it. Everywhere
 // else - and in any run that has not opted in - it answers nil, and the rest of
@@ -64,9 +85,21 @@ if (window != nil) {
     println("present:", d3d12.present(window, target));
     println("present:", d3d12.present(window, target));
     println("present:", d3d12.present(window, target));
+    // What the window saw, in the same shape the ray tracer orbits with. Without
+    // input behind it every field is empty, and a script has to cope: that is a
+    // mouse that has not moved, not a failure.
+    let input = d3d12.input(window);
+    println("input:", input["dx"], input["dy"], input["wheel"], input["left"], input["keys"]);
+    println(kind(fn() { d3d12.input(window + 40); }));
     d3d12.closeWindow(window);
     println(kind(fn() { d3d12.present(window, target); }));
 }
+
+// The picture the file check looks at: the documented clear colour with the
+// three-colour triangle over it, drawn again so the constants section above -
+// which covers the target with a full-frame triangle - is not what gets saved.
+d3d12.clear(target, 0.25, 0.5, 0.75, 1);
+d3d12.draw(target, pipeline, [-1, -1, 1, 0, 0, 1, 1, -1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]);
 
 let png = os.env("TERN_D3D12_PNG", ".d3d12_probe.png");
 d3d12.save(target, png);

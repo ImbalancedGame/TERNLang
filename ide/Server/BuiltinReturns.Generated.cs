@@ -104,6 +104,7 @@ namespace TERN.Ide
             ["d3d12.create"] = "int",
             ["d3d12.debug"] = "bool",
             ["d3d12.info"] = "map",
+            ["d3d12.input"] = "map",
             ["d3d12.pipeline"] = "int",
             ["d3d12.pixels"] = "list",
             ["d3d12.present"] = "bool",

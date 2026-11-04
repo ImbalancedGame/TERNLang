@@ -14,6 +14,7 @@
 // Run:   TERN_D3D12_LIBRARY=$PWD/libd3d12.so ./tools/tern tools/d3d12/probe.tern
 
 #define _GNU_SOURCE
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <dlfcn.h>   // the frame counter lives in the window mock; see report_frame
@@ -450,6 +451,42 @@ static void list_om_set_targets(void *self, unsigned count, const CpuHandle *tar
 static void list_clear_rtv(void *self, CpuHandle handle, const float *colour, unsigned count, const void *rects);
 
 static void list_set_topology(void *self, int topology) { (void)self; (void)topology; }
+
+// SetGraphicsRoot32BitConstants. The values are what a shader reads from
+// register(b0), so a test can check that what the script passed is what reached
+// the command list - the one part of "the camera moved" a mock without a shader
+// compiler can still see.
+static int mock_root_constant_count;
+static float mock_root_constants[64];
+
+static void list_set_root_constants(void *self, unsigned parameter, unsigned count,
+                                    const float *values, unsigned offset) {
+    (void)self;
+    if (parameter != 0) {
+        fprintf(stderr, "mock_d3d12: root constants went to parameter %u, and only 0 exists\n",
+                parameter);
+        mock_state_mismatches++;
+        return;
+    }
+    if (count > 64 || offset + count > 64 || count == 0) {
+        fprintf(stderr, "mock_d3d12: ROOT CONSTANTS OUT OF RANGE: %u values at offset %u\n",
+                count, offset);
+        mock_state_mismatches++;
+        return;
+    }
+    memcpy(mock_root_constants + offset, values, (size_t)count * sizeof(float));
+    mock_root_constant_count = (int)(offset + count);
+
+    const char *trace = getenv("TERN_D3D12_TRACE_CONSTANTS");
+    if (trace && trace[0] && strcmp(trace, "0") != 0) {
+        fprintf(stderr, "mock_d3d12: root constants %d", (int)count);
+        for (unsigned i = 0; i < count; i++) {
+            fprintf(stderr, " %.4f", (double)values[i]);
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
 static void list_set_pipeline(void *self, void *pipeline) { (void)self; (void)pipeline; }
 static void list_set_signature(void *self, void *signature) { (void)self; (void)signature; }
 
@@ -571,6 +608,7 @@ static void *list_vtbl[60] = {
     [22] = (void *)list_set_scissor_rects,
     [25] = (void *)list_set_pipeline,
     [30] = (void *)list_set_signature,
+    [36] = (void *)list_set_root_constants,
     [44] = (void *)list_set_vertex_buffers,
     [0] = (void *)mock_query, [1] = (void *)mock_addref, [2] = (void *)mock_release,
     [9] = (void *)list_close,
@@ -716,12 +754,100 @@ long D3DCompile(const void *source, size_t size, const char *name, const void *d
     return 0;
 }
 
+// D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_PARAMETER and D3D12_ROOT_CONSTANTS, laid
+// out as d3d12.h says: the tag at 0, the union at 8 (8-byte aligned, and 16
+// bytes wide, because one of its members is a pointer) and the visibility at 24,
+// for 32 bytes a parameter.
+//
+// The union has to be a union here too. Writing it as a bare RootConstants
+// member puts the visibility at 20 rather than 24 - three unsigned ints are
+// four-byte aligned, and it is the descriptor-table pointer that makes the real
+// union eight - and the check below then reads a value of 64 out of an offset
+// the runtime never wrote. That is exactly the mistake this mock exists to
+// catch, and it caught it in the mock first.
+typedef struct {
+    unsigned shader_register;
+    unsigned register_space;
+    unsigned value_count;
+} MockRootConstants;
+
+typedef struct {
+    unsigned num_descriptor_ranges;
+    const void *descriptor_ranges;
+} MockDescriptorTable;
+
+typedef union {
+    MockDescriptorTable table;
+    MockRootConstants constants;
+} MockRootParameterUnion;
+
+typedef struct {
+    int parameter_type;
+    MockRootParameterUnion u;      // at 8
+    int shader_visibility;         // at 24
+} MockRootParameter;
+
+_Static_assert(sizeof(MockRootParameter) == 32, "root parameter is 32 bytes");
+_Static_assert(offsetof(MockRootParameter, u) == 8, "the union is at 8");
+_Static_assert(offsetof(MockRootParameter, shader_visibility) == 24, "the visibility is at 24");
+
+typedef struct {
+    unsigned num_parameters;
+    const MockRootParameter *parameters;
+    unsigned num_static_samplers;
+    const void *static_samplers;
+    unsigned flags;
+} MockRootSignatureDesc;
+
+// The description is checked rather than ignored. The interpreter marshals its
+// own structure to this call and the native backend fills in a C one, and if
+// either puts a field at the wrong offset the driver reads a parameter type of
+// 0 (a descriptor table, for which it has no descriptor) - which a real device
+// answers by refusing to create the root signature, and this mock used to
+// answer by saying yes to everything.
 long D3D12SerializeRootSignature(const void *description, int version, void **blob, void **errors) {
-    (void)description; (void)version;
-    *blob = blob_new("ROOTSIGNATURE");
+    (void)version;
+    *blob = NULL;
     if (errors) {
         *errors = NULL;
     }
+    const MockRootSignatureDesc *desc = (const MockRootSignatureDesc *)description;
+    if (!desc) {
+        return E_INVALIDARG_;
+    }
+    if (desc->flags != 1) {   // D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER
+        if (errors) {
+            *errors = blob_new("mock: the root signature must allow the input assembler\n");
+        }
+        return E_INVALIDARG_;
+    }
+    if (desc->num_parameters != 1 || !desc->parameters) {
+        if (errors) {
+            *errors = blob_new("mock: the root signature must have exactly one parameter\n");
+        }
+        return E_INVALIDARG_;
+    }
+    const MockRootParameter *parameter = desc->parameters;
+    if (parameter->parameter_type != 1) {   // D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS
+        if (errors) {
+            *errors = blob_new("mock: root parameter 0 is not 32-bit constants\n");
+        }
+        return E_INVALIDARG_;
+    }
+    if (parameter->u.constants.shader_register != 0 || parameter->u.constants.register_space != 0 ||
+            parameter->u.constants.value_count != 64) {
+        if (errors) {
+            *errors = blob_new("mock: the constants are not 64 values in b0\n");
+        }
+        return E_INVALIDARG_;
+    }
+    if (parameter->shader_visibility != 0) {
+        if (errors) {
+            *errors = blob_new("mock: the constants are not visible to every stage\n");
+        }
+        return E_INVALIDARG_;
+    }
+    *blob = blob_new("ROOTSIGNATURE");
     return 0;
 }
 

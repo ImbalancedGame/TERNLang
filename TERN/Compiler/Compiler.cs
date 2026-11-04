@@ -251,6 +251,21 @@ namespace TERN.Compiler
 
             // ------------------------------------------------------------- emission
 
+            /// <summary>
+            /// States the operand-stack depth at a point the linear walk cannot infer:
+            /// a handler, which is entered with a value pushed by the VM rather than by
+            /// an instruction. The maximum still has to be recorded, because the frame
+            /// is sized from it.
+            /// </summary>
+            private void NoteDepth(int depth)
+            {
+                _depth = depth;
+                if (depth > _maxDepth)
+                {
+                    _maxDepth = depth;
+                }
+            }
+
             private int Emit(Op op, int a = 0, int b = 0, int c = 0, int pop = 0, int push = 0)
             {
                 _code.Add(new Instr(op, a, b, c));
@@ -432,7 +447,16 @@ namespace TERN.Compiler
                     {
                         _code.RemoveAt(_code.Count - 1);
                         _lines.RemoveAt(_lines.Count - 1);
-                        _depth--;   // the removed instruction was net +1 on the stack
+
+                        // The arithmetic instruction took two operands off the stack
+                        // and pushed their result, so undoing it gives those two
+                        // operands back - and this is the depth that the fused
+                        // instruction then pops, leaving nothing. Undoing only its
+                        // push instead (a `_depth--`) lost two slots from the count
+                        // for the rest of the function, which made MaxStack two too
+                        // small: a long list literal after `let x = a * b` then wrote
+                        // past the end of the C backend's `Value st[MaxStack]`.
+                        _depth++;
 
                         Emit(fused.Value, slot, 0, 0, pop: 2, push: 0);
                         return;
@@ -737,7 +761,39 @@ namespace TERN.Compiler
 
             // ----------------------------------------------------------- statements
 
+            /// <summary>
+            /// Compiles one statement and checks that it left the operand stack where
+            /// it found it. Every statement does, by construction - an expression's
+            /// value is either stored, returned or popped - so a mismatch means the
+            /// depth bookkeeping inside the compiler has drifted, and MaxStack (which
+            /// both back ends size a frame from) is no longer trustworthy. This is the
+            /// check that a fumbled `_depth` in the arithmetic-plus-store fusion went
+            /// without: the drift made a native frame two slots too small, and a long
+            /// list literal after `let x = a * b` wrote past the end of it.
+            /// </summary>
             public void CompileStatement(Stmt statement)
+            {
+                var entry = _depth;
+                CompileStatementCore(statement);
+                if (_depth != entry)
+                {
+                    Module.Error("TRN0219", StackDepthMessage(entry, _depth), statement);
+                    _depth = entry;
+                }
+            }
+
+            private string StackDepthMessage(int entry, int exit) =>
+                $"internal: this statement {DescribeDepthChange(entry, exit)} on the operand stack, " +
+                "so the frame this function is given would be the wrong size - please report this";
+
+            private static string DescribeDepthChange(int entry, int exit) => exit switch
+            {
+                _ when exit > entry => $"left {exit - entry} extra value(s)",
+                _ when exit < entry => $"consumed {entry - exit} value(s) too many",
+                _ => "moved the wrong number of values",
+            };
+
+            private void CompileStatementCore(Stmt statement)
             {
                 SetLine(statement);
 
@@ -898,7 +954,9 @@ namespace TERN.Compiler
                 EmitConstantString(Patterns.Describe(pattern) + " does not match ");
                 CompileNameLoad("repr", let);
                 EmitLoadLocal(subject);
-                Emit(Op.Call, 1, 0, 0, pop: 1, push: 1);
+                // Call takes the callee as well as the argument: `repr` is on the
+                // stack underneath it.
+                Emit(Op.Call, 1, 0, 0, pop: 2, push: 1);
                 Emit(Op.Concat, 2, 0, 0, pop: 2, push: 1);
                 Emit(Op.ThrowType, AddStringConstant("TypeError"), 0, 0, pop: 1, push: 0);
 
@@ -1400,6 +1458,12 @@ namespace TERN.Compiler
                 var hasCatch = statement.Catch is not null;
                 var hasFinally = statement.Finally is not null;
 
+                // Where the stack is when the statement begins. The handler is
+                // entered from wherever the throw happened, with one value more on
+                // the stack than that - the raised value - so the depth has to be
+                // set from this rather than inherited from the fall-through path.
+                var entry = _depth;
+
                 // try { body } catch (e) { handler } finally { cleanup }
                 var enterTry = Emit(Op.EnterTry, 0, 0, 0, pop: 0, push: 0);
 
@@ -1425,7 +1489,12 @@ namespace TERN.Compiler
                 var jumpToEnd = Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0);
                 PatchTo(enterTry, _code.Count);
 
-                // Handler entry: the raised value has been pushed by the VM.
+                // Handler entry: the raised value has been pushed by the VM. Both
+                // paths consume it - the catch stores it as the error name, and a
+                // try/finally without a catch rethrows it - so the count starts one
+                // above the statement's entry depth.
+                NoteDepth(entry + 1);
+
                 if (hasCatch)
                 {
                     PushScope();
@@ -1469,6 +1538,7 @@ namespace TERN.Compiler
 
                         var afterCatch = Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0);
                         PatchTo(innerTry, _code.Count);
+                        NoteDepth(entry + 1);   // this handler is entered with the raised value too
                         CompileStatement(statement.Finally!);
                         Emit(Op.Throw, 0, 0, 0, pop: 1, push: 0);
                         PatchTo(afterCatch, _code.Count);
@@ -2218,6 +2288,12 @@ namespace TERN.Compiler
                     return;
                 }
 
+                // Where the branches start, and what each of them leaves behind.
+                // Both are needed at the labels: the then branch ends with its value
+                // on the stack, and the else branch is jumped to from before that, so
+                // the depth at the label is the one going in, not the one coming out.
+                var entry = _depth;
+
                 var jumpToElse = EmitConditionJump(condition, jumpWhenFalse: true);
 
                 PushScope();
@@ -2226,12 +2302,14 @@ namespace TERN.Compiler
 
                 var jumpToEnd = Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0);
                 PatchTo(jumpToElse, _code.Count);
+                NoteDepth(entry);
 
                 PushScope();
                 CompileBranchValue(elseBranch, node);
                 PopScope();
 
                 PatchTo(jumpToEnd, _code.Count);
+                NoteDepth(entry + 1);   // whichever branch ran, a value is what is here
             }
 
             private void CompileBranchValue(Stmt branch, Node node)
@@ -2315,8 +2393,12 @@ namespace TERN.Compiler
                 {
                     CompileExpression(member.Target);
                     CompileArguments(call.Arguments);
+                    // The receiver goes with the arguments: Invoke leaves the result
+                    // in the receiver's slot. Counting only the arguments left the
+                    // depth one too low per call for the rest of the function, and a
+                    // chain like `text.lower().words()` is two of them.
                     Emit(Op.Invoke, AddStringConstant(member.Name), call.Arguments.Count, 0,
-                        pop: call.Arguments.Count, push: 1);
+                        pop: call.Arguments.Count + 1, push: 1);
                     return;
                 }
 
@@ -2895,7 +2977,7 @@ namespace TERN.Compiler
 
                         Emit(Op.IncLocal, local.Slot, increment.Delta, 0, pop: 0, push: 0);
 
-                        if (increment.Prefix)
+                        if (increment.Prefix && keepValue)
                         {
                             EmitLoadLocal(local.Slot);
                         }
@@ -2906,7 +2988,7 @@ namespace TERN.Compiler
                     var upvalue = ResolveUpvalue(identifier.Name);
                     if (upvalue >= 0)
                     {
-                        if (!increment.Prefix)
+                        if (!increment.Prefix && keepValue)
                         {
                             Emit(Op.LoadUpvalue, upvalue, 0, 0, pop: 0, push: 1);
                         }
@@ -2916,7 +2998,7 @@ namespace TERN.Compiler
                         Emit(Op.Add, 0, 0, 0, pop: 2, push: 1);
                         Emit(Op.StoreUpvalue, upvalue, 0, 0, pop: 1, push: 0);
 
-                        if (increment.Prefix)
+                        if (increment.Prefix && keepValue)
                         {
                             Emit(Op.LoadUpvalue, upvalue, 0, 0, pop: 0, push: 1);
                         }
@@ -2926,7 +3008,7 @@ namespace TERN.Compiler
 
                     if (_scope.TryResolve(identifier.Name, out var globalSlot))
                     {
-                        if (!increment.Prefix)
+                        if (!increment.Prefix && keepValue)
                         {
                             Emit(Op.LoadGlobal, globalSlot, 0, 0, pop: 0, push: 1);
                         }
@@ -2936,7 +3018,7 @@ namespace TERN.Compiler
                         Emit(Op.Add, 0, 0, 0, pop: 2, push: 1);
                         Emit(Op.StoreGlobal, globalSlot, 0, 0, pop: 1, push: 0);
 
-                        if (increment.Prefix)
+                        if (increment.Prefix && keepValue)
                         {
                             Emit(Op.LoadGlobal, globalSlot, 0, 0, pop: 0, push: 1);
                         }
@@ -2989,6 +3071,8 @@ namespace TERN.Compiler
 
             private void CompileMatch(MatchExpr match)
             {
+                var entry = _depth;
+
                 PushScope();
                 CompileExpression(match.Subject);
                 var subjectSlot = DeclareLocal("$match", isConst: true);
@@ -3018,7 +3102,10 @@ namespace TERN.Compiler
                     }
 
                     CompileBranchValue(ResolveArmBody(arm), match);
-                    endJumps.Add(Emit(Op.Jump, 0, 0, 0, pop: 1, push: 0));
+                    // The arm's value stays where it is: a jump only moves the
+                    // instruction pointer, so the value the arm produced is the
+                    // value of the whole match at the label below.
+                    endJumps.Add(Emit(Op.Jump, 0, 0, 0, pop: 0, push: 0));
                     PopScope();
 
                     foreach (var jump in failJumps)
@@ -3041,6 +3128,9 @@ namespace TERN.Compiler
                 {
                     PatchTo(jump, _code.Count);
                 }
+
+                // Exhaustive or not, exactly one value is here now.
+                NoteDepth(entry + 1);
 
                 PopScope();
             }

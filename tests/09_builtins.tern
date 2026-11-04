@@ -1,6 +1,12 @@
 println(len("abc"), len([1, 2]), len({"a": 1}), len(0..4));
 println(abs(-3), math.abs(-3.5));
 println(math.floor(3.7), math.ceil(3.2), math.round(3.5));
+// Digits: two spellings, one rule. `math.round(x, -1)` used to kill the
+// interpreter with a .NET trace (the framework's Round only takes 0..15), and
+// the compiled backend ignored the digit count altogether, answering 3.0 for
+// `math.round(2.56789, 2)`.
+println(math.round(2.56789, 2), math.round(2.56789, 0), math.round(2.56789, -1));
+println((2.56789).round(2), (2.56789).round(-1), math.round(2.5), math.round(-2.5));
 println(math.sqrt(16), math.pow(2, 8));
 println(math.min(3, 1, 2), math.max(3, 1, 2));
 println(math.pi > 3.14);

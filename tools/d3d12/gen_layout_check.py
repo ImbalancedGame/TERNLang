@@ -51,6 +51,9 @@ UNIONS = {
     "D3D12_TEXTURE_COPY_LOCATION": "PlacedFootprint",
     # The SDK's clear value has an anonymous union holding Color[4].
     "D3D12_CLEAR_VALUE": "Color",
+    # A root parameter's union is anonymous in d3d12.h, so its members are
+    # named directly on the struct: offsetof(D3D12_ROOT_PARAMETER, Constants).
+    "D3D12_ROOT_PARAMETER": "Constants",
 }
 
 SIZE = re.compile(r"_Static_assert\(sizeof\((\w+)\)\s*==\s*(\d+)\s*,")

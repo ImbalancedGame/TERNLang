@@ -663,8 +663,11 @@ def test_shaders(checks):
     traced = os.path.join(ROOT, "examples", "d3d12_raytrace.tern")
     ray_source = os.path.join(work, "shot.hlsl")
     ray_png = os.path.join(work, "shot.png")
+    # --window=false on purpose: without a window the example is one frame and a
+    # file, so this test cannot open a window on a machine that has a display and
+    # stop there waiting for somebody to close it.
     run = subprocess.run(CLI + [traced, "--out", ray_png, "--emit-hlsl", ray_source,
-                                "--size", "64x48"],
+                                "--size", "64x48", "--window=false"],
                          cwd=ROOT, capture_output=True, text=True, env=environment)
     checks.check("the GPU ray tracer runs", run.returncode == 0,
                  (run.stderr or run.stdout)[-400:])
@@ -675,6 +678,45 @@ def test_shaders(checks):
                  os.path.exists(ray_source)
                  and "SPHERES[4][2]" in open(ray_source, encoding="utf-8").read(),
                  "no baked scene")
+
+    # The camera is the part that changes every frame, so it is not in the
+    # source: it arrives through the root signature. A shader with the old baked
+    # EYE would compile once and then never move, and the window would show a
+    # still picture however far the mouse dragged.
+    source = open(ray_source, encoding="utf-8").read() if os.path.exists(ray_source) else ""
+    checks.check("the camera comes from the root signature, not from the source",
+                 "cbuffer Camera : register(b0)" in source
+                 and "CAM_EYE" in source and "LOOK_AT" not in source,
+                 source[:300])
+    checks.check("and the shader reads all four camera vectors",
+                 all(name in source for name in ("CAM_RIGHT", "CAM_UP", "CAM_FORWARD", "CAM_EYE")),
+                 source[:300])
+
+    # The window is what a person runs, and it has to be offerable without
+    # opening one: --help is the only place the options are listed.
+    help_run = subprocess.run(CLI + [traced, "--help"], cwd=ROOT,
+                              capture_output=True, text=True, env=environment)
+    checks.check("--help lists the camera and the window",
+                 all(option in help_run.stdout
+                     for option in ("--window", "--seconds", "--yaw", "--distance")),
+                 help_run.stdout[:400])
+
+    # A camera that cannot be set is not a camera. The picture cannot prove that
+    # here - the mock compiler hands back a stand-in shader, so every frame is
+    # the same vertices on the same background whatever the constants say - but
+    # the values themselves can, and tools/test-d3d12.sh reads the constants
+    # every frame carried out of the mock's trace: four draws, four different
+    # cameras, both back ends the same. What is left for this test is that the
+    # options are accepted and still produce a file.
+    for option, value in (("--yaw", "1.2"), ("--pitch", "0.6"), ("--distance", "6.5")):
+        target = os.path.join(work, f"camera{option[2:]}.png")
+        result = subprocess.run(CLI + [traced, "--out", target, "--size", "48x36",
+                                       "--window=false", option, value],
+                                cwd=ROOT, capture_output=True, text=True, env=environment)
+        checks.check(f"{option} is a camera the ray tracer accepts",
+                     result.returncode == 0 and os.path.getsize(target) > 0
+                     if os.path.exists(target) else False,
+                     (result.stderr or result.stdout)[-300:])
     ray_problems = hlsl_lint.check(open(ray_source, encoding="utf-8").read(), "shot.hlsl") \
         if os.path.exists(ray_source) else ["the shader was not written"]
     checks.check("the ray tracer's HLSL passes the structural check", not ray_problems,
@@ -755,8 +797,11 @@ def test_shaders(checks):
     # Without a driver both examples have to be a sentence, not a traceback:
     # that is what a Linux user sees, and it is most of the audience for these
     # two files.
-    for source, name in ((showcase, "showcase"), (traced, "ray tracer")):
-        absent = subprocess.run(CLI + [source], cwd=ROOT, capture_output=True, text=True,
+    # --window=false for the ray tracer only: the showcase has no window options,
+    # and the point of this pair is the message a missing driver produces.
+    for source, name, extra in ((showcase, "showcase", []), (traced, "ray tracer", ["--window=false"])):
+        absent = subprocess.run(CLI + [source] + extra, cwd=ROOT,
+                                capture_output=True, text=True,
                                 env=dict(os.environ, TERN_D3D12_LIBRARY="/nonexistent/libd3d12.so"))
         checks.check(f"the {name} without Direct3D 12 is a sentence, not a traceback",
                      absent.returncode == 0 and "not available" in absent.stdout

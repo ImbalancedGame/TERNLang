@@ -60,12 +60,73 @@ INTEGER_TO_FLOAT = re.compile(r"\(\s*([^()]*),\s*(-?\d+)\s*\)")
 
 STRING_OR_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
 
+# `: register(b0)` is a binding annotation, not a call, and `register` is not a
+# function. Blanked out before the call check rather than special-cased inside
+# it, so that `register(t3)` and `register(s0, space1)` are covered too.
+REGISTER = re.compile(r"\bregister\s*\([^)]*\)")
+
+# The dwords a declaration takes in a constant buffer, per HLSL's packing rules:
+# a float3 fills a whole register and a float4x4 fills four of them, while
+# scalars and float2s pack into what is left of the current one.
+CBUFFER_TYPES = {
+    "float": 1, "int": 1, "uint": 1, "bool": 1, "double": 1,
+    "float2": 2, "int2": 2, "uint2": 2,
+    "float3": 4, "int3": 4, "uint3": 4,
+    "float4": 4, "int4": 4, "uint4": 4,
+    "float2x2": 4, "float3x3": 12, "float4x4": 16,
+}
+CBUFFER_BODY = re.compile(r"\bcbuffer\b([^{]*)\{([^}]*)\}\s*;", re.S)
+CBUFFER_REGISTER = re.compile(r"register\s*\(\s*b(\d+)", re.I)
+DECLARATION = re.compile(r"^\s*([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*;", re.M)
+
 
 def strip_comments(text):
     """Comments out, with their newlines kept so line numbers stay honest."""
     def blank(match):
         return "\n" * match.group(0).count("\n")
     return STRING_OR_COMMENT.sub(blank, text)
+
+
+def cbuffer_dwords(body):
+    """The registers a cbuffer body occupies, following HLSL's packing rules."""
+    registers = 0
+    open_dwords = 0      # what is in the register being filled, 0 when none is
+    for match in DECLARATION.finditer(body):
+        size = CBUFFER_TYPES.get(match.group(1))
+        if size is None:
+            continue
+        if size >= 4:
+            # A vector of three or four starts a register of its own, and fills
+            # it; a matrix fills several.
+            if open_dwords:
+                registers += 1
+                open_dwords = 0
+            registers += size // 4
+        elif open_dwords + size <= 4:
+            open_dwords += size
+        else:
+            if open_dwords:
+                registers += 1
+            open_dwords = size
+    if open_dwords:
+        registers += 1
+    return registers * 4
+
+
+def constants_budget(clean, path):
+    """Every cbuffer bound to b0 has to fit the root signature's 64 dwords."""
+    problems = []
+    for match in CBUFFER_BODY.finditer(clean):
+        binding = CBUFFER_REGISTER.search(match.group(1))
+        if not binding or int(binding.group(1)) != 0:
+            continue
+        dwords = cbuffer_dwords(match.group(2))
+        if dwords > 64:
+            line = clean[:match.start()].count("\n") + 1
+            problems.append(
+                f"{path}:{line}: the constant buffer in register(b0) is {dwords} dwords, "
+                f"and the root signature provides 64")
+    return problems
 
 
 def check(text, path):
@@ -94,13 +155,16 @@ def check(text, path):
 
     # 2. Every call is a function defined in the file, an intrinsic, or a
     #    struct constructor.
-    defined = set(FUNCTION.findall(clean))
-    defined |= set(re.findall(r"\bstruct\s+([A-Za-z_]\w*)", clean))
-    for match in re.finditer(r"\bstruct\s+([A-Za-z_]\w*)\s*\{.*?\}", clean, re.S):
+    # Binding annotations are not calls: `: register(b0)` would otherwise read
+    # as a call to a function called register.
+    calls = REGISTER.sub("register ", clean)
+    defined = set(FUNCTION.findall(calls))
+    defined |= set(re.findall(r"\bstruct\s+([A-Za-z_]\w*)", calls))
+    for match in re.finditer(r"\bstruct\s+([A-Za-z_]\w*)\s*\{.*?\}", calls, re.S):
         defined.add(match.group(1))
     keywords = {"if", "for", "while", "switch", "return", "struct", "static",
                 "const", "else"}
-    for number, line in enumerate(clean.split("\n"), start=1):
+    for number, line in enumerate(calls.split("\n"), start=1):
         if line.lstrip().startswith("//"):
             continue
         for call in CALL.finditer(line):
@@ -110,7 +174,10 @@ def check(text, path):
             problems.append(f"{path}:{number}: '{name}()' is not defined in this file "
                             f"and is not an HLSL intrinsic")
 
-    # 3. Recursion. HLSL 5.0 has no call stack, so fxc rejects a cycle in the
+    # 3. A constant buffer bigger than the root signature can feed.
+    problems += constants_budget(clean, path)
+
+    # 4. Recursion. HLSL 5.0 has no call stack, so fxc rejects a cycle in the
     #    call graph - and a cycle is invisible in a shader that otherwise reads
     #    correctly, which is why this check exists rather than a comment.
     problems += recursive_functions(clean, path)

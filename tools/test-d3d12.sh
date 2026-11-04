@@ -358,8 +358,168 @@ fi
 echo "d3d12: the cube animates in both back ends"
 check_states "$WORK/cube_window.err"
 check_states "$WORK/cube_window_interp.err"
-unset TERN_D3D12_WINDOW
 unset TERN_D3D12_CHECK_WINDING
+
+# ------------------------------------------------------------ an orbit camera
+#
+# The GPU ray tracer is what this binding is for, and its camera is the one
+# thing that changes from frame to frame: sixteen floats through the root
+# signature, not a recompile. A drag and a wheel notch have to reach the shader
+# as different constants, and identically in both back ends - everything below
+# is compared between them, because a camera that is one back end's idea of the
+# mouse is a picture only one of them can draw.
+echo "d3d12: orbiting the ray tracer's camera"
+python3 native/ternc.py examples/d3d12_raytrace.tern -o "$WORK/raytrace" > "$WORK/raytrace_build.txt" 2>&1 || {
+    echo "d3d12: the ray tracer did not build" >&2
+    sed -n 1,20p "$WORK/raytrace_build.txt" >&2
+    exit 1
+}
+export TERN_WINDOW_FRAMES=4
+export TERN_WINDOW_DRAG="40,-10"
+export TERN_WINDOW_WHEEL=2
+export TERN_D3D12_TRACE_CONSTANTS=1
+
+TERN_D3D12_PNG="$WORK/orbit_interp.png" ./tools/tern examples/d3d12_raytrace.tern \
+    --out "$WORK/orbit_interp.png" --size 64x48 \
+    > "$WORK/orbit_interp.out" 2> "$WORK/orbit_interp.err" || {
+    echo "d3d12: the interpreter could not orbit the ray tracer" >&2
+    cat "$WORK/orbit_interp.out" "$WORK/orbit_interp.err" >&2
+    exit 1
+}
+TERN_D3D12_PNG="$WORK/orbit_native.png" "$WORK/raytrace" \
+    --out "$WORK/orbit_native.png" --size 64x48 \
+    > "$WORK/orbit_native.out" 2> "$WORK/orbit_native.err" || {
+    echo "d3d12: the compiled ray tracer could not orbit the camera" >&2
+    cat "$WORK/orbit_native.out" "$WORK/orbit_native.err" >&2
+    exit 1
+}
+check_states "$WORK/orbit_interp.err"
+check_states "$WORK/orbit_native.err"
+
+if ! grep -q "drag with the left mouse button" "$WORK/orbit_interp.out"; then
+    echo "d3d12: the ray tracer did not open a window" >&2
+    cat "$WORK/orbit_interp.out" >&2
+    exit 1
+fi
+if [ "$(grep -c 'mock_user32: frame' "$WORK/orbit_interp.err")" != 4 ]; then
+    echo "d3d12: the ray tracer did not present four frames" >&2
+    cat "$WORK/orbit_interp.err" >&2
+    exit 1
+fi
+if ! grep -q "window closed after" "$WORK/orbit_interp.out"; then
+    echo "d3d12: the ray tracer did not report the window closing" >&2
+    cat "$WORK/orbit_interp.out" >&2
+    exit 1
+fi
+
+# The camera really moved: four presents, four draws, and the constants each
+# draw carried are the camera, not the same sixteen numbers four times.
+if [ "$(grep -c 'root constants 16 ' "$WORK/orbit_interp.err")" != 4 ]; then
+    echo "d3d12: the ray tracer did not draw once per frame" >&2
+    cat "$WORK/orbit_interp.err" >&2
+    exit 1
+fi
+if [ "$(grep 'root constants 16 ' "$WORK/orbit_interp.err" | sort -u | wc -l)" -lt 3 ]; then
+    echo "d3d12: the camera did not move with the mouse" >&2
+    grep 'root constants 16 ' "$WORK/orbit_interp.err" >&2
+    exit 1
+fi
+if ! diff -u <(grep 'root constants 16 ' "$WORK/orbit_interp.err") \
+             <(grep 'root constants 16 ' "$WORK/orbit_native.err"); then
+    echo "d3d12: the two back ends orbit to different cameras" >&2
+    exit 1
+fi
+echo "d3d12: the mouse turns the camera, identically in both back ends"
+
+# The wheel is a distance, so the eye walks towards the target without the
+# heading jumping: |eye - target| shrinks, and never past the near limit. Read
+# out of the constant trace rather than out of the source.
+if ! python3 - "$WORK/orbit_interp.err" <<'CAMERA'
+import math, sys
+
+cameras = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    if line.startswith("mock_d3d12: root constants 16 "):
+        cameras.append([float(value) for value in line.split()[4:]])
+assert len(cameras) == 4, len(cameras)
+
+def eye(values):
+    return values[12:15]
+
+def distance(values):
+    x, y, z = eye(values)
+    return math.sqrt(x * x + (y - 0.75) ** 2 + z * z)
+
+# The drag turns the camera: the eye swings out of the middle of the frame.
+assert abs(eye(cameras[0])[0]) < 0.01, eye(cameras[0])
+assert abs(eye(cameras[-1])[0]) > 0.2, eye(cameras[-1])
+
+# The wheel zooms in: two notches a frame, and never past the near limit.
+distances = [distance(values) for values in cameras]
+assert all(later < earlier for earlier, later in zip(distances, distances[1:])), distances
+assert distances[-1] < 4.0, distances
+assert distances[-1] >= 2.0 - 1e-6, distances
+
+# The three basis vectors stay unit length: the shader normalises what it is
+# given, but a camera that is not orthonormal is a picture that shears.
+for values in cameras:
+    for start in (0, 4, 8):
+        assert abs(math.sqrt(sum(c * c for c in values[start:start + 3])) - 1.0) < 1e-3, values
+
+# And the horizontal half-angle carries the aspect ratio, so a 64x48 frame is
+# wider than it is tall.
+for values in cameras:
+    assert abs(values[3] - 0.55 * 64.0 / 48.0) < 1e-3, values[3]
+    assert abs(values[7] - 0.55) < 1e-6, values[7]
+print("d3d12: the wheel zooms and the basis stays orthonormal")
+CAMERA
+then
+    echo "d3d12: the wheel or the drag did not do what the camera says it did" >&2
+    grep 'root constants 16 ' "$WORK/orbit_interp.err" >&2
+    exit 1
+fi
+unset TERN_D3D12_TRACE_CONSTANTS
+unset TERN_WINDOW_DRAG
+unset TERN_WINDOW_WHEEL
+unset TERN_WINDOW_FRAMES
+
+# --window=false is the still frame: one draw, no window, a PNG, status 0.
+# That is the path a build agent and a person without a display both take.
+echo "d3d12: the ray tracer without a window"
+./tools/tern examples/d3d12_raytrace.tern --window=false --size 64x48 \
+    --out "$WORK/still.png" > "$WORK/still.out" 2>&1 || {
+    echo "d3d12: the ray tracer failed without a window" >&2
+    cat "$WORK/still.out" >&2
+    exit 1
+}
+if [ ! -s "$WORK/still.png" ]; then
+    echo "d3d12: the still frame was not written" >&2
+    cat "$WORK/still.out" >&2
+    exit 1
+fi
+if ! grep -q "^wrote " "$WORK/still.out"; then
+    echo "d3d12: the still frame run did not say what it wrote" >&2
+    cat "$WORK/still.out" >&2
+    exit 1
+fi
+echo "d3d12: --window=false writes the frame and leaves the window shut"
+
+# --ascii still draws the picture in a terminal, which is how this example is
+# read on a machine with no display at all.
+if ! ./tools/tern examples/d3d12_raytrace.tern --window=false --size 64x48 \
+        --out "$WORK/ascii.png" --ascii > "$WORK/ascii.out" 2>&1; then
+    echo "d3d12: the ray tracer failed with --ascii" >&2
+    cat "$WORK/ascii.out" >&2
+    exit 1
+fi
+if ! grep -qE '[@%#*+=:-]{8,}' "$WORK/ascii.out"; then
+    echo "d3d12: --ascii printed no picture" >&2
+    cat "$WORK/ascii.out" >&2
+    exit 1
+fi
+echo "d3d12: --ascii still prints the scene"
+
+unset TERN_D3D12_WINDOW
 
 # ------------------------------------------------------------------ diagnose
 #

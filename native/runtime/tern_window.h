@@ -33,6 +33,13 @@
 #define TERN_WM_CLOSE_ 0x0010u
 #define TERN_WM_DESTROY_ 0x0002u
 #define TERN_WM_QUIT_ 0x0012u
+#define TERN_WM_MOUSEMOVE_ 0x0200u
+#define TERN_WM_LBUTTONDOWN_ 0x0201u
+#define TERN_WM_LBUTTONUP_ 0x0202u
+#define TERN_WM_RBUTTONDOWN_ 0x0204u
+#define TERN_WM_RBUTTONUP_ 0x0205u
+#define TERN_WM_MOUSEWHEEL_ 0x020Au
+#define TERN_WHEEL_DELTA_ 120
 #define TERN_VK_ESCAPE_ 0x1Bu
 #define TERN_SRCCOPY_ 0x00CC0020u
 #define TERN_DIB_RGB_COLORS_ 0
@@ -153,6 +160,10 @@ typedef struct {
     void *(*load_cursor)(void *, void *);
     int (*get_client_rect)(void *, TernWinRect *);
     int (*adjust_window_rect)(TernWinRect *, uint32_t, int);
+    // Optional: without them a drag that leaves the window stops being
+    // reported, which is a worse orbit rather than a broken one.
+    void *(*set_capture)(void *);
+    int (*release_capture)(void);
 
     int (*stretch_dib)(void *, int, int, int, int, int, int, int, int,
                        const void *, const TernBitmapInfo *, uint32_t, uint32_t);
@@ -171,6 +182,21 @@ typedef struct {
     unsigned char *dib;   // BGRA, top row first
     int dib_width;
     int dib_height;
+
+    // Input, as of the last message pump. The deltas and the key list are
+    // consumed by d3d12.input(); the button state and the pointer are current
+    // values that survive the read, because "is the button still down" has an
+    // answer even when nothing moved.
+    int pointer_x;
+    int pointer_y;
+    int pointer_seen;
+    int drag_x;    // pixels moved with a button down, since the last read
+    int drag_y;    // positive is down, the way the mouse moves
+    int wheel;     // notches, positive is away from the user
+    int left;
+    int right;
+    int keys[16];  // virtual-key codes pressed since the last read
+    int key_count;
 } TernWindow;
 
 static TernWindow tern_windows[TERN_MAX_WINDOWS];
@@ -253,6 +279,10 @@ static TernWin32 *tern_win32_load(void) {
         tern_win32_need(tern_win32.user32, "GetClientRect");
     tern_win32.adjust_window_rect = (int (*)(TernWinRect *, uint32_t, int))
         tern_win32_need(tern_win32.user32, "AdjustWindowRect");
+    tern_win32.set_capture = (void *(*)(void *))
+        tern_win32_need(tern_win32.user32, "SetCapture");
+    tern_win32.release_capture = (int (*)(void))
+        tern_win32_need(tern_win32.user32, "ReleaseCapture");
 
     tern_win32.stretch_dib = (int (*)(void *, int, int, int, int, int, int, int, int,
                                       const void *, const TernBitmapInfo *, uint32_t, uint32_t))
@@ -324,6 +354,57 @@ static intptr_t tern_window_proc(void *hwnd, uint32_t message, uintptr_t wparam,
             if (tern_win32.destroy_window) {
                 tern_win32.destroy_window(hwnd);
             }
+            return 0;
+        }
+        // The rest of the messages a drag is made of. lParam carries the client
+        // coordinates as two signed 16-bit halves, in both the button messages
+        // and the move; wParam of a wheel message carries the delta in its high
+        // half, in the same sign-extended 16 bits.
+        if (message == TERN_WM_KEYDOWN_) {
+            // Bit 30 of lParam says the key was already down: one press is one
+            // event, and the auto-repeat that follows is not another.
+            int repeat = (int)((lparam >> 30) & 1);
+            if (!repeat && window->key_count < (int)(sizeof window->keys / sizeof window->keys[0])) {
+                window->keys[window->key_count++] = (int)wparam;
+            }
+            return 0;
+        }
+        if (message == TERN_WM_MOUSEMOVE_) {
+            int x = (int)(int16_t)(lparam & 0xFFFF);
+            int y = (int)(int16_t)((lparam >> 16) & 0xFFFF);
+            if (window->pointer_seen && (window->left || window->right)) {
+                window->drag_x += x - window->pointer_x;
+                window->drag_y += y - window->pointer_y;
+            }
+            window->pointer_x = x;
+            window->pointer_y = y;
+            window->pointer_seen = 1;
+            return 0;
+        }
+        if (message == TERN_WM_LBUTTONDOWN_ || message == TERN_WM_RBUTTONDOWN_ ||
+                message == TERN_WM_LBUTTONUP_ || message == TERN_WM_RBUTTONUP_) {
+            int down = message == TERN_WM_LBUTTONDOWN_ || message == TERN_WM_RBUTTONDOWN_;
+            int was = window->left || window->right;
+            if (message == TERN_WM_LBUTTONDOWN_ || message == TERN_WM_LBUTTONUP_) {
+                window->left = down;
+            } else {
+                window->right = down;
+            }
+            // A press records where it happened, so the first move after it is
+            // measured from the press rather than from wherever the pointer was
+            // the last time it entered the window.
+            window->pointer_x = (int)(int16_t)(lparam & 0xFFFF);
+            window->pointer_y = (int)(int16_t)((lparam >> 16) & 0xFFFF);
+            window->pointer_seen = 1;
+            if (down && !was && tern_win32.set_capture) {
+                tern_win32.set_capture(hwnd);
+            } else if (!down && !window->left && !window->right && tern_win32.release_capture) {
+                tern_win32.release_capture();
+            }
+            return 0;
+        }
+        if (message == TERN_WM_MOUSEWHEEL_) {
+            window->wheel += (int)(int16_t)((wparam >> 16) & 0xFFFF) / TERN_WHEEL_DELTA_;
             return 0;
         }
     }
@@ -520,6 +601,46 @@ static void tern_window_close(TernWindow *window) {
     }
     tern_window_release_dib(window);
     memset(window, 0, sizeof *window);
+}
+
+/// The input since the last call: drag deltas, wheel notches and the keys
+/// pressed. The deltas are cleared, so an orbit driven by this never applies the
+/// same movement twice; the button state is left alone, because a drag that
+/// stops moving is still a drag.
+typedef struct {
+    int drag_x;     // pixels moved with a button down, positive right
+    int drag_y;     // positive down, the way the mouse moves
+    int wheel;      // notches, positive away from the user
+    int left;       // the button is down right now
+    int right;
+    int pointer_x;  // where the pointer was last seen, in client pixels
+    int pointer_y;
+    int key_count;
+    int keys[16];   // virtual-key codes pressed since the last call
+} TernWindowInput;
+
+static TernWindowInput tern_window_take_input(TernWindow *window) {
+    TernWindowInput input;
+    memset(&input, 0, sizeof input);
+    if (!window) {
+        return input;
+    }
+    input.drag_x = window->drag_x;
+    input.drag_y = window->drag_y;
+    input.wheel = window->wheel;
+    input.left = window->left;
+    input.right = window->right;
+    input.pointer_x = window->pointer_x;
+    input.pointer_y = window->pointer_y;
+    input.key_count = window->key_count;
+    for (int i = 0; i < window->key_count; i++) {
+        input.keys[i] = window->keys[i];
+    }
+    window->drag_x = 0;
+    window->drag_y = 0;
+    window->wheel = 0;
+    window->key_count = 0;
+    return input;
 }
 
 /// A stable 1-based handle for a window, or 0 when there is no window layer.
