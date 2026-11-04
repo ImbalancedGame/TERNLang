@@ -399,9 +399,33 @@ namespace TERN.Syntax
                     Error("no parameter may follow a rest parameter", Current, "TRN0108");
                 }
 
+                // A parameter list recovers at the next comma, so one bad
+                // parameter is one error instead of a cascade through the body.
+                if (!Check(TokenKind.Identifier) && !Check(TokenKind.DotDotDot))
+                {
+                    Error("expected a parameter name", Current, "TRN0100");
+                    SkipToNextParameter();
+                    Match(TokenKind.Comma);
+                    continue;
+                }
+
                 if (Match(TokenKind.DotDotDot))
                 {
                     var rest = Expect(TokenKind.Identifier, "a parameter name");
+                    // A rest parameter always collects a list, so naming a type
+                    // for it would be a promise the language cannot keep.
+                    if (Match(TokenKind.Colon))
+                    {
+                        Error($"a rest parameter collects a list, so '{rest.Text}' takes no " +
+                              "type annotation", Current, "TRN0223");
+                        if (!Check(TokenKind.Comma) && !Check(TokenKind.RightParen) &&
+                            !Check(TokenKind.EndOfFile))
+                        {
+                            Advance();
+                            Match(TokenKind.Question);
+                        }
+                    }
+
                     parameters.Add(new Parameter
                     {
                         Name = rest.Text,
@@ -413,6 +437,38 @@ namespace TERN.Syntax
                 else
                 {
                     var name = Expect(TokenKind.Identifier, "a parameter name");
+
+                    // `x: int` is a check the function makes on the way in; `x:
+                    // int?` also accepts nil. The name is kept as written, so a
+                    // struct's own name works without the parser knowing it.
+                    string? type = null;
+                    var nullable = false;
+                    if (Match(TokenKind.Colon))
+                    {
+                        // `fn`, `struct` and `nil` are keywords but also type
+                        // names, so they are accepted where a name is expected.
+                        if (Check(TokenKind.Identifier) || Check(TokenKind.Fn) ||
+                            Check(TokenKind.Struct) || Check(TokenKind.Nil))
+                        {
+                            type = Advance().Text;
+                            nullable = Match(TokenKind.Question);
+                        }
+                        else
+                        {
+                            Error("expected a type name, such as int, string, list, fn " +
+                                  "or a struct's own name", Current, "TRN0100");
+
+                            // Drop the token that stood where the name should be,
+                            // unless it is the one that ends the parameter - then
+                            // the list recovers here and reports nothing more.
+                            if (!Check(TokenKind.Comma) && !Check(TokenKind.RightParen) &&
+                                !Check(TokenKind.EndOfFile))
+                            {
+                                Advance();
+                            }
+                        }
+                    }
+
                     Expr? defaultValue = null;
                     if (Match(TokenKind.Equal))
                     {
@@ -422,9 +478,17 @@ namespace TERN.Syntax
                     parameters.Add(new Parameter
                     {
                         Name = name.Text,
+                        Type = type,
+                        Nullable = nullable,
                         Default = defaultValue,
                         Offset = name.Offset,
                     });
+                }
+
+                if (!Check(TokenKind.Comma) && !Check(TokenKind.RightParen))
+                {
+                    Error("expected ',' or ')' after a parameter", Current, "TRN0100");
+                    SkipToNextParameter();
                 }
 
                 if (!Match(TokenKind.Comma))
@@ -435,6 +499,19 @@ namespace TERN.Syntax
 
             Expect(TokenKind.RightParen, "')'");
             return parameters;
+        }
+
+        /// <summary>
+        /// Consumes the rest of a malformed parameter: everything up to the comma
+        /// that starts the next one, or the ')' that ends the list.
+        /// </summary>
+        private void SkipToNextParameter()
+        {
+            while (!Check(TokenKind.Comma) && !Check(TokenKind.RightParen) &&
+                   !Check(TokenKind.EndOfFile))
+            {
+                Advance();
+            }
         }
 
         private Stmt ParseStructDeclaration()

@@ -416,6 +416,11 @@ void tern_panic(const char *kind, const char *fmt, ...);
 Value tern_lookup_global(const char *name);
 Value tern_lookup_std_member(const char *name);
 NativeFn tern_builtin_method(Value receiver, const char *name);
+// The annotated-parameter check. `spec` is the annotation as written ("int",
+// "int?", "Point"), `param` the parameter's name for the message; both come
+// from the function's constants. Panics with the interpreter's wording.
+void tern_check_type(Value value, const char *spec, const char *param);
+bool tern_type_matches(const char *spec, const char *actual);
 Value tern_iter_new(Value iterable);
 bool tern_iter_next(Value iterator, int bindings, Value *first, Value *second);
 

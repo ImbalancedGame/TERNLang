@@ -164,6 +164,15 @@ namespace TERN.Compiler
         Slice,            // A = 1 when the end bound is inclusive; pops end, start, target
 
         /// <summary>
+        /// Pops a value and raises <c>TypeError</c> unless it is of the annotated
+        /// type: A = the type constant as written (<c>int</c>, <c>int?</c>, or a
+        /// struct's name), B = the parameter name constant for the message. Emitted
+        /// once per annotated parameter at function entry, after the defaults, and
+        /// for nothing else - an untyped parameter emits no code at all.
+        /// </summary>
+        CheckType,
+
+        /// <summary>
         /// Pops a message and raises it as a typed, catchable error: A = the type
         /// name constant. <c>Throw</c> carries a plain value and so can only ever
         /// produce an untyped <c>Error</c>; a compiler check that knows its own

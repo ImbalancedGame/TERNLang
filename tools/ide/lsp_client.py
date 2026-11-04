@@ -305,6 +305,84 @@ def run_cases(suite):
     suite.check("this inside a struct method offers the struct's members",
                 "id" in labels and "title" in labels and "push" not in labels, str(labels[:12]))
 
+    # ------------------------------------------- annotated parameters
+    # `fn pack(items: list)` says what the parameter holds, so the body gets the
+    # completion of a list. Two guards keep it from being wrong elsewhere: a
+    # module-scope binding of the same name wins, because the parameter only
+    # shadows it inside one body, and a name annotated two different ways is
+    # left unknown rather than guessed at.
+    annotated_source = (
+        "struct Point { x, y }\n"
+        "\n"
+        "fn pack(items: list) {\n"
+        "    items.\n"
+        "}\n"
+        "\n"
+        "fn move(point: Point) {\n"
+        "    point.\n"
+        "}\n"
+        "\n"
+        "let shared = 1;\n"
+        "\n"
+        "fn shadow(shared: list) {\n"
+        "    shared.\n"
+        "}\n"
+        "\n"
+        "fn first(item: list) { return item; }\n"
+        "fn second(item: string) { return item; }\n"
+        "\n"
+        "fn clash(item) {\n"
+        "    item.\n"
+        "}\n"
+        "\n"
+        "let packed = pack([1]);\n"
+    )
+    annotated_uri = client.open("/tmp/ide_annotated.tern", annotated_source)
+
+    def annotated_members(marker):
+        lines = annotated_source.split("\n")
+        line = next(i for i, text in enumerate(lines) if marker in text)
+        result = client.request("textDocument/completion", {
+            "textDocument": {"uri": annotated_uri},
+            "position": {"line": line, "character": lines[line].index(marker) + len(marker)},
+        })
+        return [item["label"] for item in (result or {}).get("items", [])]
+
+    labels = annotated_members("items.")
+    suite.show("annotated list members", labels[:12])
+    suite.check("an annotated list parameter offers list methods",
+                "push" in labels and "join" in labels, str(labels[:12]))
+    suite.check("an annotated list parameter offers no string methods",
+                "upper" not in labels and "trim" not in labels, str(labels[:12]))
+
+    labels = annotated_members("point.")
+    suite.check("an annotated struct parameter offers the struct's members",
+                "x" in labels and "y" in labels and "push" not in labels, str(labels[:12]))
+
+    labels = annotated_members("shared.")
+    suite.check("a module-scope binding wins over another function's annotation",
+                "abs" in labels and "push" not in labels, str(labels[:12]))
+
+    labels = annotated_members("item.")
+    suite.check("a name annotated two different ways stays unknown",
+                "push" in labels and "upper" in labels, str(labels[:12]))
+
+    hover = client.request("textDocument/hover", {
+        "textDocument": {"uri": annotated_uri},
+        "position": {"line": 2, "character": 9},
+    })
+    hover_text = (hover or {}).get("contents", {}).get("value", "")
+    suite.check("hover on an annotated parameter names its type", "items: list" in hover_text, hover_text)
+
+    pack_line = len(annotated_source.split("\n")) - 2
+    signature = client.request("textDocument/signatureHelp", {
+        "textDocument": {"uri": annotated_uri},
+        "position": {"line": pack_line, "character": annotated_source.split("\n")[pack_line].index("pack(") + len("pack(")},
+    })
+    signature_label = (signature or {}).get("signatures", [{}])[0].get("label", "")
+    suite.check("signature help names an annotated parameter's type",
+                "items: list" in signature_label, signature_label)
+
     labels = typed_members("later", version=10)
     suite.check("a function whose return type is unknown falls back to every built-in",
                 "push" in labels and "upper" in labels, str(labels[:12]))

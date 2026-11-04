@@ -108,6 +108,13 @@ namespace TERN.Ide
 
         public HashSet<string> Structs { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>
+        /// Parameter annotations met during the walk, by parameter name. A struct
+        /// may be declared after the function that names it, so these wait until
+        /// the walk has seen the whole file before becoming types.
+        /// </summary>
+        private readonly Dictionary<string, HashSet<string>> _annotations = new(StringComparer.Ordinal);
+
         public HashSet<string> Imports { get; } = new(StringComparer.Ordinal);
 
         public static SymbolIndex Build(Document document)
@@ -118,6 +125,7 @@ namespace TERN.Ide
                 index.Walk(document.Program, 0);
             }
 
+            index.ResolveAnnotations();
             return index;
         }
 
@@ -438,11 +446,71 @@ namespace TERN.Ide
                     Kind = SymbolKind.Parameter,
                     Offset = parameter.Offset,
                     Line = function.Line,
-                    Detail = parameter.IsRest ? $"...{parameter.Name}" : parameter.Name,
+                    Detail = (parameter.IsRest ? "..." : string.Empty) + parameter.Name +
+                             (parameter.TypeSpec is null ? string.Empty : ": " + parameter.TypeSpec),
                     Depth = depth,
                 });
+
+                if (parameter.TypeSpec is { } spec && !parameter.IsRest)
+                {
+                    if (!_annotations.TryGetValue(parameter.Name, out var seen))
+                    {
+                        seen = new HashSet<string>(StringComparer.Ordinal);
+                        _annotations[parameter.Name] = seen;
+                    }
+
+                    seen.Add(spec);
+                }
             }
         }
+
+        /// <summary>
+        /// Turns annotations into receiver types, once. `x: list` makes `x.` offer
+        /// list methods, the same as `let x = []` would.
+        ///
+        /// Two conditions keep the editor quiet rather than wrong: a name that is
+        /// also a module-scope binding is left alone, because the parameter only
+        /// shadows it inside one body, and a name annotated with two different
+        /// types in two functions is left unknown for the same reason.
+        /// </summary>
+        private void ResolveAnnotations()
+        {
+            // Parameters are symbols too, so "is there a binding of this name"
+            // means a declaration that is not itself a parameter.
+            var bound = new HashSet<string>(
+                Symbols.Where(symbol => symbol.Kind is not SymbolKind.Parameter)
+                       .Select(symbol => symbol.Name),
+                StringComparer.Ordinal);
+
+            foreach (var (name, specs) in _annotations)
+            {
+                if (specs.Count != 1 || bound.Contains(name))
+                {
+                    continue;
+                }
+
+                var spec = specs.First();
+                var type = AnnotatedType(spec.EndsWith("?", StringComparison.Ordinal)
+                    ? spec.Substring(0, spec.Length - 1)
+                    : spec);
+                if (type.IsKnown)
+                {
+                    _directTypes[name] = type;
+                }
+            }
+        }
+
+        private ReceiverType AnnotatedType(string name) => name switch
+        {
+            "int" => ReceiverType.Builtin("int"),
+            "float" => ReceiverType.Builtin("float"),
+            "string" or "text" => ReceiverType.Builtin("string"),
+            "bool" => ReceiverType.Builtin("bool"),
+            "list" => ReceiverType.Builtin("list"),
+            "map" => ReceiverType.Builtin("map"),
+            "range" => ReceiverType.Builtin("range"),
+            _ => IsStruct(name) ? ReceiverType.OfStruct(name) : ReceiverType.Unknown,
+        };
 
         /// <summary>The kind a `for ... in` loop hands out, when the iterable says so.</summary>
         private static string? ElementOf(Expr iterable) => iterable switch
@@ -471,7 +539,9 @@ namespace TERN.Ide
         private static string Signature(FunctionLiteral function)
         {
             var parameters = function.Parameters.Select(parameter =>
-                (parameter.IsRest ? "..." : string.Empty) + parameter.Name + (parameter.Default is null ? string.Empty : "?"));
+                (parameter.IsRest ? "..." : string.Empty) + parameter.Name +
+                (parameter.TypeSpec is null ? string.Empty : ": " + parameter.TypeSpec) +
+                (parameter.Default is null ? string.Empty : "?"));
             return $"fn {function.Name ?? "lambda"}({string.Join(", ", parameters)})";
         }
     }

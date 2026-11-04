@@ -426,6 +426,12 @@ class Generator:
         elif op == "ArgOrJump":
             line("if (%s.tag != T_MISSING) goto L%d;" % (self.loc(a, captured), b))
 
+        elif op == "CheckType":
+            # One annotated parameter, checked on the way in: the spec and the
+            # name are the two string constants the instruction carries.
+            line("{ Value v = st[--sp]; tern_check_type(v, %s, %s); }"
+                 % (self.name_of_constant(index, a), self.name_of_constant(index, b)))
+
         elif op == "IncLocal":
             slot = self.loc(a, captured)
             line("{ Value v = %s;" % slot)

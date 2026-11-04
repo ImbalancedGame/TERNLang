@@ -466,6 +466,62 @@ println(c());  // 2
   script recursing to a given depth behaves the same on both.
 * Calling a non-function is a runtime `TypeError`.
 
+### Parameter types
+
+A parameter may say what it holds. The annotation goes between the name and the
+default:
+
+```tern
+fn area(width: int, height: int) { return width * height; }
+fn greet(name: string, greeting: string = "hello") { return "${greeting}, ${name}"; }
+
+// A `?` also accepts nil.
+fn label(text: string?) { return text == nil ? "(none)" : text; }
+
+// A struct's own name is a type.
+struct Point { x, y }
+fn moveX(point: Point, by: int) { point.x += by; }
+```
+
+The annotation is checked when the function is entered, after any default has
+been filled in, so an omitted argument is checked as its default. A wrong one
+throws a catchable `TypeError` that names the parameter and both types:
+
+```tern
+try { area(3, "wide"); }
+catch (e) { println(e); }   // parameter 'height' must be int, not string
+```
+
+The names are the ones `typeof` (also spelled `type`) answers with, plus a few
+that say what the value can do:
+
+| Annotation       | Accepts                                                  |
+| ---------------- | -------------------------------------------------------- |
+| `int`            | integers                                                 |
+| `float`          | floats and integers, because a whole number is a float   |
+| `number`         | both numeric kinds                                       |
+| `string`/`text`  | strings                                                  |
+| `bool`           | `true` and `false`                                       |
+| `list`, `map`, `range` | that kind                                          |
+| `fn`/`function`  | functions and bound methods                              |
+| `method`         | bound methods only                                       |
+| a struct's name  | instances of that struct                                 |
+| `any`            | everything, including nil                                |
+| any name`?`      | the same, plus nil                                       |
+
+* The annotation is a *name*, not a type expression: one word, optionally
+  followed by `?`. There are no generic parameters, so `list` says "a list",
+  not what it contains.
+* Any other word is compared against `typeof` literally, which is what makes a
+  struct work: `point: Point` is the check `typeof(point) == "Point"`. A typo
+  like `x: strng` therefore never matches and fails at the call rather than at
+  compile time.
+* An untyped parameter takes anything. That is the default, and it is the only
+  form that costs nothing: an annotated parameter adds one check to the function
+  prologue, which is why the feature can be adopted one parameter at a time.
+* A rest parameter collects a list whatever it is given, so annotating it is
+  `TRN0223`.
+
 ---
 
 ## 8. Collections
@@ -1363,7 +1419,7 @@ statement      = decl | fnDecl | structDecl | importDecl | exprStmt
 decl           = ("let" | "const") (IDENT | pattern) ("=" expression)? ";"? ;
 fnDecl         = "fn" IDENT "(" params? ")" block ;
 params         = param ("," param)* ;
-param          = IDENT ("=" expression)? | "..." IDENT ;
+param          = IDENT (":" IDENT "?")? ("=" expression)? | "..." IDENT ;
 structDecl     = "struct" IDENT "{" (field ("," field)*)? method* "}" ;
 field          = IDENT ("=" expression)? ;
 importDecl     = "import" STRING ("as" IDENT)? ";"? ;
@@ -1418,7 +1474,8 @@ no initializer, `TRN0216` a name bound twice in one pattern, `TRN0218` a `std:`
 module this build does not have, `TRN0219` an internal disagreement about the
 operand stack (below), `TRN0220` a `break` or `continue` that names no
 enclosing loop, `TRN0221` a struct method that captures an outer
-variable it cannot reach, `TRN0222` an internal disagreement about a spread.
+variable it cannot reach, `TRN0222` an internal disagreement about a spread,
+`TRN0223` a type annotation on a rest parameter.
 
 `TRN0219` is never the script's fault and never the script's problem to solve:
 it means the compiler's own count of what a statement left on the operand stack

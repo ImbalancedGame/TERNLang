@@ -212,6 +212,27 @@ namespace TERN.Compiler
                 }
             }
 
+            /// <summary>
+            /// One check per annotated parameter, after the defaults have been
+            /// filled in - so an omitted argument with a default is checked as the
+            /// default, and an omitted one without a default is checked as nil.
+            /// </summary>
+            public void EmitTypeChecks(List<Parameter> parameters)
+            {
+                foreach (var parameter in parameters)
+                {
+                    if (parameter.TypeSpec is null || parameter.IsRest)
+                    {
+                        continue;
+                    }
+
+                    var slot = FindLocalSlot(parameter.Name);
+                    Emit(Op.LoadLocal, slot, 0, 0, pop: 0, push: 1);
+                    Emit(Op.CheckType, AddStringConstant(parameter.TypeSpec),
+                        AddStringConstant(parameter.Name), pop: 1, push: 0);
+                }
+            }
+
             public FunctionProto Build()
             {
                 // Implicit "return nil" at the end of every function.
@@ -3530,6 +3551,7 @@ namespace TERN.Compiler
 
                 child.PushScope();
                 child.EmitParameterPrologue(literal.Parameters, declaresThis: isMethod);
+                child.EmitTypeChecks(literal.Parameters);
 
                 if (literal.ExpressionBody is not null)
                 {

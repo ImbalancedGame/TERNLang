@@ -35,8 +35,9 @@ match tickets.length {
 
 ## Features
 
-* **Modern syntax** — `let`/`const`, functions with defaults and `...rest`,
-  arrow lambdas, block scoping, string interpolation, ternaries.
+* **Modern syntax** — `let`/`const`, functions with defaults, `...rest` and
+  optional parameter types (`fn area(w: int, h: int)`), arrow lambdas, block
+  scoping, string interpolation, ternaries.
 * **Real data structures** — lists, insertion-ordered maps, lazy ranges, and
   user-defined structs with methods and defaults, with `...` spread in list and
   map literals and in calls, and list/map comprehensions

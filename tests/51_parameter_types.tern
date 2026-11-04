@@ -1,0 +1,108 @@
+// A parameter may name its type: `fn f(x: int)`. The check happens when the
+// function is entered, after any default has been filled in, and a mistake is a
+// catchable TypeError that names the parameter and both types.
+
+fn greet(name: string) { return "hi " + name; }
+println(greet("there"));                     // hi there
+
+fn twice(n: int) { return n * 2; }
+println(twice(21));                          // 42
+
+fn report(label, body) {
+    try {
+        println(label + ": " + str(body()));
+    } catch (error) {
+        println(label + ": " + str(error));
+    }
+}
+
+report("string given int", fn() { return greet(5); });
+report("int given float", fn() { return twice(2.5); });
+report("int given text", fn() { return twice("2"); });
+
+// `float` takes whole numbers too: 1 is not the mistake the check is for.
+fn scale(x: float) { return x * 1.5; }
+println(scale(2) + " " + scale(2.5));        // 3.0 3.75
+
+// `number` covers both numeric kinds and nothing else.
+fn keep(n: number) { return n; }
+println(keep(1) + " " + keep(2.5));          // 1 2.5
+report("number given text", fn() { return keep("1"); });
+
+// A `?` also accepts nil, and says so in the message.
+fn tag(text: string?) { return str(text); }
+println(tag(nil) + " " + tag("x"));          // nil x
+report("optional given int", fn() { return tag(3); });
+
+// The default is what gets checked when the argument is left out.
+fn add(a: int, b: int = 10) { return a + b; }
+println(add(1));                             // 11
+report("default replaced by text", fn() { return add(1, "2"); });
+
+// A struct's own name is a type: what `typeof` answers for its instances.
+struct Point { x = 0; y = 0; }
+fn showX(point: Point) { return str(point.x); }
+println(showX(Point(3, 4)));                 // 3
+report("struct given map", fn() { return showX({"x": 3}); });
+
+// `list`, `map`, `fn`, `bool`, `range` and `any` name the other kinds. `fn`
+// accepts a method, because a bound method is a function you can call.
+fn applyAll(values: list, action: fn) {
+    let out = [];
+    for value in values { out.push(action(value)); }
+    return out;
+}
+println(applyAll([1, 2], fn(v) => v * 3));   // [3, 6, 9]
+report("list given text", fn() { return applyAll("no", fn(v) => v); });
+report("fn given int", fn() { return applyAll([1], 5); });
+fn callIt(action: fn) { return action(); }
+println(callIt(["a", "b"].join));            // a bound method is a fn: a,b
+
+fn anything(value: any) { return value; }
+println(str(anything(nil)) + " " + str(anything(7)));   // nil 7
+
+// Lambdas and methods take annotations the same way.
+let halve = (value: int) => value / 2;
+println(halve(8));                           // 4
+report("lambda given text", fn() { return halve("8"); });
+
+struct Box {
+    fn fill(contents: string) { return "[" + contents + "]"; }
+}
+println(Box().fill("x"));                    // [x]
+report("method given int", fn() { return Box().fill(1); });
+
+// An untyped parameter takes anything at all, which is the default and the
+// only form that costs nothing at run time.
+fn free(value) { return typeof(value); }
+println(free(1) + " " + free("a") + " " + free(nil));    // int string nil
+
+// The check runs inside the function, so it is catchable where the call is and
+// it happens before the body does anything.
+fn bodyRuns(f: int) { println("body ran"); return f; }
+report("body does not run", fn() { return bodyRuns("no"); });
+
+// A parameter a closure captures is still a parameter: the check reads it
+// before any cell is handed out.
+fn adder(step: int) { return fn(v) { return v + step; }; }
+println(adder(5)(1));                        // 6
+report("captured parameter", fn() { return adder("5")(1); });
+
+// The check happens on every call, not once at the declaration, and it keeps
+// happening through recursion.
+fn countdown(n: int) { return n <= 0 ? 0 : 1 + countdown(n - 1); }
+println(countdown(3));                       // 3
+report("recursive parameter", fn() { return countdown("3"); });
+
+// `bool`, `range` and `method` name the remaining kinds.
+fn negate(flag: bool) { return !flag; }
+println(negate(true));                       // false
+report("bool given int", fn() { return negate(1); });
+
+fn total(span: range) { let sum = 0; for i in span { sum += i; } return sum; }
+println(total(0..<4));                       // 6
+report("range given list", fn() { return total([1, 2]); });
+
+fn invoke(action: method) { return action(); }
+println(invoke([7, 8].join));                // 7,8
+report("method given plain fn", fn() { return invoke(fn() => 1); });

@@ -1,0 +1,6 @@
+52_parameter_type_syntax:6:12: error TRN0100: expected a type name, such as int, string, list, fn or a struct's own name
+52_parameter_type_syntax:10:15: error TRN0100: expected ',' or ')' after a parameter
+52_parameter_type_syntax:13:16: error TRN0223: a rest parameter collects a list, so 'xs' takes no type annotation
+52_parameter_type_syntax:16:14: error TRN0100: expected ',' or ')' after a parameter
+52_parameter_type_syntax:19:15: error TRN0100: expected ',' or ')' after a parameter
+52_parameter_type_syntax:23:16: error TRN0100: expected ',' or ')' after a parameter
